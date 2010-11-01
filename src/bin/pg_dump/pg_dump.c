@@ -10602,7 +10602,7 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 		 * DROP must be fully qualified in case same name appears in
 		 * pg_catalog
 		 */
-		appendPQExpBuffer(delq, "DROP TABLE %s.",
+		appendPQExpBuffer(delq, "DROP TABLE IF EXISTS %s.",
 						  fmtId(tbinfo->dobj.namespace->dobj.name));
 		appendPQExpBuffer(delq, "%s;\n",
 						  fmtId(tbinfo->dobj.name));
