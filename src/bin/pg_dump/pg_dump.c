@@ -1768,7 +1768,7 @@ dumpDatabase(Archive *AH)
 
 	}
 
-	appendPQExpBuffer(delQry, "DROP DATABASE %s;\n",
+	appendPQExpBuffer(delQry, "DROP DATABASE IF EXISTS %s;\n",
 					  fmtId(datname));
 
 	dbDumpId = createDumpId();
@@ -6548,7 +6548,7 @@ dumpNamespace(Archive *fout, NamespaceInfo *nspinfo)
 
 	qnspname = strdup(fmtId(nspinfo->dobj.name));
 
-	appendPQExpBuffer(delq, "DROP SCHEMA %s;\n", qnspname);
+	appendPQExpBuffer(delq, "DROP SCHEMA IF EXISTS %s;\n", qnspname);
 
 	appendPQExpBuffer(q, "CREATE SCHEMA %s;\n", qnspname);
 
@@ -6635,7 +6635,7 @@ dumpEnumType(Archive *fout, TypeInfo *tyinfo)
 	 * CASCADE shouldn't be required here as for normal types since the I/O
 	 * functions are generic and do not get dropped.
 	 */
-	appendPQExpBuffer(delq, "DROP TYPE %s.",
+	appendPQExpBuffer(delq, "DROP TYPE IF EXISTS %s.",
 					  fmtId(tyinfo->dobj.namespace->dobj.name));
 	appendPQExpBuffer(delq, "%s;\n",
 					  fmtId(tyinfo->dobj.name));
@@ -7176,7 +7176,7 @@ dumpDomain(Archive *fout, TypeInfo *tyinfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delq, "DROP DOMAIN %s.",
+	appendPQExpBuffer(delq, "DROP DOMAIN IF EXISTS %s.",
 					  fmtId(tyinfo->dobj.namespace->dobj.name));
 	appendPQExpBuffer(delq, "%s;\n",
 					  fmtId(tyinfo->dobj.name));
@@ -7566,7 +7566,7 @@ dumpProcLang(Archive *fout, ProcLangInfo *plang)
 	else
 		lanschema = NULL;
 
-	appendPQExpBuffer(delqry, "DROP PROCEDURAL LANGUAGE %s;\n",
+	appendPQExpBuffer(delqry, "DROP PROCEDURAL LANGUAGE IF EXISTS %s;\n",
 					  qlanname);
 
 	if (useParams)
@@ -8082,7 +8082,7 @@ dumpFunc(Archive *fout, FuncInfo *finfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delqry, "DROP FUNCTION %s.%s;\n",
+	appendPQExpBuffer(delqry, "DROP FUNCTION IF EXISTS %s.%s;\n",
 					  fmtId(finfo->dobj.namespace->dobj.name),
 					  funcsig);
 
@@ -8286,7 +8286,7 @@ dumpCast(Archive *fout, CastInfo *cast)
 	delqry = createPQExpBuffer();
 	castsig = createPQExpBuffer();
 
-	appendPQExpBuffer(delqry, "DROP CAST (%s AS %s);\n",
+	appendPQExpBuffer(delqry, "DROP CAST IF EXISTS (%s AS %s);\n",
 					  getFormattedTypeName(cast->castsource, zeroAsNone),
 					  getFormattedTypeName(cast->casttarget, zeroAsNone));
 
@@ -8562,7 +8562,7 @@ dumpOpr(Archive *fout, OprInfo *oprinfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delq, "DROP OPERATOR %s.%s;\n",
+	appendPQExpBuffer(delq, "DROP OPERATOR IF EXISTS %s.%s;\n",
 					  fmtId(oprinfo->dobj.namespace->dobj.name),
 					  oprid->data);
 
@@ -8853,7 +8853,7 @@ dumpOpclass(Archive *fout, OpclassInfo *opcinfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delq, "DROP OPERATOR CLASS %s",
+	appendPQExpBuffer(delq, "DROP OPERATOR CLASS IF EXISTS %s",
 					  fmtId(opcinfo->dobj.namespace->dobj.name));
 	appendPQExpBuffer(delq, ".%s",
 					  fmtId(opcinfo->dobj.name));
@@ -9228,7 +9228,7 @@ dumpOpfamily(Archive *fout, OpfamilyInfo *opfinfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delq, "DROP OPERATOR FAMILY %s",
+	appendPQExpBuffer(delq, "DROP OPERATOR FAMILY IF EXISTS %s",
 					  fmtId(opfinfo->dobj.namespace->dobj.name));
 	appendPQExpBuffer(delq, ".%s",
 					  fmtId(opfinfo->dobj.name));
@@ -9411,7 +9411,7 @@ dumpConversion(Archive *fout, ConvInfo *convinfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delq, "DROP CONVERSION %s",
+	appendPQExpBuffer(delq, "DROP CONVERSION IF EXISTS %s",
 					  fmtId(convinfo->dobj.namespace->dobj.name));
 	appendPQExpBuffer(delq, ".%s;\n",
 					  fmtId(convinfo->dobj.name));
@@ -9662,7 +9662,7 @@ dumpAgg(Archive *fout, AggInfo *agginfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delq, "DROP AGGREGATE %s.%s;\n",
+	appendPQExpBuffer(delq, "DROP AGGREGATE IF EXISTS %s.%s;\n",
 					  fmtId(agginfo->aggfn.dobj.namespace->dobj.name),
 					  aggsig);
 
@@ -9752,7 +9752,7 @@ dumpTSParser(Archive *fout, TSParserInfo *prsinfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delq, "DROP TEXT SEARCH PARSER %s",
+	appendPQExpBuffer(delq, "DROP TEXT SEARCH PARSER IF EXISTS %s",
 					  fmtId(prsinfo->dobj.namespace->dobj.name));
 	appendPQExpBuffer(delq, ".%s;\n",
 					  fmtId(prsinfo->dobj.name));
@@ -9844,7 +9844,7 @@ dumpTSDictionary(Archive *fout, TSDictInfo *dictinfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delq, "DROP TEXT SEARCH DICTIONARY %s",
+	appendPQExpBuffer(delq, "DROP TEXT SEARCH DICTIONARY IF EXISTS %s",
 					  fmtId(dictinfo->dobj.namespace->dobj.name));
 	appendPQExpBuffer(delq, ".%s;\n",
 					  fmtId(dictinfo->dobj.name));
@@ -9904,7 +9904,7 @@ dumpTSTemplate(Archive *fout, TSTemplateInfo *tmplinfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delq, "DROP TEXT SEARCH TEMPLATE %s",
+	appendPQExpBuffer(delq, "DROP TEXT SEARCH TEMPLATE IF EXISTS %s",
 					  fmtId(tmplinfo->dobj.namespace->dobj.name));
 	appendPQExpBuffer(delq, ".%s;\n",
 					  fmtId(tmplinfo->dobj.name));
@@ -10037,7 +10037,7 @@ dumpTSConfig(Archive *fout, TSConfigInfo *cfginfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delq, "DROP TEXT SEARCH CONFIGURATION %s",
+	appendPQExpBuffer(delq, "DROP TEXT SEARCH CONFIGURATION IF EXISTS %s",
 					  fmtId(cfginfo->dobj.namespace->dobj.name));
 	appendPQExpBuffer(delq, ".%s;\n",
 					  fmtId(cfginfo->dobj.name));
@@ -10095,7 +10095,7 @@ dumpForeignDataWrapper(Archive *fout, FdwInfo *fdwinfo)
 
 	appendPQExpBuffer(q, ";\n");
 
-	appendPQExpBuffer(delq, "DROP FOREIGN DATA WRAPPER %s;\n",
+	appendPQExpBuffer(delq, "DROP FOREIGN DATA WRAPPER IF EXISTS %s;\n",
 					  fmtId(fdwinfo->dobj.name));
 
 	ArchiveEntry(fout, fdwinfo->dobj.catId, fdwinfo->dobj.dumpId,
@@ -10183,7 +10183,7 @@ dumpForeignServer(Archive *fout, ForeignServerInfo *srvinfo)
 
 	appendPQExpBuffer(q, ";\n");
 
-	appendPQExpBuffer(delq, "DROP SERVER %s;\n",
+	appendPQExpBuffer(delq, "DROP SERVER IF EXISTS %s;\n",
 					  fmtId(srvinfo->dobj.name));
 
 	ArchiveEntry(fout, srvinfo->dobj.catId, srvinfo->dobj.dumpId,
@@ -10285,7 +10285,8 @@ dumpUserMappings(Archive *fout,
 		appendPQExpBuffer(q, ";\n");
 
 		resetPQExpBuffer(delq);
-		appendPQExpBuffer(delq, "DROP USER MAPPING FOR %s", fmtId(usename));
+		appendPQExpBuffer(delq, "DROP USER MAPPING IF EXISTS FOR %s",
+						  fmtId(usename));
 		appendPQExpBuffer(delq, " SERVER %s;\n", fmtId(servername));
 
 		resetPQExpBuffer(tag);
@@ -10578,7 +10579,7 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 		 * DROP must be fully qualified in case same name appears in
 		 * pg_catalog
 		 */
-		appendPQExpBuffer(delq, "DROP VIEW %s.",
+		appendPQExpBuffer(delq, "DROP VIEW IF EXISTS %s.",
 						  fmtId(tbinfo->dobj.namespace->dobj.name));
 		appendPQExpBuffer(delq, "%s;\n",
 						  fmtId(tbinfo->dobj.name));
@@ -11094,7 +11095,7 @@ dumpIndex(Archive *fout, IndxInfo *indxinfo)
 		 * DROP must be fully qualified in case same name appears in
 		 * pg_catalog
 		 */
-		appendPQExpBuffer(delq, "DROP INDEX %s.",
+		appendPQExpBuffer(delq, "DROP INDEX IF EXISTS %s.",
 						  fmtId(tbinfo->dobj.namespace->dobj.name));
 		appendPQExpBuffer(delq, "%s;\n",
 						  fmtId(indxinfo->dobj.name));
@@ -11563,7 +11564,7 @@ dumpSequence(Archive *fout, TableInfo *tbinfo)
 		 * DROP must be fully qualified in case same name appears in
 		 * pg_catalog
 		 */
-		appendPQExpBuffer(delqry, "DROP SEQUENCE %s.",
+		appendPQExpBuffer(delqry, "DROP SEQUENCE IF EXISTS %s.",
 						  fmtId(tbinfo->dobj.namespace->dobj.name));
 		appendPQExpBuffer(delqry, "%s;\n",
 						  fmtId(tbinfo->dobj.name));
@@ -11714,7 +11715,7 @@ dumpTrigger(Archive *fout, TriggerInfo *tginfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delqry, "DROP TRIGGER %s ",
+	appendPQExpBuffer(delqry, "DROP TRIGGER IF EXIST %s ",
 					  fmtId(tginfo->dobj.name));
 	appendPQExpBuffer(delqry, "ON %s.",
 					  fmtId(tbinfo->dobj.namespace->dobj.name));
@@ -11975,7 +11976,7 @@ dumpRule(Archive *fout, RuleInfo *rinfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delcmd, "DROP RULE %s ",
+	appendPQExpBuffer(delcmd, "DROP RULE IF EXISTS %s ",
 					  fmtId(rinfo->dobj.name));
 	appendPQExpBuffer(delcmd, "ON %s.",
 					  fmtId(tbinfo->dobj.namespace->dobj.name));
