@@ -6959,7 +6959,7 @@ dumpBaseType(Archive *fout, TypeInfo *tyinfo)
 	 * the type and its I/O functions makes it impossible to drop the type any
 	 * other way.
 	 */
-	appendPQExpBuffer(delq, "DROP TYPE %s.",
+	appendPQExpBuffer(delq, "DROP TYPE IF EXISTS %s.",
 					  fmtId(tyinfo->dobj.namespace->dobj.name));
 	appendPQExpBuffer(delq, "%s CASCADE;\n",
 					  fmtId(tyinfo->dobj.name));
@@ -7281,7 +7281,7 @@ dumpCompositeType(Archive *fout, TypeInfo *tyinfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delq, "DROP TYPE %s.",
+	appendPQExpBuffer(delq, "DROP TYPE IF EXISTS %s.",
 					  fmtId(tyinfo->dobj.namespace->dobj.name));
 	appendPQExpBuffer(delq, "%s;\n",
 					  fmtId(tyinfo->dobj.name));
@@ -10798,7 +10798,7 @@ dumpTableSchema(Archive *fout, TableInfo *tbinfo)
 
 					appendPQExpBuffer(q, "ALTER TABLE ONLY %s ",
 									  fmtId(tbinfo->dobj.name));
-					appendPQExpBuffer(q, "DROP COLUMN %s;\n",
+					appendPQExpBuffer(q, "DROP COLUMN IF EXISTS %s;\n",
 									  fmtId(tbinfo->attnames[j]));
 				}
 				else if (!tbinfo->attislocal[j])
@@ -11222,7 +11222,7 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 						  fmtId(tbinfo->dobj.namespace->dobj.name));
 		appendPQExpBuffer(delq, "%s ",
 						  fmtId(tbinfo->dobj.name));
-		appendPQExpBuffer(delq, "DROP CONSTRAINT %s;\n",
+		appendPQExpBuffer(delq, "DROP CONSTRAINT IF EXISTS %s;\n",
 						  fmtId(coninfo->dobj.name));
 
 		ArchiveEntry(fout, coninfo->dobj.catId, coninfo->dobj.dumpId,
@@ -11255,7 +11255,7 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 						  fmtId(tbinfo->dobj.namespace->dobj.name));
 		appendPQExpBuffer(delq, "%s ",
 						  fmtId(tbinfo->dobj.name));
-		appendPQExpBuffer(delq, "DROP CONSTRAINT %s;\n",
+		appendPQExpBuffer(delq, "DROP CONSTRAINT IF EXISTS %s;\n",
 						  fmtId(coninfo->dobj.name));
 
 		ArchiveEntry(fout, coninfo->dobj.catId, coninfo->dobj.dumpId,
@@ -11290,7 +11290,7 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 							  fmtId(tbinfo->dobj.namespace->dobj.name));
 			appendPQExpBuffer(delq, "%s ",
 							  fmtId(tbinfo->dobj.name));
-			appendPQExpBuffer(delq, "DROP CONSTRAINT %s;\n",
+			appendPQExpBuffer(delq, "DROP CONSTRAINT IF EXISTS %s;\n",
 							  fmtId(coninfo->dobj.name));
 
 			ArchiveEntry(fout, coninfo->dobj.catId, coninfo->dobj.dumpId,
@@ -11326,7 +11326,7 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 							  fmtId(tyinfo->dobj.namespace->dobj.name));
 			appendPQExpBuffer(delq, "%s ",
 							  fmtId(tyinfo->dobj.name));
-			appendPQExpBuffer(delq, "DROP CONSTRAINT %s;\n",
+			appendPQExpBuffer(delq, "DROP CONSTRAINT IF EXISTS %s;\n",
 							  fmtId(coninfo->dobj.name));
 
 			ArchiveEntry(fout, coninfo->dobj.catId, coninfo->dobj.dumpId,
@@ -11715,7 +11715,7 @@ dumpTrigger(Archive *fout, TriggerInfo *tginfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
-	appendPQExpBuffer(delqry, "DROP TRIGGER IF EXIST %s ",
+	appendPQExpBuffer(delqry, "DROP TRIGGER IF EXISTS %s ",
 					  fmtId(tginfo->dobj.name));
 	appendPQExpBuffer(delqry, "ON %s.",
 					  fmtId(tbinfo->dobj.namespace->dobj.name));
