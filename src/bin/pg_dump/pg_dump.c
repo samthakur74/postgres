@@ -10996,12 +10996,22 @@ dumpAttrDef(Archive *fout, AttrDefInfo *adinfo)
 	/*
 	 * DROP must be fully qualified in case same name appears in pg_catalog
 	 */
+	appendPQExpBuffer(delq,
+					  "DO $$\n"
+					  "BEGIN\n"
+					  "IF (SELECT count(*) > 0 FROM pg_tables\n"
+					  "  WHERE schemaname = '%s' AND tablename = '%s') "
+					  "THEN\n",
+					  tbinfo->dobj.namespace->dobj.name,
+					  tbinfo->dobj.name);
 	appendPQExpBuffer(delq, "ALTER TABLE %s.",
 					  fmtId(tbinfo->dobj.namespace->dobj.name));
 	appendPQExpBuffer(delq, "%s ",
 					  fmtId(tbinfo->dobj.name));
 	appendPQExpBuffer(delq, "ALTER COLUMN %s DROP DEFAULT;\n",
 					  fmtId(tbinfo->attnames[adnum - 1]));
+	appendPQExpBuffer(delq, "END IF;\nEND$$;\n");
+
 
 	ArchiveEntry(fout, adinfo->dobj.catId, adinfo->dobj.dumpId,
 				 tbinfo->attnames[adnum - 1],
@@ -11135,6 +11145,23 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 	PQExpBuffer q;
 	PQExpBuffer delq;
 
+#define ALTERIFEXISTSTABLE_START											  \
+	do {																	  \
+		appendPQExpBuffer(delq,												  \
+						  "DO $$\n"											  \
+						  "BEGIN\n"											  \
+						  "IF (SELECT count(*) > 0 FROM pg_tables\n"		  \
+						  "  WHERE schemaname = '%s' AND tablename = '%s') "  \
+						  "THEN \n",										  \
+						  tbinfo->dobj.namespace->dobj.name,				  \
+						  tbinfo->dobj.name);								  \
+	} while (0)
+
+#define ALTERIFEXISTS_END													  \
+	do {																	  \
+		appendPQExpBuffer(delq, "END IF;\nEND$$;\n");						  \
+	} while (0)
+
 	/* Skip if not to be dumped */
 	if (!coninfo->dobj.dump || dataOnly)
 		return;
@@ -11218,12 +11245,14 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 		 * DROP must be fully qualified in case same name appears in
 		 * pg_catalog
 		 */
+		ALTERIFEXISTSTABLE_START;
 		appendPQExpBuffer(delq, "ALTER TABLE ONLY %s.",
 						  fmtId(tbinfo->dobj.namespace->dobj.name));
 		appendPQExpBuffer(delq, "%s ",
 						  fmtId(tbinfo->dobj.name));
 		appendPQExpBuffer(delq, "DROP CONSTRAINT IF EXISTS %s;\n",
 						  fmtId(coninfo->dobj.name));
+		ALTERIFEXISTS_END;
 
 		ArchiveEntry(fout, coninfo->dobj.catId, coninfo->dobj.dumpId,
 					 coninfo->dobj.name,
@@ -11251,12 +11280,14 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 		 * DROP must be fully qualified in case same name appears in
 		 * pg_catalog
 		 */
+		ALTERIFEXISTSTABLE_START;
 		appendPQExpBuffer(delq, "ALTER TABLE ONLY %s.",
 						  fmtId(tbinfo->dobj.namespace->dobj.name));
 		appendPQExpBuffer(delq, "%s ",
 						  fmtId(tbinfo->dobj.name));
 		appendPQExpBuffer(delq, "DROP CONSTRAINT IF EXISTS %s;\n",
 						  fmtId(coninfo->dobj.name));
+		ALTERIFEXISTS_END;
 
 		ArchiveEntry(fout, coninfo->dobj.catId, coninfo->dobj.dumpId,
 					 coninfo->dobj.name,
@@ -11286,12 +11317,14 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 			 * DROP must be fully qualified in case same name appears in
 			 * pg_catalog
 			 */
+			ALTERIFEXISTSTABLE_START;
 			appendPQExpBuffer(delq, "ALTER TABLE %s.",
 							  fmtId(tbinfo->dobj.namespace->dobj.name));
 			appendPQExpBuffer(delq, "%s ",
 							  fmtId(tbinfo->dobj.name));
 			appendPQExpBuffer(delq, "DROP CONSTRAINT IF EXISTS %s;\n",
 							  fmtId(coninfo->dobj.name));
+			ALTERIFEXISTS_END;
 
 			ArchiveEntry(fout, coninfo->dobj.catId, coninfo->dobj.dumpId,
 						 coninfo->dobj.name,
@@ -11322,12 +11355,24 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 			 * DROP must be fully qualified in case same name appears in
 			 * pg_catalog
 			 */
+			appendPQExpBuffer(delq,
+							  "DO $$\n"
+							  "BEGIN\n"
+							  "IF (SELECT count(*) > 0 FROM pg_type\n"
+							  "  WHERE schemaname = '%s' AND "
+							  "  tablename = '%s' AND "
+							  "  typtype = 'd') "
+							  "THEN \n",
+							  tyinfo->dobj.namespace->dobj.name,
+							  tyinfo->dobj.name);
+
 			appendPQExpBuffer(delq, "ALTER DOMAIN %s.",
 							  fmtId(tyinfo->dobj.namespace->dobj.name));
 			appendPQExpBuffer(delq, "%s ",
 							  fmtId(tyinfo->dobj.name));
 			appendPQExpBuffer(delq, "DROP CONSTRAINT IF EXISTS %s;\n",
 							  fmtId(coninfo->dobj.name));
+			ALTERIFEXISTS_END;
 
 			ArchiveEntry(fout, coninfo->dobj.catId, coninfo->dobj.dumpId,
 						 coninfo->dobj.name,
@@ -11349,6 +11394,9 @@ dumpConstraint(Archive *fout, ConstraintInfo *coninfo)
 	/* Dump Constraint Comments --- only works for table constraints */
 	if (tbinfo && coninfo->separate)
 		dumpTableConstraintComment(fout, coninfo);
+
+#undef ALTERIFEXISTSTABLE_START
+#undef ALTERIFEXISTS_END
 
 	destroyPQExpBuffer(q);
 	destroyPQExpBuffer(delq);
