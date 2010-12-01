@@ -323,6 +323,19 @@ RestoreArchive(Archive *AHX, RestoreOptions *ropt)
 			ahprintf(AH, "BEGIN;\n\n");
 	}
 
+	/* Heroku preamble patch */
+	{
+		const char *preamble_text = getenv("HEROKU_PG_RESTORE_PREAMBLE");
+
+		if (preamble_text != NULL)
+		{
+			if (AH->connection)
+				EmitHerokuPreamble(AH, preamble_text);
+			else
+				ahprintf(AH, "%s\n\n", preamble_text);
+		}
+	}
+
 	/*
 	 * Establish important parameter values right away.
 	 */

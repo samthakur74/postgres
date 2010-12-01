@@ -703,6 +703,13 @@ CommitTransaction(ArchiveHandle *AH)
 }
 
 void
+EmitHerokuPreamble(ArchiveHandle *AH, const char* preamble_text)
+{
+	ExecuteSqlCommand(AH, preamble_text,
+					  "could not successfully run Heroku preamble");
+}
+
+void
 DropBlobIfExists(ArchiveHandle *AH, Oid oid)
 {
 	/*

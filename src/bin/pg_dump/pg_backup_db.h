@@ -15,4 +15,6 @@ extern int	ExecuteSqlCommandBuf(ArchiveHandle *AH, void *qry, size_t bufLen);
 extern void StartTransaction(ArchiveHandle *AH);
 extern void CommitTransaction(ArchiveHandle *AH);
 
+extern void EmitHerokuPreamble(ArchiveHandle *AH, const char* preamble_text);
+
 #endif
