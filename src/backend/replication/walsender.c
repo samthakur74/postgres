@@ -65,7 +65,7 @@
 WalSndCtlData *WalSndCtl = NULL;
 
 /* My slot in the shared memory array */
-static WalSnd *MyWalSnd = NULL;
+WalSnd *MyWalSnd = NULL;
 
 /* Global state */
 bool		am_walsender = false;		/* Am I a walsender process ? */
@@ -73,6 +73,7 @@ bool		am_walsender = false;		/* Am I a walsender process ? */
 /* User-settable parameters for walsender */
 int			max_wal_senders = 0;	/* the maximum number of concurrent walsenders */
 int			WalSndDelay = 200;	/* max sleep time between some actions */
+bool 		allow_standalone_primary = true; /* action if no sync standby active */
 
 /*
  * These variables are used similarly to openLogFile/Id/Seg/Off,
@@ -88,6 +89,8 @@ static uint32 sendOff = 0;
  * MyWalSnd->sentPtr.  (Actually, this is the next WAL location to send.)
  */
 static XLogRecPtr sentPtr = {0, 0};
+
+static 	TimestampTz	last_reply_timestamp;
 
 /* Flags set by signal handlers for later service in main loop */
 static volatile sig_atomic_t got_SIGHUP = false;
@@ -112,7 +115,6 @@ static void IdentifySystem(void);
 static void StartReplication(StartReplicationCmd * cmd);
 static void ProcessStandbyReplyMessage(void);
 static void ProcessRepliesIfAny(void);
-
 
 /* Main entry point for walsender process */
 int
@@ -150,6 +152,8 @@ WalSenderMain(void)
 	/* Unblock signals (they were blocked when the postmaster forked us) */
 	PG_SETMASK(&UnBlockSig);
 
+	elog(DEBUG2, "WALsender starting");
+
 	/* Tell the standby that walsender is ready for receiving commands */
 	ReadyForQuery(DestRemote);
 
@@ -165,6 +169,8 @@ WalSenderMain(void)
 		walsnd->sentPtr = sentPtr;
 		SpinLockRelease(&walsnd->mutex);
 	}
+
+	elog(DEBUG2, "WALsender handshake complete");
 
 	/* Main loop of walsender */
 	return WalSndLoop();
@@ -250,6 +256,11 @@ WalSndHandshake(void)
 						 errmsg("invalid standby handshake message type %d", firstchar)));
 		}
 	}
+
+	/*
+     * Initialize our timeout checking mechanism.
+     */
+	last_reply_timestamp = GetCurrentTimestamp();
 }
 
 /*
@@ -417,9 +428,11 @@ HandleReplicationCommand(const char *cmd_string)
 
 			/* break out of the loop */
 			replication_started = true;
+			WalSndSetState(WALSNDSTATE_CATCHUP);
 			break;
 
 		case T_BaseBackupCmd:
+			WalSndSetState(WALSNDSTATE_BACKUP);
 			SendBaseBackup((BaseBackupCmd *) cmd_node);
 
 			/* Send CommandComplete and ReadyForQuery messages */
@@ -524,10 +537,11 @@ ProcessStandbyReplyMessage(void)
 
 	pq_copymsgbytes(&input_message, (char *) &reply, sizeof(StandbyReplyMessage));
 
-	elog(DEBUG2, "write %X/%X flush %X/%X apply %X/%X ",
+	elog(DEBUG2, "write %X/%X flush %X/%X apply %X/%X xmin %d",
 		 reply.write.xlogid, reply.write.xrecoff,
 		 reply.flush.xlogid, reply.flush.xrecoff,
-		 reply.apply.xlogid, reply.apply.xrecoff);
+		 reply.apply.xlogid, reply.apply.xrecoff,
+		 reply.xmin);
 
 	/*
 	 * Update shared state for this WalSender process
@@ -541,8 +555,16 @@ ProcessStandbyReplyMessage(void)
 		walsnd->write = reply.write;
 		walsnd->flush = reply.flush;
 		walsnd->apply = reply.apply;
+		if (TransactionIdIsValid(reply.xmin) &&
+			TransactionIdPrecedes(MyProc->xmin, reply.xmin))
+			MyProc->xmin = reply.xmin;
 		SpinLockRelease(&walsnd->mutex);
 	}
+
+	/*
+	 * Release any backends waiting to commit.
+	 */
+	SyncRepReleaseWaiters(false);
 }
 
 /* Main loop of walsender process */
@@ -592,7 +614,11 @@ WalSndLoop(void)
 		/* Normal exit from the walsender is here */
 		if (walsender_shutdown_requested)
 		{
-			/* Inform the standby that XLOG streaming was done */
+			ProcessRepliesIfAny();
+
+			/* Inform the standby that XLOG streaming was done
+			 * by sending CommandComplete message.
+			 */
 			pq_puttextmessage('C', "COPY 0");
 			pq_flush();
 
@@ -600,11 +626,30 @@ WalSndLoop(void)
 		}
 
 		/*
-		 * If we had sent all accumulated WAL in last round, nap for the
-		 * configured time before retrying.
+		 * If we had sent all accumulated WAL in last round, then we don't
+		 * have much to do. We still expect a steady stream of replies from
+		 * standby. It is important to note that we don't keep track of
+		 * whether or not there are backends waiting here, since that
+		 * is potentially very complex state information.
+		 *
+		 * Also note that there is no delay between sending data and
+		 * checking for the replies. We expect replies to take some time
+		 * and we are more concerned with overall throughput than absolute
+		 * response time to any single request.
 		 */
 		if (caughtup)
 		{
+			/*
+			 * If we were still catching up, change state to streaming.
+			 * While in the initial catchup phase, clients waiting for
+			 * a response from the standby would wait for a very long
+			 * time, so we need to have a one-way state transition to avoid
+			 * problems. No need to grab a lock for the check; we are the
+			 * only one to ever change the state.
+			 */
+			if (MyWalSnd->state < WALSNDSTATE_STREAMING)
+				WalSndSetState(WALSNDSTATE_STREAMING);
+
 			/*
 			 * Even if we wrote all the WAL that was available when we started
 			 * sending, more might have arrived while we were sending this
@@ -618,6 +663,13 @@ WalSndLoop(void)
 				break;
 			if (caughtup && !got_SIGHUP && !walsender_ready_to_stop && !walsender_shutdown_requested)
 			{
+				long timeout;
+				
+				if (sync_rep_timeout_server == -1)
+					timeout = -1L;
+				else
+					timeout = 1000000L * sync_rep_timeout_server;
+
 				/*
 				 * XXX: We don't really need the periodic wakeups anymore,
 				 * WaitLatchOrSocket should reliably wake up as soon as
@@ -625,8 +677,14 @@ WalSndLoop(void)
 				 */
 
 				/* Sleep */
-				WaitLatchOrSocket(&MyWalSnd->latch, MyProcPort->sock,
-								  WalSndDelay * 1000L);
+				if (WaitLatchOrSocket(&MyWalSnd->latch, MyProcPort->sock,
+								  		timeout) == 0)
+				{
+					ereport(LOG,
+							(errmsg("streaming replication timeout after %d s", 
+										sync_rep_timeout_server)));
+					break;
+				}
 			}
 		}
 		else
@@ -642,7 +700,7 @@ WalSndLoop(void)
 	}
 
 	/*
-	 * Get here on send failure.  Clean up and exit.
+	 * Get here on send failure or timeout.  Clean up and exit.
 	 *
 	 * Reset whereToSendOutput to prevent ereport from attempting to send any
 	 * more messages to the standby.
@@ -873,9 +931,9 @@ XLogSend(char *msgbuf, bool *caughtup)
 	 * Attempt to send all data that's already been written out and fsync'd to
 	 * disk.  We cannot go further than what's been written out given the
 	 * current implementation of XLogRead().  And in any case it's unsafe to
-	 * send WAL that is not securely down to disk on the master: if the master
+	 * send WAL that is not securely down to disk on the primary: if the primary
 	 * subsequently crashes and restarts, slaves must not have applied any WAL
-	 * that gets lost on the master.
+	 * that gets lost on the primary.
 	 */
 	SendRqstPtr = GetFlushRecPtr();
 
@@ -952,6 +1010,9 @@ XLogSend(char *msgbuf, bool *caughtup)
 	msghdr.dataStart = startptr;
 	msghdr.walEnd = SendRqstPtr;
 	msghdr.sendTime = GetCurrentTimestamp();
+
+	elog(DEBUG2, "sent = %X/%X ",
+				 startptr.xlogid, startptr.xrecoff);
 
 	memcpy(msgbuf + 1, &msghdr, sizeof(WalDataMessageHeader));
 
@@ -1110,6 +1171,16 @@ WalSndShmemInit(void)
 			SpinLockInit(&walsnd->mutex);
 			InitSharedLatch(&walsnd->latch);
 		}
+
+		/*
+		 * Initialise the spinlocks on each sync rep queue
+		 */
+		for (i = 0; i < NUM_SYNC_REP_WAIT_MODES; i++)
+		{
+			SyncRepQueue	*queue = &WalSndCtl->sync_rep_queue[i];
+
+			SpinLockInit(&queue->qlock);
+		}
 	}
 }
 
@@ -1169,7 +1240,7 @@ WalSndGetStateString(WalSndState state)
 Datum
 pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 {
-#define PG_STAT_GET_WAL_SENDERS_COLS 	6
+#define PG_STAT_GET_WAL_SENDERS_COLS 	7
 	ReturnSetInfo	   *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
 	TupleDesc			tupdesc;
 	Tuplestorestate	   *tupstore;
@@ -1212,6 +1283,7 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 		XLogRecPtr	flush;
 		XLogRecPtr	apply;
 		WalSndState	state;
+		bool		sync_rep_service;
 		Datum		values[PG_STAT_GET_WAL_SENDERS_COLS];
 		bool		nulls[PG_STAT_GET_WAL_SENDERS_COLS];
 
@@ -1224,6 +1296,7 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 		write = walsnd->write;
 		flush = walsnd->flush;
 		apply = walsnd->apply;
+		sync_rep_service = walsnd->sync_rep_service;
 		SpinLockRelease(&walsnd->mutex);
 
 		memset(nulls, 0, sizeof(nulls));
@@ -1240,32 +1313,34 @@ pg_stat_get_wal_senders(PG_FUNCTION_ARGS)
 			nulls[3] = true;
 			nulls[4] = true;
 			nulls[5] = true;
+			nulls[6] = true;
 		}
 		else
 		{
 			values[1] = CStringGetTextDatum(WalSndGetStateString(state));
+			values[2] = BoolGetDatum(sync_rep_service);
 
 			snprintf(location, sizeof(location), "%X/%X",
 					 sentPtr.xlogid, sentPtr.xrecoff);
-			values[2] = CStringGetTextDatum(location);
+			values[3] = CStringGetTextDatum(location);
 
 			if (write.xlogid == 0 && write.xrecoff == 0)
 				nulls[3] = true;
 			snprintf(location, sizeof(location), "%X/%X",
 					 write.xlogid, write.xrecoff);
-			values[3] = CStringGetTextDatum(location);
+			values[4] = CStringGetTextDatum(location);
 
 			if (flush.xlogid == 0 && flush.xrecoff == 0)
 				nulls[4] = true;
 			snprintf(location, sizeof(location), "%X/%X",
 					flush.xlogid, flush.xrecoff);
-			values[4] = CStringGetTextDatum(location);
+			values[5] = CStringGetTextDatum(location);
 
 			if (apply.xlogid == 0 && apply.xrecoff == 0)
 				nulls[5] = true;
 			snprintf(location, sizeof(location), "%X/%X",
 					 apply.xlogid, apply.xrecoff);
-			values[5] = CStringGetTextDatum(location);
+			values[6] = CStringGetTextDatum(location);
 		}
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);

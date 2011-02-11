@@ -2029,8 +2029,122 @@ SET ENABLE_SEQSCAN TO OFF;
         This parameter can only be set in the <filename>postgresql.conf</>
         file or on the server command line.
        </para>
+       <para>
+        You should also consider setting <varname>hot_standby_feedback</>
+        as an alternative to using this parameter.
+       </para>
       </listitem>
      </varlistentry>
+     </variablelist>
+    </sect2>
+
+    <sect2 id="runtime-config-sync-rep">
+     <title>Synchronous Replication</title>
+
+     <para>
+      These settings control the behavior of the built-in
+      <firstterm>synchronous replication</> feature.
+      These parameters would be set on the primary server that is
+      to send replication data to one or more standby servers.
+     </para>
+
+     <variablelist>
+     <varlistentry id="guc-synchronous-replication" xreflabel="synchronous_replication">
+      <term><varname>synchronous_replication</varname> (<type>boolean</type>)</term>
+      <indexterm>
+       <primary><varname>synchronous_replication</> configuration parameter</primary>
+      </indexterm>
+      <listitem>
+       <para>
+        Specifies whether transaction commit will wait for WAL records
+        to be replicated before the command returns a <quote>success</>
+        indication to the client.  The default setting is <literal>off</>.
+        When <literal>on</>, there will be a delay while the client waits
+        for confirmation of successful replication. That delay will
+        increase depending upon the physical distance and network activity
+        between primary and standby. The commit wait will last until the
+        first reply from any standby. Multiple standby servers allow
+        increased availability and possibly increase performance as well.
+       </para>
+       <para>
+        The parameter must be set on both primary and standby.
+       </para>
+       <para>
+		On the primary, this parameter can be changed at any time; the
+		behavior for any one transaction is determined by the setting in
+		effect when it commits.  It is therefore possible, and useful, to have
+		some transactions replicate synchronously and others asynchronously.
+        For example, to make a single multistatement transaction commit
+        asynchronously when the default is synchronous replication, issue
+        <command>SET LOCAL synchronous_replication TO OFF</> within the
+        transaction.
+       </para>
+       <para>
+        On the standby, the parameter value is taken only at server start.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-allow-standalone-primary" xreflabel="allow_standalone_primary">
+      <term><varname>allow_standalone_primary</varname> (<type>boolean</type>)</term>
+      <indexterm>
+       <primary><varname>allow_standalone_primary</> configuration parameter</primary>
+      </indexterm>
+      <listitem>
+       <para>
+        If <varname>allow_standalone_primary</> is set, then the server
+        can operate normally whether or not replication is active. If
+        a client requests <varname>synchronous_replication</> and it is
+        not available, they will use asynchornous replication instead.
+       </para>
+       <para>
+        If <varname>allow_standalone_primary</> is not set, then the server
+        will prevent normal client connections until a standby connects that
+        has <varname>synchronous_replication_feedback</> enabled. Once
+        clients connect, if they request <varname>synchronous_replication</>
+        and it is no longer available they will wait for
+        <varname>replication_timeout_client</>.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-replication-timeout-client" xreflabel="replication_timeout_client">
+      <term><varname>replication_timeout_client</varname> (<type>integer</type>)</term>
+      <indexterm>
+       <primary><varname>replication_timeout_client</> configuration parameter</primary>
+      </indexterm>
+      <listitem>
+       <para>
+        If the client has <varname>synchronous_replication</varname> set,
+        and a synchronous standby is currently available
+        then the commit will wait for up to <varname>replication_timeout_client</>
+        seconds before it returns a <quote>success</>. The commit will wait
+        forever for a confirmation when <varname>replication_timeout_client</>
+        is set to -1.
+       </para>
+       <para>
+        If the client has <varname>synchronous_replication</varname> set,
+		and yet no synchronous standby is available when we commit, then the
+		setting of <varname>allow_standalone_primary</> determines whether
+		or not we wait.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-replication-timeout-server" xreflabel="replication_timeout_server">
+      <term><varname>replication_timeout_server</varname> (<type>integer</type>)</term>
+      <indexterm>
+       <primary><varname>replication_timeout_server</> configuration parameter</primary>
+      </indexterm>
+      <listitem>
+       <para>
+        If the primary server does not receive a reply from a standby server
+        within <varname>replication_timeout_server</> seconds then the
+        primary will terminate the replication connection.
+       </para>
+      </listitem>
+     </varlistentry>
+
      </variablelist>
     </sect2>
 
@@ -2117,6 +2231,42 @@ SET ENABLE_SEQSCAN TO OFF;
         resulted in significant delay, subsequent conflicting queries will
         have much less grace time until the standby server has caught up
         again.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-hot-standby-feedback" xreflabel="hot_standby">
+      <term><varname>hot_standby_feedback</varname> (<type>boolean</type>)</term>
+      <indexterm>
+       <primary><varname>hot_standby_feedback</> configuration parameter</primary>
+      </indexterm>
+      <listitem>
+       <para>
+        Specifies whether or not a hot standby will send feedback to the primary
+        about queries currently executing on the standby. This parameter can
+        be used to eliminate query cancels caused by cleanup records, though
+        it can cause database bloat on the primary for some workloads.
+        The default value is <literal>off</literal>.
+        This parameter can only be set at server start. It only has effect
+        if <varname>hot_standby</> is enabled.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-synchronous-replication-feedback" xreflabel="synchronous_replication_feedback">
+      <term><varname>synchronous_replication_feedback</varname> (<type>boolean</type>)</term>
+      <indexterm>
+       <primary><varname>synchronous_replication_feedback</> configuration parameter</primary>
+      </indexterm>
+      <listitem>
+       <para>
+        Specifies whether the standby will provide reply messages to
+        allow synchronous replication on the primary.
+        Reasons for doing this might be that the standby is physically
+        co-located with the primary and so would be a bad choice as a
+        future primary server, or the standby might be a test server.
+        The default value is <literal>on</literal>.
+        This parameter can only be set at server start.
        </para>
       </listitem>
      </varlistentry>

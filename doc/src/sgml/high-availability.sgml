@@ -738,13 +738,12 @@ archive_cleanup_command = 'pg_archivecleanup /path/to/archive %r'
    </para>
 
    <para>
-    Streaming replication is asynchronous, so there is still a small delay
+    There is a small replication delay
     between committing a transaction in the primary and for the changes to
     become visible in the standby. The delay is however much smaller than with
     file-based log shipping, typically under one second assuming the standby
     is powerful enough to keep up with the load. With streaming replication,
-    <varname>archive_timeout</> is not required to reduce the data loss
-    window.
+    <varname>archive_timeout</> is not required.
    </para>
 
    <para>
@@ -878,6 +877,236 @@ primary_conninfo = 'host=192.168.1.50 port=5432 user=foo password=foopass'
     </para>
    </sect3>
 
+  </sect2>
+  <sect2 id="synchronous-replication">
+   <title>Synchronous Replication</title>
+
+   <indexterm zone="high-availability">
+    <primary>Synchronous Replication</primary>
+   </indexterm>
+
+   <para>
+    <productname>PostgreSQL</> streaming replication is asynchronous by
+    default. If the primary server
+    crashes then some transactions that were committed may not have been
+    replicated to the standby server, causing data loss. The amount
+    of data loss is proportional to the replication delay at the time of
+    failover. That could be zero, or more, we do not know for certain
+    either way, when using asynchronous replication.
+   </para>
+
+   <para>
+	Synchronous replication offers the ability to confirm that all changes
+	made by a transaction have been transferred to at least one remote
+	standby server. This extends the standard level of durability
+	offered by a transaction commit. This level of protection is referred
+	to as 2-safe replication in computer science theory.
+   </para>
+
+   <para>
+	Synchronous replication works in the following way. When requested,
+	the commit of a write transaction will wait until confirmation is
+	received that the commit has been written to the transaction log on disk
+	of both the primary and standby server. The only possibility that data
+	can be lost is if both the primary and the standby suffer crashes at the
+	same time. This can provide a much higher level of durability if the
+	sysadmin is cautious about the placement and management of the two servers.
+	Waiting for confirmation increases the user's confidence that the changes
+	will not be lost in the event of server crashes but it also necessarily
+	increases the response time for the requesting transaction. The minimum
+	wait time is the roundtrip time between primary to standby.
+   </para>
+
+   <para>
+	Read only transactions and transaction rollbacks need not wait for
+	replies from standby servers. Subtransaction commits do not wait for
+	responses from standby servers, only final top-level commits. Long
+	running actions such as data loading or index building do not wait
+	until the very final commit message.
+   </para>
+
+   <sect3 id="synchronous-replication-config">
+    <title>Basic Configuration</title>
+
+   <para>
+	Synchronous replication will be active if appropriate options are
+	enabled on both the primary and at least one standby server. If
+	options are not correctly set on both servers, the primary will use
+	use asynchronous replication by default.
+   </para>
+
+   <para>
+	On the primary server we need to set
+
+<programlisting>
+synchronous_replication = on
+</programlisting>
+
+	and on the standby server we need to set
+
+<programlisting>
+synchronous_replication_feedback = on
+</programlisting>
+
+	On the primary, <varname>synchronous_replication</> can be set
+	for particular users or databases, or dynamically by applications
+	programs. On the standby, <varname>synchronous_replication_feedback</>
+	can only be set at server start.
+   </para>
+
+   <para>
+	If more than one standby server
+	specifies <varname>synchronous_replication_feedback</>, then whichever
+	standby replies first will release waiting commits.
+	Turning this setting off for a standby allows the administrator to
+	exclude certain standby servers from releasing waiting transactions.
+	This is useful if not all standby servers are designated as potential
+	future primary servers, such as if a standby were co-located
+	with the primary, so that a disaster would cause both servers to be lost.
+   </para>
+
+   </sect3>
+
+   <sect3 id="synchronous-replication-performance">
+    <title>Planning for Performance</title>
+
+   <para>
+	Synchronous replication usually requires carefully planned and placed
+	standby servers to ensure applications perform acceptably. Waiting
+	doesn't utilise system resources, but transaction locks continue to be
+	held until the transfer is confirmed. As a result, incautious use of
+	synchronous replication will reduce performance for database
+	applications because of increased response times and higher contention.
+   </para>
+
+   <para>
+	<productname>PostgreSQL</> allows the application developer
+	to specify the durability level required via replication. This can be
+	specified for the system overall, though it can also be specified for
+	specific users or connections, or even individual transactions.
+   </para>
+
+   <para>
+	For example, an application workload might consist of:
+	10% of changes are important customer details, while
+	90% of changes are less important data that the business can more
+	easily survive if it is lost, such as chat messages between users.
+   </para>
+
+   <para>
+	With synchronous replication options specified at the application level
+	(on the primary) we can offer sync rep for the most important changes,
+	without slowing down the bulk of the total workload. Application level
+	options are an important and practical tool for allowing the benefits of
+	synchronous replication for high performance applications.
+   </para>
+
+   <para>
+	You should consider that the network bandwidth must be higher than
+	the rate of generation of WAL data.
+	10% of changes are important customer details, while
+	90% of changes are less important data that the business can more
+	easily survive if it is lost, such as chat messages between users.
+   </para>
+
+   </sect3>
+
+   <sect3 id="synchronous-replication-ha">
+    <title>Planning for High Availability</title>
+
+   <para>
+	The easiest and safest method of gaining High Availability using
+	synchronous replication is to configure at least two standby servers.
+	To understand why, we need to examine what can happen when you lose all
+	standby servers.
+   </para>
+
+   <para>
+	Commits made when synchronous_replication is set will wait until at
+	least one standby responds. The response may never occur if the last,
+	or only, standby should crash or the network drops. What should we do in
+	that situation?
+   </para>
+
+   <para>
+	Sitting and waiting will typically cause operational problems
+	because it is an effective outage of the primary server should all
+	sessions end up waiting. In contrast, allowing the primary server to
+	continue processing write transactions in the absence of a standby
+	puts those latest data changes at risk. So in this situation there
+	is a direct choice between database availability and the potential
+	durability of the data it contains. How we handle this situation
+	is controlled by <varname>allow_standalone_primary</>. The default
+	setting is <literal>on</>, allowing processing to continue, though
+	there is no recommended setting. Choosing the best setting for
+	<varname>allow_standalone_primary</> is a difficult decision and best
+	left to those with combined business responsibility for both data and
+	applications. The difficulty of this choice is the reason why we
+	recommend that you reduce the possibility of this situation occurring
+	by using multiple standby servers.
+   </para>
+
+   <para>
+	A user will stop waiting once the <varname>replication_timeout_client</>
+	has been reached for their specific session. Users are not waiting for
+	a specific standby to reply, they are waiting for a reply from any
+	standby, so the unavailability of any one standby is not significant
+	to a user. It is possible for user sessions to hit timeout even though
+	standbys are communicating normally. In that case, the setting of
+	<varname>replication_timeout</> is probably too low.
+   </para>
+
+   <para>
+    The standby sends regular status messages to the primary. If no status
+    messages have been received for <varname>replication_timeout_server</>
+    the primary server will assume the connection is dead and terminate it.
+   </para>
+
+   <para>
+	When the primary is started with <varname>allow_standalone_primary</>
+	enabled, the primary will not allow connections until a standby connects
+	that also has <varname>synchronous_replication</> enabled. This is a
+	convenience to ensure that we don't allow connections before write
+	transactions will return successfully.
+   </para>
+
+   <para>
+	When a standby first attaches to the primary, it may not be properly
+	synchronized. The standby is only able to become a synchronous standby
+	once it has become synchronized, or "caught up" with the the primary.
+	The catch-up duration may be long immediately after the standby has
+	been created. If the standby is shutdown, then the catch-up period
+	will increase according to the length of time the standby has been
+	down. You are advised to make sure <varname>allow_standalone_primary</>
+	is not set during the initial catch-up period.
+   </para>
+
+   <para>
+	If primary crashes while commits are waiting for acknowledgement, those
+	transactions will be marked fully committed if the primary database
+	recovers, no matter how <varname>allow_standalone_primary</> is set.
+	There is no way to be certain that all standbys have received all
+	outstanding WAL data at time of the crash of the primary. Some
+	transactions may not show as committed on the standby, even though
+	they show as committed on the primary. The guarantee we offer is that
+	the application will not receive explicit acknowledgement of the
+	successful commit of a transaction until the WAL data is known to be
+	safely received by the standby. Hence this mechanism is technically
+	"semi synchronous" rather than "fully synchronous" replication. Note
+	that replication still not be fully synchronous even if we wait for
+	all standby servers, though this would reduce availability, as
+	described previously.
+   </para>
+
+   <para>
+	If you need to re-create a standby server while transactions are
+	waiting, make sure that the commands to run pg_start_backup() and
+	pg_stop_backup() are run in a session with
+	synchronous_replication = off, otherwise those requests will wait
+	forever for the standby to appear.
+   </para>
+
+   </sect3>
   </sect2>
   </sect1>
 
@@ -1393,9 +1622,16 @@ if (!triggered)
     These conflicts are <emphasis>hard conflicts</> in the sense that queries
     might need to be cancelled and, in some cases, sessions disconnected to resolve them.
     The user is provided with several ways to handle these
-    conflicts. Conflict cases include:
+    conflicts. Conflict cases in order of likely frequency are:
 
       <itemizedlist>
+       <listitem>
+        <para>
+         Application of a vacuum cleanup record from WAL conflicts with
+         standby transactions whose snapshots can still <quote>see</> any of
+         the rows to be removed.
+        </para>
+       </listitem>
        <listitem>
         <para>
          Access Exclusive locks taken on the primary server, including both
@@ -1417,14 +1653,8 @@ if (!triggered)
        </listitem>
        <listitem>
         <para>
-         Application of a vacuum cleanup record from WAL conflicts with
-         standby transactions whose snapshots can still <quote>see</> any of
-         the rows to be removed.
-        </para>
-       </listitem>
-       <listitem>
-        <para>
-         Application of a vacuum cleanup record from WAL conflicts with
+		 Buffer pin deadlock caused by
+         application of a vacuum cleanup record from WAL conflicts with
          queries accessing the target page on the standby, whether or not
          the data to be removed is visible.
         </para>
@@ -1539,17 +1769,16 @@ if (!triggered)
 
    <para>
     Remedial possibilities exist if the number of standby-query cancellations
-    is found to be unacceptable.  The first option is to connect to the
-    primary server and keep a query active for as long as needed to
-    run queries on the standby. This prevents <command>VACUUM</> from removing
-    recently-dead rows and so cleanup conflicts do not occur.
-    This could be done using <xref linkend="dblink"> and
-    <function>pg_sleep()</>, or via other mechanisms. If you do this, you
+    is found to be unacceptable.  Typically the best option is to enable
+    <varname>hot_standby_feedback</>. This prevents <command>VACUUM</> from
+    removing recently-dead rows and so cleanup conflicts do not occur.
+    If you do this, you
     should note that this will delay cleanup of dead rows on the primary,
     which may result in undesirable table bloat. However, the cleanup
     situation will be no worse than if the standby queries were running
-    directly on the primary server, and you are still getting the benefit of
-    off-loading execution onto the standby.
+    directly on the primary server. You are still getting the benefit
+    of off-loading execution onto the standby and the query may complete
+    faster than it would have done on the primary server.
     <varname>max_standby_archive_delay</> must be kept large in this case,
     because delayed WAL files might already contain entries that conflict with
     the desired standby queries.
@@ -1563,7 +1792,8 @@ if (!triggered)
     a high <varname>max_standby_streaming_delay</>.  However it is
     difficult to guarantee any specific execution-time window with this
     approach, since <varname>vacuum_defer_cleanup_age</> is measured in
-    transactions executed on the primary server.
+    transactions executed on the primary server. As of version 9.1, this
+    second option is much less likely to valuable.
    </para>
 
    <para>

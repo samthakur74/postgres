@@ -275,6 +275,7 @@ typedef enum
 	PM_STARTUP,					/* waiting for startup subprocess */
 	PM_RECOVERY,				/* in archive recovery mode */
 	PM_HOT_STANDBY,				/* in hot standby mode */
+	PM_WAIT_FOR_REPLICATION,	/* waiting for sync replication to become active */
 	PM_RUN,						/* normal "database is alive" state */
 	PM_WAIT_BACKUP,				/* waiting for online backup mode to end */
 	PM_WAIT_READONLY,			/* waiting for read only backends to exit */
@@ -735,6 +736,9 @@ PostmasterMain(int argc, char *argv[])
 	if (max_wal_senders > 0 && wal_level == WAL_LEVEL_MINIMAL)
 		ereport(ERROR,
 				(errmsg("WAL streaming (max_wal_senders > 0) requires wal_level \"archive\" or \"hot_standby\"")));
+	if (!allow_standalone_primary && max_wal_senders == 0)
+		ereport(ERROR,
+				(errmsg("WAL streaming (max_wal_senders > 0) is required if allow_standalone_primary = off")));
 
 	/*
 	 * Other one-time internal sanity checks can go here, if they are fast.
@@ -1845,6 +1849,12 @@ retry1:
 					(errcode(ERRCODE_CANNOT_CONNECT_NOW),
 					 errmsg("the database system is in recovery mode")));
 			break;
+		case CAC_REPLICATION_ONLY:
+			if (!am_walsender)
+				ereport(FATAL,
+					(errcode(ERRCODE_CANNOT_CONNECT_NOW),
+					 errmsg("the database system is waiting for replication to start")));
+			break;
 		case CAC_TOOMANY:
 			ereport(FATAL,
 					(errcode(ERRCODE_TOO_MANY_CONNECTIONS),
@@ -1942,7 +1952,9 @@ canAcceptConnections(void)
 	 */
 	if (pmState != PM_RUN)
 	{
-		if (pmState == PM_WAIT_BACKUP)
+		if (pmState == PM_WAIT_FOR_REPLICATION)
+			result = CAC_REPLICATION_ONLY;	/* allow replication only */
+		else if (pmState == PM_WAIT_BACKUP)
 			result = CAC_WAITBACKUP;	/* allow superusers only */
 		else if (Shutdown > NoShutdown)
 			return CAC_SHUTDOWN;	/* shutdown is pending */
@@ -2396,8 +2408,13 @@ reaper(SIGNAL_ARGS)
 			 * Startup succeeded, commence normal operations
 			 */
 			FatalError = false;
-			ReachedNormalRunning = true;
-			pmState = PM_RUN;
+			if (allow_standalone_primary)
+			{
+				ReachedNormalRunning = true;
+				pmState = PM_RUN;
+			}
+			else
+				pmState = PM_WAIT_FOR_REPLICATION;
 
 			/*
 			 * Crank up the background writer, if we didn't do that already
@@ -3233,8 +3250,8 @@ BackendStartup(Port *port)
 	/* Pass down canAcceptConnections state */
 	port->canAcceptConnections = canAcceptConnections();
 	bn->dead_end = (port->canAcceptConnections != CAC_OK &&
-					port->canAcceptConnections != CAC_WAITBACKUP);
-
+					port->canAcceptConnections != CAC_WAITBACKUP &&
+					port->canAcceptConnections != CAC_REPLICATION_ONLY);
 	/*
 	 * Unless it's a dead_end child, assign it a child slot number
 	 */
@@ -4284,6 +4301,16 @@ sigusr1_handler(SIGNAL_ARGS)
 		WalReceiverPID = StartWalReceiver();
 	}
 
+	if (CheckPostmasterSignal(PMSIGNAL_SYNC_REPLICATION_ACTIVE) &&
+		pmState == PM_WAIT_FOR_REPLICATION)
+	{
+		/* Allow connections now that a synchronous replication standby
+		 * has successfully connected and is active.
+		 */
+		ReachedNormalRunning = true;
+		pmState = PM_RUN;
+	}
+
 	PG_SETMASK(&UnBlockSig);
 
 	errno = save_errno;
@@ -4534,6 +4561,7 @@ static void
 StartAutovacuumWorker(void)
 {
 	Backend    *bn;
+	CAC_state	cac = CAC_OK;
 
 	/*
 	 * If not in condition to run a process, don't try, but handle it like a
@@ -4542,7 +4570,8 @@ StartAutovacuumWorker(void)
 	 * we have to check to avoid race-condition problems during DB state
 	 * changes.
 	 */
-	if (canAcceptConnections() == CAC_OK)
+	cac = canAcceptConnections();
+	if (cac == CAC_OK || cac == CAC_REPLICATION_ONLY)
 	{
 		bn = (Backend *) malloc(sizeof(Backend));
 		if (bn)

@@ -509,6 +509,7 @@ CREATE VIEW pg_stat_replication AS
             S.client_port,
             S.backend_start,
             W.state,
+            W.sync,
             W.sent_location,
             W.write_location,
             W.flush_location,

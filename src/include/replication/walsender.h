@@ -15,6 +15,7 @@
 #include "access/xlog.h"
 #include "nodes/nodes.h"
 #include "storage/latch.h"
+#include "replication/syncrep.h"
 #include "storage/spin.h"
 
 
@@ -44,6 +45,17 @@ typedef struct WalSnd
 	XLogRecPtr	flush;
 	XLogRecPtr	apply;
 
+	/*
+	 * The current xmin from the standby, for Hot Standby feedback.
+	 * This may be invalid if the standby-side has not offered a value yet.
+	 */
+	TransactionId	xmin;
+
+	/*
+	 * Highest level of sync rep available from this standby.
+	 */
+	bool		sync_rep_service;
+
 	/* Protects shared variables shown above. */
 	slock_t		mutex;
 
@@ -54,9 +66,24 @@ typedef struct WalSnd
 	Latch		latch;
 } WalSnd;
 
+extern WalSnd *MyWalSnd;
+
 /* There is one WalSndCtl struct for the whole database cluster */
 typedef struct
 {
+	/*
+	 * Sync rep wait queues with one queue per request type.
+	 * We use one queue per request type so that we can maintain the
+	 * invariant that the individual queues are sorted on LSN.
+	 * This may also help performance when multiple wal senders
+	 * offer different sync rep service levels.
+	 */
+	SyncRepQueue	sync_rep_queue[NUM_SYNC_REP_WAIT_MODES];
+
+	bool		sync_rep_service_available;
+
+	slock_t		ctlmutex;		/* locks shared variables shown above */
+
 	WalSnd		walsnds[1];		/* VARIABLE LENGTH ARRAY */
 } WalSndCtlData;
 
@@ -70,6 +97,7 @@ extern volatile sig_atomic_t walsender_ready_to_stop;
 /* user-settable parameters */
 extern int	WalSndDelay;
 extern int	max_wal_senders;
+extern bool allow_standalone_primary;
 
 extern int	WalSenderMain(void);
 extern void WalSndSignals(void);

@@ -56,6 +56,7 @@
 #include "postmaster/syslogger.h"
 #include "postmaster/walwriter.h"
 #include "replication/walreceiver.h"
+#include "replication/syncrep.h"
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
 #include "storage/standby.h"
@@ -619,6 +620,15 @@ const char *const config_type_names[] =
 
 static struct config_bool ConfigureNamesBool[] =
 {
+	{
+		{"allow_standalone_primary", PGC_SIGHUP, WAL_SETTINGS,
+			gettext_noop("Refuse connections on startup and force users to wait forever if synchronous replication has failed."),
+			NULL
+		},
+		&allow_standalone_primary,
+		true, NULL, NULL
+	},
+
 	{
 		{"enable_seqscan", PGC_USERSET, QUERY_TUNING_METHOD,
 			gettext_noop("Enables the planner's use of sequential-scan plans."),
@@ -1279,6 +1289,33 @@ static struct config_bool ConfigureNamesBool[] =
 	},
 
 	{
+		{"synchronous_replication", PGC_USERSET, WAL_SETTINGS,
+			gettext_noop("Requests synchronous replication."),
+			NULL
+		},
+		&sync_rep_mode,
+		false, NULL, NULL
+	},
+
+	{
+		{"synchronous_replication_feedback", PGC_POSTMASTER, WAL_STANDBY_SERVERS,
+			gettext_noop("Allows feedback from a standby to primary for synchronous replication."),
+			NULL
+		},
+		&sync_rep_service,
+		true, NULL, NULL
+	},
+
+	{
+		{"hot_standby_feedback", PGC_POSTMASTER, WAL_STANDBY_SERVERS,
+			gettext_noop("Allows feedback from a hot standby to primary to avoid query conflicts."),
+			NULL
+		},
+		&hot_standby_feedback,
+		false, NULL, NULL
+	},
+
+	{
 		{"allow_system_table_mods", PGC_POSTMASTER, DEVELOPER_OPTIONS,
 			gettext_noop("Allows modifications of the structure of system tables."),
 			NULL,
@@ -1481,6 +1518,26 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&NBuffers,
 		1024, 16, INT_MAX / 2, NULL, NULL
+	},
+
+	{
+		{"replication_timeout_client", PGC_SIGHUP, WAL_SETTINGS,
+			gettext_noop("Clients waiting for confirmation will timeout after this duration."),
+			NULL,
+			GUC_UNIT_S
+		},
+		&sync_rep_timeout_client,
+		120, -1, INT_MAX, NULL, NULL
+	},
+
+	{
+		{"replication_timeout_server", PGC_SIGHUP, WAL_SETTINGS,
+			gettext_noop("Replication connection will timeout after this duration."),
+			NULL,
+			GUC_UNIT_S
+		},
+		&sync_rep_timeout_server,
+		30, -1, INT_MAX, NULL, NULL
 	},
 
 	{
