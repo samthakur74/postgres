@@ -2121,6 +2121,20 @@ SET ENABLE_SEQSCAN TO OFF;
       </listitem>
      </varlistentry>
 
+     <varlistentry id="guc-replication-timeout-server" xreflabel="replication_timeout_server">
+      <term><varname>replication_timeout_server</varname> (<type>integer</type>)</term>
+      <indexterm>
+       <primary><varname>replication_timeout_server</> configuration parameter</primary>
+      </indexterm>
+      <listitem>
+       <para>
+        If the primary server does not receive a reply from a standby server
+        within <varname>replication_timeout_server</> seconds then the
+        primary will terminate the replication connection.
+       </para>
+      </listitem>
+     </varlistentry>
+
      </variablelist>
     </sect2>
    </sect1>

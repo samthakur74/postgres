@@ -203,6 +203,7 @@
 					# when reading streaming WAL;
 					# -1 allows indefinite delay
 #wal_receiver_status_interval = 10s	# replies at least this often, 0 disables
+#replication_timeout_server = 120	# -1 means wait forever
 
 
 #------------------------------------------------------------------------------

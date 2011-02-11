@@ -73,6 +73,8 @@ bool		am_walsender = false;		/* Am I a walsender process ? */
 /* User-settable parameters for walsender */
 int			max_wal_senders = 0;	/* the maximum number of concurrent walsenders */
 int			WalSndDelay = 200;	/* max sleep time between some actions */
+int			replication_timeout_server; /* If the receiver takes too long, time
+										 * out and die after this duration */
 
 /*
  * These variables are used similarly to openLogFile/Id/Seg/Off,
@@ -88,6 +90,9 @@ static uint32 sendOff = 0;
  * MyWalSnd->sentPtr.  (Actually, this is the next WAL location to send.)
  */
 static XLogRecPtr sentPtr = {0, 0};
+
+/* Remembers the last time the standby has notified the primary of progress */
+static TimestampTz last_reply_timestamp;
 
 /* Flags set by signal handlers for later service in main loop */
 static volatile sig_atomic_t got_SIGHUP = false;
@@ -250,6 +255,11 @@ WalSndHandshake(void)
 						 errmsg("invalid standby handshake message type %d", firstchar)));
 		}
 	}
+
+	/*
+	 * Initialize our timeout checking mechanism.
+	 */
+	last_reply_timestamp = GetCurrentTimestamp();
 }
 
 /*
@@ -618,15 +628,22 @@ WalSndLoop(void)
 				break;
 			if (caughtup && !got_SIGHUP && !walsender_ready_to_stop && !walsender_shutdown_requested)
 			{
-				/*
-				 * XXX: We don't really need the periodic wakeups anymore,
-				 * WaitLatchOrSocket should reliably wake up as soon as
-				 * something interesting happens.
-				 */
+				long timeout;
+
+				if (replication_timeout_server == -1)
+					timeout = -1L;
+				else
+					timeout = 1000000L * replication_timeout_server;
 
 				/* Sleep */
-				WaitLatchOrSocket(&MyWalSnd->latch, MyProcPort->sock,
-								  WalSndDelay * 1000L);
+				if (WaitLatchOrSocket(&MyWalSnd->latch, MyProcPort->sock,
+									  timeout) == 0)
+				{
+					ereport(LOG,
+							(errmsg("streaming replication timeout after %d s",
+									replication_timeout_server)));
+					break;
+				}
 			}
 		}
 		else

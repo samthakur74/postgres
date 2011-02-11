@@ -68,8 +68,8 @@ extern volatile sig_atomic_t walsender_shutdown_requested;
 extern volatile sig_atomic_t walsender_ready_to_stop;
 
 /* user-settable parameters */
-extern int	WalSndDelay;
 extern int	max_wal_senders;
+extern int	replication_timeout_server;
 
 extern int	WalSenderMain(void);
 extern void WalSndSignals(void);

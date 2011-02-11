@@ -1484,6 +1484,16 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"replication_timeout_server", PGC_SIGHUP, WAL_SETTINGS,
+		 gettext_noop("Replication connection will timeout after this duration."),
+		 NULL,
+		 GUC_UNIT_S
+		},
+		&replication_timeout_server,
+		30, -1, INT_MAX, NULL, NULL
+	},
+
+	{
 		{"temp_buffers", PGC_USERSET, RESOURCES_MEM,
 			gettext_noop("Sets the maximum number of temporary buffers used by each session."),
 			NULL,
@@ -1825,16 +1835,6 @@ static struct config_int ConfigureNamesInt[] =
 		},
 		&max_wal_senders,
 		0, 0, MAX_BACKENDS, NULL, NULL
-	},
-
-	{
-		{"wal_sender_delay", PGC_SIGHUP, WAL_REPLICATION,
-			gettext_noop("WAL sender sleep time between WAL replications."),
-			NULL,
-			GUC_UNIT_MS
-		},
-		&WalSndDelay,
-		200, 1, 10000, NULL, NULL
 	},
 
 	{
