@@ -184,7 +184,15 @@
 #archive_timeout = 0		# force a logfile segment switch after this
 				# number of seconds; 0 disables
 
-# - Streaming Replication -
+# - Replication - User Settings
+
+#synchronous_replication = off         	# commit waits for reply from standby
+#replication_timeout_client = 120   	# -1 means wait forever
+
+# - Streaming Replication - Server Settings
+
+#allow_standalone_primary = on 		  	# sync rep parameter
+#replication_timeout_client = 30	   	# -1 means wait forever
 
 #max_wal_senders = 0		# max number of walsender processes
 				# (change requires restart)
@@ -196,6 +204,8 @@
 
 #hot_standby = off			# "on" allows queries during recovery
 					# (change requires restart)
+#hot_standby_feedback = off	# info from standby to prevent query conflicts
+#synchronous_replication_feedback = off  # allows sync replication
 #max_standby_archive_delay = 30s	# max delay before canceling queries
 					# when reading WAL from archive;
 					# -1 allows indefinite delay

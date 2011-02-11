@@ -64,6 +64,7 @@ WalRcvShmemInit(void)
 		MemSet(WalRcv, 0, WalRcvShmemSize());
 		WalRcv->walRcvState = WALRCV_STOPPED;
 		SpinLockInit(&WalRcv->mutex);
+		InitSharedLatch(&WalRcv->latch);
 	}
 }
 

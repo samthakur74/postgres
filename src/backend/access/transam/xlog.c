@@ -41,6 +41,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgwriter.h"
+#include "replication/syncrep.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
@@ -158,6 +159,11 @@ static XLogRecPtr LastRec;
  * known, need to check the shared state".
  */
 static bool LocalRecoveryInProgress = true;
+/*
+ * Local copy of SharedHotStandbyActive variable. False actually means "not
+ * known, need to check the shared state".
+ */
+static bool LocalHotStandbyActive = false;
 
 /*
  * Local state for XLogInsertAllowed():
@@ -404,6 +410,12 @@ typedef struct XLogCtlData
 	 * recovery.  Protected by info_lck.
 	 */
 	bool		SharedRecoveryInProgress;
+
+	/*
+	 * SharedHotStandbyActive indicates if we're still in crash or archive
+	 * recovery.  Protected by info_lck.
+	 */
+	bool		SharedHotStandbyActive;
 
 	/*
 	 * recoveryWakeupLatch is used to wake up the startup process to
@@ -4916,6 +4928,7 @@ XLOGShmemInit(void)
 	 */
 	XLogCtl->XLogCacheBlck = XLOGbuffers - 1;
 	XLogCtl->SharedRecoveryInProgress = true;
+	XLogCtl->SharedHotStandbyActive = false;
 	XLogCtl->Insert.currpage = (XLogPageHeader) (XLogCtl->pages);
 	SpinLockInit(&XLogCtl->info_lck);
 	InitSharedLatch(&XLogCtl->recoveryWakeupLatch);
@@ -5286,6 +5299,12 @@ readRecoveryCommandFile(void)
 					(errmsg("recovery command file \"%s\" specified neither primary_conninfo nor restore_command",
 							RECOVERY_COMMAND_FILE),
 					 errhint("The database server will regularly poll the pg_xlog subdirectory to check for files placed there.")));
+
+		if (PrimaryConnInfo == NULL && sync_rep_service)
+			ereport(WARNING,
+					(errmsg("recovery command file \"%s\" specified synchronous_replication_service yet streaming was not requested",
+							RECOVERY_COMMAND_FILE),
+					 errhint("Specify primary_conninfo to allow synchronous replication.")));
 	}
 	else
 	{
@@ -6786,8 +6805,6 @@ StartupXLOG(void)
 static void
 CheckRecoveryConsistency(void)
 {
-	static bool backendsAllowed = false;
-
 	/*
 	 * Have we passed our safe starting point?
 	 */
@@ -6807,11 +6824,19 @@ CheckRecoveryConsistency(void)
 	 * enabling connections.
 	 */
 	if (standbyState == STANDBY_SNAPSHOT_READY &&
-		!backendsAllowed &&
+		!LocalHotStandbyActive &&
 		reachedMinRecoveryPoint &&
 		IsUnderPostmaster)
 	{
-		backendsAllowed = true;
+		/* use volatile pointer to prevent code rearrangement */
+		volatile XLogCtlData *xlogctl = XLogCtl;
+
+		SpinLockAcquire(&xlogctl->info_lck);
+		xlogctl->SharedHotStandbyActive = true;
+		SpinLockRelease(&xlogctl->info_lck);
+
+		LocalHotStandbyActive = true;
+
 		SendPostmasterSignal(PMSIGNAL_BEGIN_HOT_STANDBY);
 	}
 }
@@ -6855,6 +6880,38 @@ RecoveryInProgress(void)
 			InitXLOGAccess();
 
 		return LocalRecoveryInProgress;
+	}
+}
+
+/*
+ * Is HotStandby active yet? This is only important in special backends
+ * since normal backends won't ever be able to connect until this returns
+ * true.
+ *
+ * Unlike testing standbyState, this works in any process that's connected to
+ * shared memory.
+ */
+bool
+HotStandbyActive(void)
+{
+	/*
+	 * We check shared state each time only until Hot Standby is active. We
+	 * can't de-activate Hot Standby, so there's no need to keep checking after
+	 * the shared variable has once been seen true.
+	 */
+	if (LocalHotStandbyActive)
+		return true;
+	else
+	{
+		/* use volatile pointer to prevent code rearrangement */
+		volatile XLogCtlData *xlogctl = XLogCtl;
+
+		/* spinlock is essential on machines with weak memory ordering! */
+		SpinLockAcquire(&xlogctl->info_lck);
+		LocalHotStandbyActive = xlogctl->SharedHotStandbyActive;
+		SpinLockRelease(&xlogctl->info_lck);
+
+		return LocalHotStandbyActive;
 	}
 }
 

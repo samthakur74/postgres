@@ -14,6 +14,8 @@
 #ifndef _PROC_H_
 #define _PROC_H_
 
+#include "access/xlog.h"
+#include "storage/latch.h"
 #include "storage/lock.h"
 #include "storage/pg_sema.h"
 #include "utils/timestamp.h"
@@ -114,6 +116,11 @@ struct PGPROC
 	LOCKMODE	waitLockMode;	/* type of lock we're waiting for */
 	LOCKMASK	heldLocks;		/* bitmask for lock types already held on this
 								 * lock object by this backend */
+
+	/* Info to allow us to wait for synchronous replication, if needed. */
+	Latch		waitLatch;
+	XLogRecPtr	waitLSN;		/* waiting for this LSN or higher */
+	bool		ownLatch;		/* do we own the above latch? */
 
 	/*
 	 * All PROCLOCK objects for locks held or awaited by this backend are
