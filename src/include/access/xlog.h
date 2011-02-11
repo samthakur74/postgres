@@ -326,4 +326,7 @@ extern void do_pg_abort_backup(void);
 #define BACKUP_LABEL_FILE		"backup_label"
 #define BACKUP_LABEL_OLD		"backup_label.old"
 
+/* Indicates that the hot standby should send feedback */
+extern bool hot_standby_feedback;
+
 #endif   /* XLOG_H */

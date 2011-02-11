@@ -76,6 +76,7 @@ bool		fullPageWrites = true;
 bool		log_checkpoints = false;
 int			sync_method = DEFAULT_SYNC_METHOD;
 int			wal_level = WAL_LEVEL_MINIMAL;
+bool		hot_standby_feedback;
 
 #ifdef WAL_DEBUG
 bool		XLOG_DEBUG = false;
@@ -6158,6 +6159,13 @@ StartupXLOG(void)
 			/* initialize minRecoveryPoint if not set yet */
 			if (XLByteLT(ControlFile->minRecoveryPoint, checkPoint.redo))
 				ControlFile->minRecoveryPoint = checkPoint.redo;
+		}
+		else
+		{
+			/*
+			 * No need to calculate feedback if we're not in Hot Standby.
+			 */
+			hot_standby_feedback = false;
 		}
 
 		/*

@@ -38,6 +38,7 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include "access/transam.h"
 #include "access/xlog_internal.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
@@ -45,6 +46,7 @@
 #include "replication/walreceiver.h"
 #include "storage/ipc.h"
 #include "storage/pmsignal.h"
+#include "storage/procarray.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
@@ -609,6 +611,10 @@ XLogWalRcvSendReply(void)
 	reply_message.flush = LogstreamResult.Flush;
 	reply_message.apply = GetXLogReplayRecPtr();
 	reply_message.sendTime = now;
+	if (hot_standby_feedback)
+		reply_message.xmin = GetOldestXmin(true, false);
+	else
+		reply_message.xmin = InvalidTransactionId;
 
 	elog(DEBUG2, "sending write %X/%X flush %X/%X apply %X/%X",
 				 reply_message.write.xlogid, reply_message.write.xrecoff,

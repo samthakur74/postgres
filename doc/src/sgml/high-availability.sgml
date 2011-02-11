@@ -1393,9 +1393,16 @@ if (!triggered)
     These conflicts are <emphasis>hard conflicts</> in the sense that queries
     might need to be cancelled and, in some cases, sessions disconnected to resolve them.
     The user is provided with several ways to handle these
-    conflicts. Conflict cases include:
+    conflicts. Conflict cases in order of likely frequency are:
 
       <itemizedlist>
+       <listitem>
+        <para>
+         Application of a vacuum cleanup record from WAL conflicts with
+         standby transactions whose snapshots can still <quote>see</> any of
+         the rows to be removed.
+        </para>
+       </listitem>
        <listitem>
         <para>
          Access Exclusive locks taken on the primary server, including both
@@ -1417,16 +1424,10 @@ if (!triggered)
        </listitem>
        <listitem>
         <para>
-         Application of a vacuum cleanup record from WAL conflicts with
-         standby transactions whose snapshots can still <quote>see</> any of
-         the rows to be removed.
-        </para>
-       </listitem>
-       <listitem>
-        <para>
-         Application of a vacuum cleanup record from WAL conflicts with
-         queries accessing the target page on the standby, whether or not
-         the data to be removed is visible.
+	 Buffer pin deadlock caused by application of a vacuum cleanup
+         record from WAL conflicts with queries accessing the target
+         page on the standby, whether or not the data to be removed is
+         visible.
         </para>
        </listitem>
       </itemizedlist>
@@ -1539,17 +1540,16 @@ if (!triggered)
 
    <para>
     Remedial possibilities exist if the number of standby-query cancellations
-    is found to be unacceptable.  The first option is to connect to the
-    primary server and keep a query active for as long as needed to
-    run queries on the standby. This prevents <command>VACUUM</> from removing
-    recently-dead rows and so cleanup conflicts do not occur.
-    This could be done using <xref linkend="dblink"> and
-    <function>pg_sleep()</>, or via other mechanisms. If you do this, you
+    is found to be unacceptable.  Typically the best option is to enable
+    <varname>hot_standby_feedback</>. This prevents <command>VACUUM</> from
+    removing recently-dead rows and so cleanup conflicts do not occur.
+    If you do this, you
     should note that this will delay cleanup of dead rows on the primary,
     which may result in undesirable table bloat. However, the cleanup
     situation will be no worse than if the standby queries were running
-    directly on the primary server, and you are still getting the benefit of
-    off-loading execution onto the standby.
+    directly on the primary server. You are still getting the benefit
+    of off-loading execution onto the standby and the query may complete
+    faster than it would have done on the primary server.
     <varname>max_standby_archive_delay</> must be kept large in this case,
     because delayed WAL files might already contain entries that conflict with
     the desired standby queries.

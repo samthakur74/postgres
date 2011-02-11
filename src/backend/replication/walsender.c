@@ -551,6 +551,9 @@ ProcessStandbyReplyMessage(void)
 		walsnd->write = reply.write;
 		walsnd->flush = reply.flush;
 		walsnd->apply = reply.apply;
+		if (TransactionIdIsValid(reply.xmin) &&
+			TransactionIdPrecedes(MyProc->xmin, reply.xmin))
+			MyProc->xmin = reply.xmin;
 		SpinLockRelease(&walsnd->mutex);
 	}
 }
