@@ -56,6 +56,13 @@ typedef struct
 	XLogRecPtr	flush;
 	XLogRecPtr	apply;
 
+	/*
+	 * The current xmin from the standby, for Hot Standby feedback.
+	 * This may be invalid if the standby-side does not support feedback,
+	 * or Hot Standby is not yet available.
+	 */
+	TransactionId	xmin;
+
 	/* Sender's system clock at the time of transmission */
 	TimestampTz sendTime;
 } StandbyReplyMessage;

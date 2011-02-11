@@ -1,5 +1,23 @@
 src/backend/replication/README
 
+Overview
+--------
+
+The WALSender sends WAL data and receives replies. The WALReceiver
+receives WAL data and sends replies.
+
+If there is no more WAL data to send then WALSender goes quiet,
+apart from checking for replies. If there is no more WAL data
+to receive then WALReceiver keeps sending replies until all the data
+received has been applied, then it too goes quiet. When all is quiet
+WALReceiver sends regular replies so that WALSender knows the link
+is still working - we don't want to wait until a transaction
+arrives before we try to determine the health of the connection.
+
+WALReceiver sends one reply per message received. If nothing is
+received it sends one reply every time apply pointer advances,
+with a minimum of one reply each cycletime.
+
 Walreceiver - libpqwalreceiver API
 ----------------------------------
 

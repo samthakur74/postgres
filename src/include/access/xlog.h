@@ -289,6 +289,7 @@ extern void xlog_desc(StringInfo buf, uint8 xl_info, char *rec);
 extern void issue_xlog_fsync(int fd, uint32 log, uint32 seg);
 
 extern bool RecoveryInProgress(void);
+extern bool HotStandbyActive(void);
 extern bool XLogInsertAllowed(void);
 extern void GetXLogReceiptTime(TimestampTz *rtime, bool *fromStream);
 extern XLogRecPtr GetXLogReplayRecPtr(void);
@@ -325,5 +326,8 @@ extern void do_pg_abort_backup(void);
 /* File path names (all relative to $PGDATA) */
 #define BACKUP_LABEL_FILE		"backup_label"
 #define BACKUP_LABEL_OLD		"backup_label.old"
+
+/* Indicates that the hot standby should send feedback */
+extern bool hot_standby_feedback;
 
 #endif   /* XLOG_H */

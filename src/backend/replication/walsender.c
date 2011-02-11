@@ -113,7 +113,6 @@ static void StartReplication(StartReplicationCmd * cmd);
 static void ProcessStandbyReplyMessage(void);
 static void ProcessRepliesIfAny(void);
 
-
 /* Main entry point for walsender process */
 int
 WalSenderMain(void)
@@ -150,6 +149,8 @@ WalSenderMain(void)
 	/* Unblock signals (they were blocked when the postmaster forked us) */
 	PG_SETMASK(&UnBlockSig);
 
+	elog(DEBUG2, "WALsender starting");
+
 	/* Tell the standby that walsender is ready for receiving commands */
 	ReadyForQuery(DestRemote);
 
@@ -165,6 +166,8 @@ WalSenderMain(void)
 		walsnd->sentPtr = sentPtr;
 		SpinLockRelease(&walsnd->mutex);
 	}
+
+	elog(DEBUG2, "WALsender handshake complete");
 
 	/* Main loop of walsender */
 	return WalSndLoop();
@@ -541,6 +544,9 @@ ProcessStandbyReplyMessage(void)
 		walsnd->write = reply.write;
 		walsnd->flush = reply.flush;
 		walsnd->apply = reply.apply;
+		if (TransactionIdIsValid(reply.xmin) &&
+			TransactionIdPrecedes(MyProc->xmin, reply.xmin))
+			MyProc->xmin = reply.xmin;
 		SpinLockRelease(&walsnd->mutex);
 	}
 }
@@ -592,7 +598,11 @@ WalSndLoop(void)
 		/* Normal exit from the walsender is here */
 		if (walsender_shutdown_requested)
 		{
-			/* Inform the standby that XLOG streaming was done */
+			ProcessRepliesIfAny();
+
+			/* Inform the standby that XLOG streaming was done
+			 * by sending CommandComplete message.
+			 */
 			pq_puttextmessage('C', "COPY 0");
 			pq_flush();
 
@@ -600,11 +610,30 @@ WalSndLoop(void)
 		}
 
 		/*
-		 * If we had sent all accumulated WAL in last round, nap for the
-		 * configured time before retrying.
+		 * If we had sent all accumulated WAL in last round, then we don't
+		 * have much to do. We still expect a steady stream of replies from
+		 * standby. It is important to note that we don't keep track of
+		 * whether or not there are backends waiting here, since that
+		 * is potentially very complex state information.
+		 *
+		 * Also note that there is no delay between sending data and
+		 * checking for the replies. We expect replies to take some time
+		 * and we are more concerned with overall throughput than absolute
+		 * response time to any single request.
 		 */
 		if (caughtup)
 		{
+			/*
+			 * If we were still catching up, change state to streaming.
+			 * While in the initial catchup phase, clients waiting for
+			 * a response from the standby would wait for a very long
+			 * time, so we need to have a one-way state transition to avoid
+			 * problems. No need to grab a lock for the check; we are the
+			 * only one to ever change the state.
+			 */
+			if (MyWalSnd->state < WALSNDSTATE_STREAMING)
+				WalSndSetState(WALSNDSTATE_STREAMING);
+
 			/*
 			 * Even if we wrote all the WAL that was available when we started
 			 * sending, more might have arrived while we were sending this

@@ -26,6 +26,7 @@
 #include "access/xlog_internal.h"
 #include "replication/walreceiver.h"
 #include "storage/fd.h"
+#include "storage/latch.h"
 #include "storage/pmsignal.h"
 #include "storage/shmem.h"
 #include "utils/guc.h"
@@ -64,6 +65,7 @@ WalRcvShmemInit(void)
 		MemSet(WalRcv, 0, WalRcvShmemSize());
 		WalRcv->walRcvState = WALRCV_STOPPED;
 		SpinLockInit(&WalRcv->mutex);
+		InitSharedLatch(&WalRcv->latch);
 	}
 }
 

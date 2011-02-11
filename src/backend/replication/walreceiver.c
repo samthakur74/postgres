@@ -38,13 +38,17 @@
 #include <signal.h>
 #include <unistd.h>
 
+#include "access/transam.h"
+#include "access/xlog.h"
 #include "access/xlog_internal.h"
 #include "libpq/pqsignal.h"
 #include "miscadmin.h"
 #include "replication/walprotocol.h"
 #include "replication/walreceiver.h"
 #include "storage/ipc.h"
+#include "storage/latch.h"
 #include "storage/pmsignal.h"
+#include "storage/procarray.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
@@ -277,6 +281,7 @@ WalReceiverMain(void)
 		unsigned char type;
 		char	   *buf;
 		int			len;
+		bool 		received_all = false;
 
 		/*
 		 * Emergency bailout if postmaster has died.  This is to avoid the
@@ -302,24 +307,44 @@ WalReceiverMain(void)
 			ProcessConfigFile(PGC_SIGHUP);
 		}
 
-		/* Wait a while for data to arrive */
-		if (walrcv_receive(NAPTIME_PER_CYCLE, &type, &buf, &len))
+		ResetLatch(&WalRcv->latch);
+
+		if (walrcv_receive(0, &type, &buf, &len))
 		{
-			/* Accept the received data, and process it */
+			received_all = false;
 			XLogWalRcvProcessMsg(type, buf, len);
+		}
+		else
+			received_all = true;
 
-			/* Receive any more data we can without sleeping */
-			while (walrcv_receive(0, &type, &buf, &len))
-				XLogWalRcvProcessMsg(type, buf, len);
+		XLogWalRcvSendReply();
 
-			/* Let the master know that we received some data. */
+		if (received_all && !got_SIGHUP && !got_SIGTERM)
+		{
+			/*
+			 * Flush, then reply.
+			 *
+			 * XXX We really need the WALWriter active as well
+			 */
+			XLogWalRcvFlush();
 			XLogWalRcvSendReply();
 
 			/*
-			 * If we've written some records, flush them to disk and let the
-			 * startup process know about them.
+			 * Sleep for up to 500 ms, the fixed keepalive delay.
+			 *
+			 * We will be woken if new data is received from primary
+			 * or if a commit is applied. This is sub-optimal in the
+			 * case where a group of commits arrive, then it all goes
+			 * quiet, but its not worth the extra code to handle both
+			 * that and the simple case of a single commit.
+			 *
+			 * Note that we do not need to wake up when the Startup
+			 * process has applied the last outstanding record. That
+			 * is interesting iff that is a commit record.
 			 */
-			XLogWalRcvFlush();
+			pg_usleep(1000000L);	/* slow down loop for debugging */
+//			WaitLatchOrSocket(&WalRcv->latch, MyProcPort->sock,
+//							  500000L);
 		}
 		else
 		{
@@ -351,6 +376,8 @@ WalRcvDie(int code, Datum arg)
 	walrcv->pid = 0;
 	SpinLockRelease(&walrcv->mutex);
 
+	DisownLatch(&WalRcv->latch);
+
 	/* Terminate the connection gracefully. */
 	if (walrcv_disconnect != NULL)
 		walrcv_disconnect();
@@ -361,6 +388,7 @@ static void
 WalRcvSigHupHandler(SIGNAL_ARGS)
 {
 	got_SIGHUP = true;
+	WalRcvWakeup();
 }
 
 /* SIGTERM: set flag for main loop, or shutdown immediately if safe */
@@ -368,6 +396,7 @@ static void
 WalRcvShutdownHandler(SIGNAL_ARGS)
 {
 	got_SIGTERM = true;
+	WalRcvWakeup();
 
 	/* Don't joggle the elbow of proc_exit */
 	if (!proc_exit_inprogress && WalRcvImmediateInterruptOK)
@@ -609,6 +638,10 @@ XLogWalRcvSendReply(void)
 	reply_message.flush = LogstreamResult.Flush;
 	reply_message.apply = GetXLogReplayRecPtr();
 	reply_message.sendTime = now;
+	if (hot_standby_feedback && HotStandbyActive())
+		reply_message.xmin = GetOldestXmin(true, false);
+	else
+		reply_message.xmin = InvalidTransactionId;
 
 	elog(DEBUG2, "sending write %X/%X flush %X/%X apply %X/%X",
 				 reply_message.write.xlogid, reply_message.write.xrecoff,
@@ -620,3 +653,12 @@ XLogWalRcvSendReply(void)
 	memcpy(&buf[1], &reply_message, sizeof(StandbyReplyMessage));
 	walrcv_send(buf, sizeof(StandbyReplyMessage) + 1);
 }
+
+/* Wake up the WalRcv
+ * Prototype goes in xact.c since that is only external caller
+ */
+void
+WalRcvWakeup(void)
+{
+	SetLatch(&WalRcv->latch);
+};
