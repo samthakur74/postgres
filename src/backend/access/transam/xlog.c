@@ -41,6 +41,7 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgwriter.h"
+#include "replication/syncrep.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
@@ -5299,6 +5300,12 @@ readRecoveryCommandFile(void)
 					(errmsg("recovery command file \"%s\" specified neither primary_conninfo nor restore_command",
 							RECOVERY_COMMAND_FILE),
 					 errhint("The database server will regularly poll the pg_xlog subdirectory to check for files placed there.")));
+
+		if (PrimaryConnInfo == NULL && sync_rep_service)
+			ereport(WARNING,
+					(errmsg("recovery command file \"%s\" specified synchronous_replication_service yet streaming was not requested",
+							RECOVERY_COMMAND_FILE),
+					 errhint("Specify primary_conninfo to allow synchronous replication.")));
 	}
 	else
 	{

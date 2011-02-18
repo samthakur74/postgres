@@ -66,7 +66,7 @@
 WalSndCtlData *WalSndCtl = NULL;
 
 /* My slot in the shared memory array */
-static WalSnd *MyWalSnd = NULL;
+WalSnd *MyWalSnd = NULL;
 
 /* Global state */
 bool		am_walsender = false;		/* Am I a walsender process ? */
@@ -74,6 +74,7 @@ bool		am_walsender = false;		/* Am I a walsender process ? */
 /* User-settable parameters for walsender */
 int			max_wal_senders = 0;	/* the maximum number of concurrent walsenders */
 int			WalSndDelay = 200;	/* max sleep time between some actions */
+bool 		allow_standalone_primary = true; /* action if no sync standby active */
 
 /*
  * These variables are used similarly to openLogFile/Id/Seg/Off,
@@ -423,9 +424,11 @@ HandleReplicationCommand(const char *cmd_string)
 
 			/* break out of the loop */
 			replication_started = true;
+			WalSndSetState(WALSNDSTATE_CATCHUP);
 			break;
 
 		case T_BaseBackupCmd:
+			WalSndSetState(WALSNDSTATE_BACKUP);
 			SendBaseBackup((BaseBackupCmd *) cmd_node);
 
 			/* Send CommandComplete and ReadyForQuery messages */

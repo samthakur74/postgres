@@ -13,6 +13,8 @@
 #define _WALRECEIVER_H
 
 #include "access/xlogdefs.h"
+#include "replication/syncrep.h"
+#include "storage/latch.h"
 #include "storage/spin.h"
 #include "pgtime.h"
 
@@ -94,6 +96,7 @@ extern PGDLLIMPORT walrcv_disconnect_type walrcv_disconnect;
 
 /* prototypes for functions in walreceiver.c */
 extern void WalReceiverMain(void);
+extern void WalRcvWakeup(void);
 
 /* prototypes for functions in walreceiverfuncs.c */
 extern Size WalRcvShmemSize(void);
