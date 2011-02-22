@@ -2010,8 +2010,117 @@ SET ENABLE_SEQSCAN TO OFF;
         You should also consider setting <varname>hot_standby_feedback</>
         as an alternative to using this parameter.
        </para>
+
+    <sect2 id="runtime-config-sync-rep">
+     <title>Synchronous Replication</title>
+
+     <para>
+      These settings control the behavior of the built-in
+      <firstterm>synchronous replication</> feature.
+      These parameters would be set on the primary server that is
+      to send replication data to one or more standby servers.
+     </para>
+
+     <variablelist>
+     <varlistentry id="guc-synchronous-replication" xreflabel="synchronous_replication">
+      <term><varname>synchronous_replication</varname> (<type>boolean</type>)</term>
+      <indexterm>
+       <primary><varname>synchronous_replication</> configuration parameter</primary>
+      </indexterm>
+      <listitem>
+       <para>
+        Specifies whether transaction commit will wait for WAL records
+        to be replicated before the command returns a <quote>success</>
+        indication to the client.  The default setting is <literal>off</>.
+        When <literal>on</>, there will be a delay while the client waits
+        for confirmation of successful replication. That delay will
+        increase depending upon the physical distance and network activity
+        between primary and standby. The commit wait will last until the
+        first reply from any standby. Multiple standby servers allow
+        increased availability and possibly increase performance as well.
+       </para>
+
+       <para>
+        On the primary, this parameter can be changed at any time; the
+        behavior for any one transaction is determined by the setting in
+        effect when it commits.  It is therefore possible, and useful, to have
+        some transactions replicate synchronously and others asynchronously.
+        For example, to make a single multistatement transaction commit
+        asynchronously when the default is synchronous replication, issue
+        <command>SET LOCAL synchronous_replication TO OFF</> within the
+        transaction.
+       </para>
       </listitem>
      </varlistentry>
+
+     <varlistentry id="guc-sync-replication-timeout-client" xreflabel="sync_replication_timeout_client">
+      <term><varname>sync_replication_timeout_client</varname> (<type>integer</type>)</term>
+      <indexterm>
+       <primary><varname>sync_replication_timeout_client</> configuration parameter</primary>
+      </indexterm>
+      <listitem>
+       <para>
+        If the client has <varname>synchronous_replication</varname> set,
+        and a synchronous standby is currently available
+        then the commit will wait for up to <varname>replication_timeout_client</>
+        seconds before it returns a <quote>success</>. The commit will wait
+        forever for a confirmation when <varname>replication_timeout_client</>
+        is set to -1.
+       </para>
+       <para>
+        If the client has <varname>synchronous_replication</varname> set,
+		and yet no synchronous standby is available when we commit, then the
+		setting of <varname>allow_standalone_primary</> determines whether
+		or not we wait.
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-allow-standalone-primary" xreflabel="allow_standalone_primary">
+      <term><varname>allow_standalone_primary</varname> (<type>boolean</type>)</term>
+      <indexterm>
+       <primary><varname>allow_standalone_primary</> configuration parameter</primary>
+      </indexterm>
+      <listitem>
+       <para>
+        If <varname>allow_standalone_primary</> is set, then the server
+        can operate normally whether or not replication is active. If
+        a client requests <varname>synchronous_replication</> and it is
+        not available, they will use asynchornous replication instead.
+       </para>
+       <para>
+       </para>
+      </listitem>
+     </varlistentry>
+
+     <varlistentry id="guc-sync-standby-names" xreflabel="synchronous_standby_names">
+      <term><varname>synchronous_standby_names</varname> (<type>integer</type>)</term>
+      <indexterm>
+       <primary><varname>synchronous_standby_names</> configuration parameter</primary>
+      </indexterm>
+      <listitem>
+       <para>
+        Specifies a list of standby names that can become the sole
+        synchronous standby. Other standby servers connect that are also on
+        the list become potential standbys. If the current synchronous standby
+        goes away it will be replaced with one of the potential standbys.
+        Specifying more than one standby name can allow very high availability.
+       </para>
+       <para>
+        The standby name is currently taken as the application_name of the
+        standby, as set in the primary_conninfo on the standby. Names are
+        not enforced for uniqueness, though clearly that can lead to
+        confusion. Specifying multiple standbys with the same name does not
+        allow more than one standby to be the current synchronous standby.
+       </para>
+       <para>
+        If a standby is removed from the list of servers then it will stop
+        being the synchronous standby, allowing another to take it's place.
+        Standbys may also be added to the list without restarting the server.
+       </para>
+      </listitem>
+     </varlistentry>
+
      </variablelist>
     </sect2>
 

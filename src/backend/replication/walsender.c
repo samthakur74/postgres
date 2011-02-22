@@ -66,7 +66,7 @@
 WalSndCtlData *WalSndCtl = NULL;
 
 /* My slot in the shared memory array */
-static WalSnd *MyWalSnd = NULL;
+WalSnd *MyWalSnd = NULL;
 
 /* Global state */
 bool		am_walsender = false;		/* Am I a walsender process ? */
@@ -173,6 +173,8 @@ WalSenderMain(void)
 		walsnd->sentPtr = sentPtr;
 		SpinLockRelease(&walsnd->mutex);
 	}
+
+	SyncRepInitConfig();
 
 	/* Main loop of walsender */
 	return WalSndLoop();
@@ -368,6 +370,16 @@ StartReplication(StartReplicationCmd * cmd)
 		ereport(FATAL,
 				(errcode(ERRCODE_CANNOT_CONNECT_NOW),
 		errmsg("standby connections not allowed because wal_level=minimal")));
+
+	/*
+	 * When we first start replication the standby will be behind the primary.
+	 * For some applications, for example, synchronous replication, it is
+	 * important to have a clear state for this initial catchup mode, so we
+	 * can trigger actions when we change streaming state later. We may stay
+	 * in this state for a long time, which is exactly why we want to be
+	 * able to monitor whether or not we are still here.
+	 */
+	WalSndSetState(WALSNDSTATE_CATCHUP);
 
 	/*
 	 * When we first start replication the standby will be behind the primary.
@@ -584,6 +596,8 @@ ProcessStandbyReplyMessage(void)
 		walsnd->apply = reply.apply;
 		SpinLockRelease(&walsnd->mutex);
 	}
+
+	SyncRepReleaseWaiters();
 }
 
 /*
@@ -700,6 +714,7 @@ WalSndLoop(void)
 		{
 			got_SIGHUP = false;
 			ProcessConfigFile(PGC_SIGHUP);
+			SyncRepInitConfig();
 		}
 
 		/*
@@ -771,7 +786,12 @@ WalSndLoop(void)
 		 * that point might wait for some time.
 		 */
 		if (MyWalSnd->state == WALSNDSTATE_CATCHUP && caughtup)
+		{
+			ereport(DEBUG1,
+					(errmsg("standby \"%s\" has now caught up with primary",
+									application_name)));
 			WalSndSetState(WALSNDSTATE_STREAMING);
+		}
 
 		ProcessRepliesIfAny();
 	}

@@ -15,6 +15,7 @@
 #include "access/xlog.h"
 #include "nodes/nodes.h"
 #include "storage/latch.h"
+#include "replication/syncrep.h"
 #include "storage/spin.h"
 
 
@@ -52,11 +53,33 @@ typedef struct WalSnd
 	 * to do.
 	 */
 	Latch		latch;
+
+	/*
+	 * Is this WALSender currently offering a sync replication service?
+	 */
+	 bool		sync_rep_service;
+
+	/*
+	 * Is this WALSender on the list of sync standbys?
+	 */
+	 bool		potential_sync_standby;
 } WalSnd;
+
+extern WalSnd *MyWalSnd;
 
 /* There is one WalSndCtl struct for the whole database cluster */
 typedef struct
 {
+	/*
+	 * Sync rep wait queue, which maintains the invariant that the
+	 * individual queues are sorted on LSN.
+	 */
+	SyncRepQueue	sync_rep_queue;
+
+	bool		sync_rep_service_available;
+
+	slock_t		ctlmutex;		/* locks shared variables shown above */
+
 	WalSnd		walsnds[1];		/* VARIABLE LENGTH ARRAY */
 } WalSndCtlData;
 

@@ -55,6 +55,7 @@
 #include "postmaster/postmaster.h"
 #include "postmaster/syslogger.h"
 #include "postmaster/walwriter.h"
+#include "replication/syncrep.h"
 #include "replication/walreceiver.h"
 #include "replication/walsender.h"
 #include "storage/bufmgr.h"
@@ -754,6 +755,14 @@ static struct config_bool ConfigureNamesBool[] =
 		true, NULL, NULL
 	},
 	{
+		{"synchronous_replication", PGC_USERSET, WAL_REPLICATION,
+			gettext_noop("Requests synchronous replication."),
+			NULL
+		},
+		&sync_rep_mode,
+		false, NULL, NULL
+	},
+	{
 		{"zero_damaged_pages", PGC_SUSET, DEVELOPER_OPTIONS,
 			gettext_noop("Continues processing past damaged page headers."),
 			gettext_noop("Detection of a damaged page header normally causes PostgreSQL to "
@@ -1267,6 +1276,16 @@ static struct config_bool ConfigureNamesBool[] =
 		},
 		&XLogArchiveMode,
 		false, NULL, NULL
+	},
+
+	{
+		{"allow_standalone_primary", PGC_SIGHUP, WAL_REPLICATION,
+			gettext_noop("Allow users to proceed without waiting if they request"
+						 "synchronous replication and it is not available."),
+			NULL
+		},
+		&allow_standalone_primary,
+		true, NULL, NULL
 	},
 
 	{
@@ -2161,6 +2180,16 @@ static struct config_int ConfigureNamesInt[] =
 	},
 
 	{
+		{"sync_replication_timeout_client", PGC_USERSET, WAL_REPLICATION,
+			gettext_noop("Clients waiting for confirmation will timeout after this duration."),
+			NULL,
+			GUC_UNIT_S
+		},
+		&sync_rep_timeout_client,
+		120, -1, INT_MAX, NULL, NULL
+	},
+
+	{
 		{"track_activity_query_size", PGC_POSTMASTER, RESOURCES_MEM,
 			gettext_noop("Sets the size reserved for pg_stat_activity.current_query, in bytes."),
 			NULL,
@@ -2714,6 +2743,16 @@ static struct config_string ConfigureNamesString[] =
 		},
 		&pgstat_temp_directory,
 		"pg_stat_tmp", assign_pgstat_temp_directory, NULL
+	},
+
+	{
+		{"synchronous_standby_names", PGC_SIGHUP, WAL_REPLICATION,
+			gettext_noop("List of potential standby names to synchronise with."),
+			NULL,
+			GUC_LIST_INPUT | GUC_IS_NAME
+		},
+		&SyncRepStandbyNames,
+		"", NULL, NULL
 	},
 
 	{
