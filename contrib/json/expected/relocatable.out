@@ -1,0 +1,127 @@
+-- This test needs to be run last.
+DROP EXTENSION json CASCADE;
+NOTICE:  drop cascades to 2 other objects
+DETAIL:  drop cascades to table testjson column j
+drop cascades to table escape_unicode_test column json
+CREATE SCHEMA othernamespace;
+CREATE EXTENSION json WITH SCHEMA othernamespace;
+/*
+ * json_get_type uses its own OID to figure out what schema the type
+ * json_type is in so it can look up its enum label OIDs.
+ */
+SELECT othernamespace.json_get_type('[]');
+ json_get_type 
+---------------
+ array
+(1 row)
+
+SELECT othernamespace.json_get_type('{}');
+ json_get_type 
+---------------
+ object
+(1 row)
+
+SELECT othernamespace.json_get_type('"string"');
+ json_get_type 
+---------------
+ string
+(1 row)
+
+SELECT othernamespace.json_get_type('3.14');
+ json_get_type 
+---------------
+ number
+(1 row)
+
+SELECT othernamespace.json_get_type('true');
+ json_get_type 
+---------------
+ bool
+(1 row)
+
+SELECT othernamespace.json_get_type('false');
+ json_get_type 
+---------------
+ bool
+(1 row)
+
+SELECT othernamespace.json_get_type('null');
+ json_get_type 
+---------------
+ null
+(1 row)
+
+CREATE TABLE temp (json othernamespace.JSON);
+INSERT INTO temp VALUES ('[]');
+INSERT INTO temp VALUES ('{}');
+INSERT INTO temp VALUES ('"string"');
+INSERT INTO temp VALUES ('3.14');
+INSERT INTO temp VALUES ('true');
+INSERT INTO temp VALUES ('null');
+SELECT othernamespace.json_get_type(json) FROM temp;
+ json_get_type 
+---------------
+ array
+ object
+ string
+ number
+ bool
+ null
+(6 rows)
+
+ALTER EXTENSION json SET SCHEMA public;
+SELECT json_get_type('[]');
+ json_get_type 
+---------------
+ array
+(1 row)
+
+SELECT json_get_type('{}');
+ json_get_type 
+---------------
+ object
+(1 row)
+
+SELECT json_get_type('"string"');
+ json_get_type 
+---------------
+ string
+(1 row)
+
+SELECT json_get_type('3.14');
+ json_get_type 
+---------------
+ number
+(1 row)
+
+SELECT json_get_type('true');
+ json_get_type 
+---------------
+ bool
+(1 row)
+
+SELECT json_get_type('false');
+ json_get_type 
+---------------
+ bool
+(1 row)
+
+SELECT json_get_type('null');
+ json_get_type 
+---------------
+ null
+(1 row)
+
+SELECT json_get_type(json) FROM temp;
+ json_get_type 
+---------------
+ array
+ object
+ string
+ number
+ bool
+ null
+(6 rows)
+
+DROP TABLE temp;
+DROP SCHEMA othernamespace CASCADE;

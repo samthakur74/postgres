@@ -106,6 +106,7 @@ CREATE EXTENSION <replaceable>module_name</> FROM unpackaged;
  &intagg;
  &intarray;
  &isn;
+ &json;
  &lo;
  &ltree;
  &oid2name;

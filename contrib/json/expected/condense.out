@@ -1,0 +1,126 @@
+SELECT json('"hello"');
+  json   
+---------
+ "hello"
+(1 row)
+
+SELECT json($$"hello\u266Bworld"$$);
+     json      
+---------------
+ "hello♫world"
+(1 row)
+
+SELECT json($$"hello\u266bworld"$$);
+     json      
+---------------
+ "hello♫world"
+(1 row)
+
+SELECT json($$"hello♫world"$$);
+     json      
+---------------
+ "hello♫world"
+(1 row)
+
+SELECT json($$      "hello world"    $$);
+     json      
+---------------
+ "hello world"
+(1 row)
+
+SELECT json($$    {  "hello" : "world"}    $$);
+       json        
+-------------------
+ {"hello":"world"}
+(1 row)
+
+SELECT json($$    {  "hello" : "world", "bye": 0.0001  }    $$);
+              json              
+--------------------------------
+ {"hello":"world","bye":0.0001}
+(1 row)
+
+SELECT json($$    {  "hello" : "world",
+								"bye": 0.0000001
+}    $$);
+               json                
+-----------------------------------
+ {"hello":"world","bye":0.0000001}
+(1 row)
+
+SELECT json($$    {  "hello" : "world"
+,
+"bye"
+: [-0.1234e1, 12345e0]		}    $$);
+                    json                     
+---------------------------------------------
+ {"hello":"world","bye":[-0.1234e1,12345e0]}
+(1 row)
+
+SELECT json($$"\u007E\u007F\u0080"$$)::text = E'\"\u007E\u007F\u0080\"';
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT json($$"\u00FE\u00FF\u0100"$$);
+ json  
+-------
+ "þÿĀ"
+(1 row)
+
+SELECT json($$"\uD835\uDD4E"$$);
+ json 
+------
+ "𝕎"
+(1 row)
+
+SELECT json($$"\uD835\uD835"$$);
+      json      
+----------------
+ "\uD835\uD835"
+(1 row)
+
+-- These should be turned into single-character escapes.
+SELECT json($$"\u0022"$$)::text = $$"\""$$;
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT json($$"\u005c"$$)::text = $$"\\"$$;
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT json($$"\u0008"$$)::text = $$"\b"$$;
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT json($$"\u000c"$$)::text = $$"\f"$$;
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT json($$"\u000a"$$)::text = $$"\n"$$;
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT json($$"\u000d"$$)::text = $$"\r"$$;
+ ?column? 
+----------
+ t
+(1 row)
+
+SELECT json($$"\u0009"$$)::text = $$"\t"$$;
+ ?column? 
+----------
+ t
+(1 row)
+

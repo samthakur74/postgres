@@ -1,0 +1,80 @@
+SET client_encoding TO UTF8;
+CREATE TABLE escape_unicode_test (json JSON);
+INSERT INTO escape_unicode_test VALUES ($$"\u266b\uD835\uDD4E"$$);
+-- Output should not be escaped.
+SELECT json FROM escape_unicode_test;
+ json 
+------
+ "♫𝕎"
+(1 row)
+
+SELECT json::TEXT FROM escape_unicode_test;
+ json 
+------
+ "♫𝕎"
+(1 row)
+
+SELECT json_stringify(json) FROM escape_unicode_test;
+ json_stringify 
+----------------
+ "♫𝕎"
+(1 row)
+
+SELECT json_stringify(json, '') FROM escape_unicode_test;
+ json_stringify 
+----------------
+ "♫𝕎"
+(1 row)
+
+SET client_encoding TO SQL_ASCII;
+-- Output should still not be escaped.
+SELECT json FROM escape_unicode_test;
+   json    
+-----------
+ "♫𝕎"
+(1 row)
+
+SELECT json::TEXT FROM escape_unicode_test;
+   json    
+-----------
+ "♫𝕎"
+(1 row)
+
+SELECT json_stringify(json) FROM escape_unicode_test;
+ json_stringify 
+----------------
+ "♫𝕎"
+(1 row)
+
+SELECT json_stringify(json, '') FROM escape_unicode_test;
+ json_stringify 
+----------------
+ "♫𝕎"
+(1 row)
+
+SET client_encoding TO LATIN1;
+-- Output should be escaped now.
+SELECT json FROM escape_unicode_test;
+         json         
+----------------------
+ "\u266B\uD835\uDD4E"
+(1 row)
+
+SELECT json::TEXT FROM escape_unicode_test;
+         json         
+----------------------
+ "\u266B\uD835\uDD4E"
+(1 row)
+
+SELECT json_stringify(json) FROM escape_unicode_test;
+    json_stringify    
+----------------------
+ "\u266B\uD835\uDD4E"
+(1 row)
+
+SELECT json_stringify(json, '') FROM escape_unicode_test;
+    json_stringify    
+----------------------
+ "\u266B\uD835\uDD4E"
+(1 row)
+

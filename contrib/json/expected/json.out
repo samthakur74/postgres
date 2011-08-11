@@ -1,0 +1,167 @@
+SELECT '[]'::JSON;
+ json 
+------
+ []
+(1 row)
+
+SELECT '['::JSON;
+ERROR:  invalid input syntax for JSON
+LINE 1: SELECT '['::JSON;
+               ^
+SELECT '[1,2,3]'::JSON;
+  json   
+---------
+ [1,2,3]
+(1 row)
+
+SELECT '[1,2,3]'::JSON::TEXT;
+  text   
+---------
+ [1,2,3]
+(1 row)
+
+SELECT '[1,2,3  ]'::JSON;
+  json   
+---------
+ [1,2,3]
+(1 row)
+
+SELECT '[1,2,3  ,4]'::JSON;
+   json    
+-----------
+ [1,2,3,4]
+(1 row)
+
+SELECT '[1,2,3  ,4.0]'::JSON;
+    json     
+-------------
+ [1,2,3,4.0]
+(1 row)
+
+SELECT '[1,2,3  ,4]'::JSON;
+   json    
+-----------
+ [1,2,3,4]
+(1 row)
+
+SELECT 'true'::JSON;
+ json 
+------
+ true
+(1 row)
+
+SELECT 'true'::TEXT::JSON;
+ json 
+------
+ true
+(1 row)
+
+SELECT 'false'::JSON;
+ json  
+-------
+ false
+(1 row)
+
+SELECT 'null'::JSON;
+ json 
+------
+ null
+(1 row)
+
+SELECT '1.1'::JSON;
+ json 
+------
+ 1.1
+(1 row)
+
+SELECT '"string"'::JSON;
+   json   
+----------
+ "string"
+(1 row)
+
+SELECT '{"key1":"value1", "key2":"value2"}'::JSON;
+               json                
+-----------------------------------
+ {"key1":"value1","key2":"value2"}
+(1 row)
+
+SELECT 15::JSON;
+ json 
+------
+ 15
+(1 row)
+
+SELECT json_get_type('[]');
+ json_get_type 
+---------------
+ array
+(1 row)
+
+SELECT json_get_type('{}');
+ json_get_type 
+---------------
+ object
+(1 row)
+
+SELECT json_get_type('true');
+ json_get_type 
+---------------
+ bool
+(1 row)
+
+SELECT json_get_type('false');
+ json_get_type 
+---------------
+ bool
+(1 row)
+
+SELECT json_get_type('null');
+ json_get_type 
+---------------
+ null
+(1 row)
+
+CREATE TABLE testjson (j JSON);
+INSERT INTO testjson VALUES ('[1,2,3,4]');
+INSERT INTO testjson VALUES ('{"key":"value"}');
+INSERT INTO testjson VALUES ('{"key":"value"');
+ERROR:  invalid input syntax for JSON
+LINE 1: INSERT INTO testjson VALUES ('{"key":"value"');
+                                     ^
+INSERT INTO testjson VALUES ('');
+ERROR:  invalid input syntax for JSON
+LINE 1: INSERT INTO testjson VALUES ('');
+                                     ^
+INSERT INTO testjson VALUES ('""');
+INSERT INTO testjson VALUES ('true');
+INSERT INTO testjson VALUES ('false');
+INSERT INTO testjson VALUES ('null');
+INSERT INTO testjson VALUES ('[]');
+INSERT INTO testjson VALUES ('{}');
+SELECT * FROM testjson;
+        j        
+-----------------
+ [1,2,3,4]
+ {"key":"value"}
+ ""
+ true
+ false
+ null
+ []
+ {}
+(8 rows)
+
+SELECT json_get_type(j) FROM testjson;
+ json_get_type 
+---------------
+ array
+ object
+ string
+ bool
+ bool
+ null
+ array
+ object
+(8 rows)
+

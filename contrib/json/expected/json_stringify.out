@@ -1,0 +1,164 @@
+-- Use unaligned output so results are consistent between PostgreSQL 8 and 9.
+\a
+SELECT json_stringify('false', '  ');
+json_stringify
+false
+(1 row)
+SELECT json_stringify('true', '  ');
+json_stringify
+true
+(1 row)
+SELECT json_stringify('null', '  ');
+json_stringify
+null
+(1 row)
+SELECT json_stringify('""', '  ');
+json_stringify
+""
+(1 row)
+SELECT json_stringify('[]', '  ');
+json_stringify
+[
+]
+(1 row)
+SELECT json_stringify('[1]', '  ');
+json_stringify
+[
+  1
+]
+(1 row)
+SELECT json_stringify('[1,2]', '  ');
+json_stringify
+[
+  1,
+  2
+]
+(1 row)
+SELECT json_stringify('{}', '  ');
+json_stringify
+{
+}
+(1 row)
+SELECT json_stringify('{"k":"v"}', '  ');
+json_stringify
+{
+  "k": "v"
+}
+(1 row)
+SELECT json_stringify('{"null":null, "boolean":true,	"boolean" :false,"array":[1,2,3], "empty array":[], "empty object":{}}', '  ');
+json_stringify
+{
+  "null": null,
+  "boolean": true,
+  "boolean": false,
+  "array": [
+    1,
+    2,
+    3
+  ],
+  "empty array": [
+  ],
+  "empty object": {
+  }
+}
+(1 row)
+SELECT json_stringify(json(string)) FROM test_strings WHERE json_validate(string);
+json_stringify
+"\uD800\uD800"
+"\uD800\uDBFF"
+"\uDB00"
+"\uDB00\uDBFF"
+"￾"
+"￿"
+""
+[]
+{}
+0.5
+{"1":{}}
+{"1":2}
+{"1":2,"2.5":[3,4,{},{"5":["6"]}]}
+{"1":2,"2.5":[3,4,{},{"5":["6"],"7":[8]}]}
+1234
+-1234
+{"1":2,"3":4}
+123.456e14234
+123.456e-14234
+123.456e+14234
+"1 "
+"1 1"
+2
+3
+"3"
+[3]
+3.2e+1
+[3,[4]]
+[3,[4,[5]]]
+[3,[4,[5],6]]
+[3,[4,[5],6],7]
+[3,[4,[5],6],7,8]
+[3,[4,[5],6],7,8,9]
+3e+1
+[7]
+[7]
+[7]
+"hello"
+["hello"]
+["hello","bye"]
+["hello","bye\n"]
+["hello","bye\n\r\t"]
+["hello","bye\n\r\t\b"]
+["hello","bye\n\r\t\b",true]
+["hello","bye\n\r\t\b",true,false]
+["hello","bye\n\r\t\b",true,false,null]
+{"hello":true}
+{"hello":true,"bye":false}
+{"hello":true,"bye":false,"foo":["one","two","three"]}
+"hi"
+["hi"]
+["hi","bye"]
+{"hi":"bye"}
+["hi","bye",3]
+["hi","bye[",3]
+"\u0007"
+"\b"
+"\t"
+"\u0010"
+" "
+"က0"
+"ሴ"
+"香9"
+"𐀀"
+"𐀀"
+"𝄞"
+""
+"�"
+"￿"
+[32,1]
+"𐀀"
+"\n"
+"hello"
+"hello\tworld"
+"hello"
+"hello\n"
+"hello"
+3
+0.3
+0.3e+5
+0.3e-5
+0.3e5
+"hello"
+-3
+-3.1
+0.5
+"\""
+"\"3.5"
+"\"."
+"\"....."
+["\"\"\"\"",0.5]
+["\".5",".5\"",0.5]
+"'"
+[1,2,3]
+"\u0000"
+(95 rows)
+-- Turn aligned output back on.
+\a

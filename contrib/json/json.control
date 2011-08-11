@@ -1,0 +1,5 @@
+# json extension
+comment = 'data type for storing JSON content'
+default_version = '0.1'
+module_pathname = '$libdir/json'
+relocatable = true

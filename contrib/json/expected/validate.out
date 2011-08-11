@@ -1,0 +1,229 @@
+SELECT json_validate(string), string FROM test_strings;
+ json_validate |                          string                          
+---------------+----------------------------------------------------------
+ f             | 
+ f             |   
+ f             | "
+ f             | [,]
+ f             | [)
+ f             | []]
+ f             | [}
+ f             | {,}
+ f             | {]
+ f             | ["1":2]
+ f             | [1,2,]
+ f             | [1:2}
+ f             | {"1":2,}
+ f             | {1:2}
+ f             | {"1":2, "2.5" : [3, 4, {}, {"5": ["6"], [7 ]}]}
+ f             | {"1":2, "2.5" : [3, 4, {}, {"5": ["6"], [7]}]}
+ f             | {"1":2, "2.5" : [3, 4, {}, {"5": ["6"], "7" :[8 ]}]
+ f             | {"1":2, "2.5" : [3, 4, {}, {"5": ["6"], "7" :[8 ]}]]
+ f             | {"1":2, "3":4
+ f             | "1\u2"
+ f             | [,2]
+ f             | "3
+ f             | "3" "4"
+ f             | [3[4]
+ f             | [3[4]]
+ f             | [3, [4, [5], 6] 7, 8 9]
+ f             | [3, [4, [5], 6] 7, 8, 9]
+ f             | [3, [4, [5], 6], 7, 8 9]
+ f             | {"hello":true, "bye":false, null}
+ f             | {"hello":true, "bye":false, null:null}
+ f             | "hi
+ f             | "hi"""
+ f             | {"hi": "bye"]
+ t             | "\uD800\uD800"
+ t             | "\uD800\uDBFF"
+ f             | "\UD834\UDD1E"
+ t             | "\uDB00"
+ t             | "\uDB00\uDBFF"
+ t             | "\uFFFE"
+ t             | "\uFFFF"
+ f             | .
+ t             | ""
+ t             | []
+ t             | {}
+ f             | +.
+ t             | 0.5
+ f             | 0.e1
+ t             | {"1":{}}
+ t             | {"1":2}
+ t             | {"1":2, "2.5" : [3, 4, {}, {"5": ["6"]}]}
+ t             | {"1":2, "2.5" : [3, 4, {}, {"5": ["6"], "7" :[8 ]}]}
+ t             | 1234
+ t             | -1234
+ t             | {"1":2, "3":4}
+ f             | +1234
+ f             | ++1234
+ t             | 123.456e14234
+ t             | 123.456e-14234
+ t             | 123.456e+14234
+ f             | 123.e-14234
+ t             | "1\u2000"
+ t             | "1\u20001"
+ t             | 2
+ f             | .246e-14234
+ f             | .2e-14234
+ t             | 3
+ f             | .3
+ t             | "3"
+ t             | [3]
+ f             | +3.
+ t             | 3.2e+1
+ t             | [3, [4]]
+ t             | [3, [4, [5]]]
+ t             | [3, [4, [5], 6]]
+ t             | [3, [4, [5], 6], 7]
+ t             | [3, [4, [5], 6], 7, 8]
+ t             | [3, [4, [5], 6], 7, 8, 9]
+ f             | +3.5
+ f             | .3e
+ f             | .3e1
+ f             | .3e-1
+ f             | .3e+1
+ f             | 3.e1
+ f             | 3.e+1
+ t             | 3e+1
+ f             | .5
+ f             | +.5
+ f             | .5e+1
+ t             | [ 7]
+ t             | [7 ]
+ t             | [7]
+ f             | .e-14234
+ t             | "hello"
+ t             | ["hello"]
+ t             | ["hello", "bye"]
+ t             | ["hello", "bye\n"]
+ t             | ["hello", "bye\n\r\t"]
+ t             | ["hello", "bye\n\r\t\b"]
+ t             | ["hello", "bye\n\r\t\b",true]
+ t             | ["hello", "bye\n\r\t\b",true , false]
+ t             | ["hello", "bye\n\r\t\b",true , false,    null]
+ f             | ["hello", "bye\n\r\t\v"]
+ t             | {"hello":true}
+ t             | {"hello":true, "bye":false}
+ t             | {"hello":true, "bye":false, "foo":["one","two","three"]}
+ t             | "hi"
+ t             | ["hi"]
+ t             | ["hi", "bye"]
+ t             | {"hi": "bye"}
+ t             | ["hi", "bye", 3]
+ t             | ["hi", "bye[", 3]
+ t             | "\u0007"
+ t             | "\u0008"
+ t             | "\u0009"
+ t             | "\u0010"
+ t             | "\u0020"
+ t             | "\u10000"
+ t             | "\u1234"
+ t             | "\u99999"
+ t             | "\ud800\udc00"
+ t             | "\uD800\uDC00"
+ t             | "\uD834\uDD1E"
+ t             | "\uDBFF\uDFFF"
+ t             | "\uFFFD"
+ t             | "\uFFFF"
+ f             | hello
+ t             | [32, 1]
+ f             | [32, 
+ t             | "\uD800\uDC00"
+ t             | "\n"
+ t             | "hello"
+ t             | "hello\u0009world"
+ t             | "hello"
+ t             | "hello\n"
+ t             | "hello"
+ t             | 3
+ f             | 3.
+ f             | .3
+ t             | 0.3
+ f             | 0.3e
+ f             | 0.3e+
+ t             | 0.3e+5
+ t             | 0.3e-5
+ t             | 0.3e5
+ t             | "hello"
+ f             | +3
+ t             | -3
+ f             | -3.
+ t             | -3.1
+ f             | .5
+ f             | 5.
+ f             | 5.e1
+ t             | 0.5
+ f             | .3e1
+ f             | .3e+1
+ f             | .3e-1
+ f             | .3e-1 .5
+ f             | .3e-1.5
+ f             | .3e+1.5
+ f             | .3e+.
+ f             | .3e+.5
+ f             | .3e+1.5
+ f             | 9.3e+1.5
+ f             | 9.e+1.5
+ f             | 9.e+
+ f             | 9.e+1
+ t             | "\""
+ t             | "\"3.5"
+ t             | "\"."
+ f             | "\".".
+ t             | "\"....."
+ f             | "\"\"\"\"""
+ f             | ["\"\"\"\"", .5]
+ f             | [.5]
+ t             | ["\"\"\"\"", 0.5]
+ f             | ["\"\"\"\"", .5]
+ f             | ["\"\"\"\"",.5]
+ f             | ["\"",.5]
+ f             | ["\".5",.5]
+ f             | ["\".5",".5\"".5]
+ f             | ["\".5",".5\"", .5]
+ f             | ["\".5",".5\"",.5]
+ t             | ["\".5",".5\"",0.5]
+ f             | {"key":/*comment*/"value"}
+ f             | {"key":/*comment"value"}
+ f             | {"key":"value"}/*
+ f             | {"key":"value"}/**/
+ f             | {"key":"value"}/***/
+ f             | {"key":"value"}/**//
+ f             | {"key":"value"}/**///
+ f             | {"key":"value"}/**///----
+ f             | {"key":"value"}#
+ f             | {"key":"value"}#{
+ f             | {"key":"value"}#{}
+ f             | {"key":"value"}#,
+ f             | {"key":"value"/**/, "k2":"v2"}
+ t             | "\u0027"
+ f             | "hello\'"
+ f             | 'hello\''
+ f             | 'hello'
+ f             | 'hell\'o'
+ f             | '\'hello'
+ f             | '\'hello\''
+ f             | \'hello\'
+ f             | 'hello\'
+ f             | ['hello\']
+ f             | ['hello\'']
+ f             | ['hello"']
+ f             | ['hello\"']
+ f             | ['hello"o']
+ f             | ['"']
+ f             | '"'
+ f             | '"hello"'
+ f             | '"hello'
+ f             | '"hi"'
+ t             |          [ 1 , 2 , 3 ]    
+ f             | nil
+ f             | fals
+ f             | falsify
+ f             | falsetto
+ f             | truism
+ f             | {"key"
+ f             | {"key","key2":null}
+ t             | "\u0000"
+(224 rows)
+
