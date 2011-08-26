@@ -749,13 +749,17 @@ RemoveRelations(DropStmt *drop)
 			{
 				Form_pg_index index = (Form_pg_index) GETSTRUCT(tuple);
 
+				elog(LOG, "Trying to take DROP INDEX indrelid AEL.");
 				LockRelationOid(index->indrelid, AccessExclusiveLock);
+				elog(LOG, "Took DROP INDEX indrelid AEL.");
 				ReleaseSysCache(tuple);
 			}
 		}
 
 		/* Get the lock before trying to fetch the syscache entry */
+		elog(LOG, "Trying to take DROP INDEX relid AEL.");
 		LockRelationOid(relOid, AccessExclusiveLock);
+		elog(LOG, "Took DROP INDEX relid AEL.");
 
 		tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(relOid));
 		if (!HeapTupleIsValid(tuple))
@@ -787,9 +791,12 @@ RemoveRelations(DropStmt *drop)
 		ReleaseSysCache(tuple);
 	}
 
+	elog(LOG, "Beginning performMultipleDeletions.");
 	performMultipleDeletions(objects, drop->behavior);
+	elog(LOG, "Completed performMultipleDeletions");
 
 	free_object_addresses(objects);
+	elog(LOG, "RemoveRelations finished.");
 }
 
 /*

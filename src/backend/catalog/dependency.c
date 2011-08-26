@@ -962,6 +962,7 @@ deleteOneObject(const ObjectAddress *object, Relation depRel)
 	 * When dropping a whole object (subId = 0), remove all pg_depend records
 	 * for its sub-objects too.
 	 */
+	elog(LOG, "Starting removal of pg_depend entries.");
 	ScanKeyInit(&key[0],
 				Anum_pg_depend_classid,
 				BTEqualStrategyNumber, F_OIDEQ,
@@ -997,11 +998,16 @@ deleteOneObject(const ObjectAddress *object, Relation depRel)
 	 */
 	deleteSharedDependencyRecordsFor(object->classId, object->objectId,
 									 object->objectSubId);
+	elog(LOG, "Removing pg_depend entries done.");
 
 	/*
 	 * Now delete the object itself, in an object-type-dependent way.
 	 */
+	elog(LOG, "Start doDeletion of %u", object->objectId);
 	doDeletion(object);
+	elog(LOG, "Finished doDeletion of class %u, %u",
+		 getObjectClass(object),
+		 object->objectId);
 
 	/*
 	 * Delete any comments associated with this object.  (This is a convenient

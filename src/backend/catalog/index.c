@@ -1001,16 +1001,21 @@ index_drop(Oid indexId)
 
 	userIndexRelation = index_open(indexId, AccessExclusiveLock);
 
+	elog(LOG, "Index open complete.");
 	/*
 	 * There can no longer be anyone *else* touching the index, but we
 	 * might still have open queries using it in our own session.
 	 */
 	CheckTableNotInUse(userIndexRelation, "DROP INDEX");
 
+	elog(LOG, "Checked table is not in use.");
+
 	/*
 	 * Schedule physical removal of the files
 	 */
+	elog(LOG, "Beginning drop storage!");
 	RelationDropStorage(userIndexRelation);
+	elog(LOG, "Finished drop storage.");
 
 	/*
 	 * Close and flush the index's relcache entry, to ensure relcache doesn't
@@ -1020,6 +1025,7 @@ index_drop(Oid indexId)
 	index_close(userIndexRelation, NoLock);
 
 	RelationForgetRelation(indexId);
+	elog(LOG, "Forgot relation %u", indexId);
 
 	/*
 	 * fix INDEX relation, and check for expressional index
@@ -1041,18 +1047,27 @@ index_drop(Oid indexId)
 	 * if it has any expression columns, we might have stored statistics about
 	 * them.
 	 */
+	elog(LOG, "Starting removal of other structures: %u", indexId);
+
 	if (hasexprs)
+	{
 		RemoveStatistics(indexId, 0);
+		elog(LOG, "Removed statistics: %u", indexId);
+	}
 
 	/*
 	 * fix ATTRIBUTE relation
 	 */
 	DeleteAttributeTuples(indexId);
 
+	elog(LOG, "Removed attributes: %u", indexId);
+
 	/*
 	 * fix RELATION relation
 	 */
 	DeleteRelationTuple(indexId);
+
+	elog(LOG, "Removed relation: %u", indexId);
 
 	/*
 	 * We are presently too lazy to attempt to compute the new correct value
@@ -1062,11 +1077,13 @@ index_drop(Oid indexId)
 	 * ensure other backends update their relcache lists of indexes.
 	 */
 	CacheInvalidateRelcache(userHeapRelation);
+	elog(LOG, "Invalid relcache: %u", indexId);
 
 	/*
 	 * Close owning rel, but keep lock
 	 */
 	heap_close(userHeapRelation, NoLock);
+	elog(LOG, "Closed userHeapRelation: %u", indexId);
 }
 
 /* ----------------------------------------------------------------
