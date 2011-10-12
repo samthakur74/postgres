@@ -109,8 +109,8 @@ def main():
 	verify_statement_differs("select * from orders limit 1 offset 1", "select * from orders limit 1 offset 2", conn)
 
 	# There are lots of ways limits can be noise
-	#verify_statement_equivalency("select * from orders limit null", "select * from orders limit all", conn)
-	#verify_statement_equivalency("select * from orders", "select * from orders limit null", conn)
+	verify_statement_equivalency("select * from orders limit null", "select * from orders limit all", conn)
+	verify_statement_equivalency("select * from orders", "select * from orders limit null", conn)
 
 	# Join order in statement matters:
 	verify_statement_differs("select * from orderlines ol join orders o on o.orderid = ol.orderid;",

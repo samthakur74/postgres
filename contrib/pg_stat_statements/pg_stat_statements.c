@@ -174,7 +174,7 @@ static void JumbleCurQuery(Query *parse);
 static void QualsNode(OpExpr *node,  int jumble[], size_t size, int* i);
 static void PerformArgs(List *args,  int jumble[], size_t size, int* i);
 static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i);
-static void LimitOffsetNode(FuncExpr *node, int jumble[], size_t size, int* i);
+static void LimitOffsetNode(Node *node, int jumble[], size_t size, int* i);
 static void JoinExprNode(JoinExpr *node, int jumble[], size_t size, int* i, List *rtable);
 static void PerformJumble(Query *parse, int jumble[], size_t size, int* i);
 static void pgss_ExecutorStart(QueryDesc *queryDesc, int eflags);
@@ -543,9 +543,9 @@ static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i)
 	else if (IsA(arg, NullTest))
 	{
 		NullTest *nt = (NullTest *) arg;
+		Node *arg = (Node *) nt->arg;
 		jumble[(*i)++] = nt->nulltesttype; /* IS NULL, IS NOT NULL */
 		jumble[(*i)++] = nt->argisrow; /* is input a composite type ? */
-		Node *arg = (Node *) nt->arg;
 		ExprTypes(arg, jumble, size, i);
 	}
 	else if (IsA(arg, ArrayExpr))
@@ -566,29 +566,43 @@ static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i)
  * Perform selective serialization of limit or offset nodes
  *
  */
-static void LimitOffsetNode(FuncExpr *node, int jumble[], size_t size, int* i)
+static void LimitOffsetNode(Node *node, int jumble[], size_t size, int* i)
 {
 	ListCell *l;
-	foreach(l, node->args)
+	if (IsA(node, FuncExpr))
 	{
-		Node *arg = (Node *) lfirst(l);
-		if (IsA(arg, Const))
+		foreach(l, ((FuncExpr*) node)->args)
 		{
-			/*
-			 * A different limit and/or offset constitutes a different
-			 * query, so this is one constant that we actually want to
-			 * hash
-			 */
-			Datum	constvalue = ((Const*) arg)->constvalue;
-			int64 val = DatumGetInt64(constvalue);
-			jumble[(*i)++] = (int) val;
-		}
-		else
-		{
-			elog(ERROR, "unrecognized node type for limit/offset node: %d",
-					(int) nodeTag(arg));
+			Node *arg = (Node *) lfirst(l);
+			if (IsA(arg, Const))
+			{
+				/*
+				 * A different limit and/or offset constitutes a different
+				 * query, so this is one constant that we actually want to
+				 * hash
+				 */
+				Datum	constvalue = ((Const*) arg)->constvalue;
+				int64 val = DatumGetInt64(constvalue);
+				jumble[(*i)++] = (int) val;
+			}
+			else
+			{
+				elog(ERROR, "unrecognized node type for FuncExpr limit/offset node: %d",
+						(int) nodeTag(arg));
+			}
 		}
 	}
+	else if (IsA(node, Const))
+	{
+		/* A limit null expression; for our purposes, equivalent to no limit at all */
+		return;
+	}
+	else
+	{
+		elog(ERROR, "unrecognized node type for limit/offset node: %d",
+				(int) nodeTag(node));
+	}
+
 }
 
 /*
@@ -1056,13 +1070,11 @@ static uint32
 pgss_hash_fn(const void *key, Size keysize)
 {
 	const pgssHashKey *k = (const pgssHashKey *) key;
-	uint32 hashish;
 
 	/* we don't bother to include encoding in the hash */
-	hashish = hash_uint32((uint32) k->userid) ^
+	return hash_uint32((uint32) k->userid) ^
 		hash_uint32((uint32) k->dbid) ^
 		DatumGetUInt32(hash_any((const unsigned char* ) k->parse_jumble, sizeof(k->parse_jumble) ) );
-	return hashish;
 }
 
 /*
@@ -1137,8 +1149,16 @@ pgss_store(const char *query, int parse_jumble[], double total_time, uint64 rows
 		e->counters.temp_blks_read += bufusage->temp_blks_read;
 		e->counters.temp_blks_written += bufusage->temp_blks_written;
 		e->counters.usage += usage;
+		/* TODO: Either honor SpinLockAcquire's contract by
+		 * not allowing the implicit conversion to a non volatile
+		 * pointer here, or come up with some other form of
+		 * lock. With the number of instructions here now,
+		 * a LWLock might be preferable.
+		 */
+		/* memset() previous entry */
 		memset(e->query, 0, strlen(e->query));
-		memcpy(entry->query, query, strlen(query));
+		/* perform memcpy inline to respect volatility of */
+		memcpy(e->query, query, strlen(query));
 		e->query_len = strlen(query);
 		SpinLockRelease(&e->mutex);
 	}
