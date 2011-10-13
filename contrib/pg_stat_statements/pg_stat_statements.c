@@ -50,7 +50,7 @@ static const uint32 PGSS_FILE_HEADER = 0x20100108;
 #define USAGE_INIT				(1.0)	/* including initial planning */
 #define USAGE_DECREASE_FACTOR	(0.99)	/* decreased every entry_dealloc */
 #define USAGE_DEALLOC_PERCENT	5		/* free this % of entries at once */
-
+#define CIRCULAR_BUFFER_SIZE    127   /* Size of circular buffer for selective serialization of Query tree */
 /*
  * Hashtable key that defines the identity of a hashtable entry.  The
  * hash comparators do not assume that the query string is null-terminated;
@@ -65,7 +65,7 @@ typedef struct pgssHashKey
 	Oid			userid;			/* user OID */
 	Oid			dbid;			/* database OID */
 	int			encoding;		/* query encoding */
-	int			parse_jumble[127];	/* Some integers jumbled together from a query tree */
+	int			parse_jumble[CIRCULAR_BUFFER_SIZE];	/* Some integers jumbled together from a query tree */
 } pgssHashKey;
 
 /*
@@ -112,7 +112,7 @@ typedef struct pgssSharedState
 } pgssSharedState;
 
 /*---- Local variables ----*/
-int last_parse_jumble[127];	/* Some integers jumbled from last query tree seen */
+int last_parse_jumble[CIRCULAR_BUFFER_SIZE];	/* Some integers jumbled from last query tree seen */
 
 /* Current nesting depth of ExecutorRun calls */
 static int	nested_level = 0;
@@ -176,6 +176,7 @@ static void PerformArgs(List *args,  int jumble[], size_t size, int* i);
 static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i);
 static void LimitOffsetNode(Node *node, int jumble[], size_t size, int* i);
 static void JoinExprNode(JoinExpr *node, int jumble[], size_t size, int* i, List *rtable);
+static void JoinExprNodeChild(Node *node, int jumble[], size_t size, int* i, List *rtable);
 static void PerformJumble(Query *parse, int jumble[], size_t size, int* i);
 static void pgss_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgss_ExecutorRun(QueryDesc *queryDesc,
@@ -471,7 +472,8 @@ static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i)
 	}
 	else if (IsA(arg, Var))
 	{
-		jumble[(*i)++] = ((Var *) arg)->varattno;
+		jumble[(*i)++] = ((Var *) arg)->varattno; /* column number of table */
+		jumble[(*i)++] = 0xFACEFEED;
 	}
 	else if (IsA(arg, Param))
 	{
@@ -526,6 +528,7 @@ static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i)
 	{
 		TargetEntry *rt = (TargetEntry *) arg;
 		Node *e = (Node*) rt->expr;
+		jumble[(*i)++] = rt->resorigtbl;		/* OID of column's source table */
 		jumble[(*i)++] = rt->ressortgroupref; /*  nonzero if referenced by a sort/group - for ORDER BY */
 		ExprTypes(e, jumble, size, i);
 	}
@@ -622,44 +625,42 @@ static void JoinExprNode(JoinExpr *node, int jumble[], size_t size, int* i, List
 		QualsNode((OpExpr*) node->quals, jumble, size, i);
 	}
 	if (larg)
-	{
-		if (IsA(larg, RangeTblRef))
-		{
-			RangeTblRef *rt = (RangeTblRef*) larg;
-			RangeTblEntry *rte = rt_fetch(rt->rtindex, rtable);
-			Query	   *subquery = rte->subquery;
-
-			jumble[(*i)++] = rte->relid;
-			jumble[(*i)++] = rte->jointype;
-
-			if (subquery)
-				PerformJumble(subquery, jumble, size, i);
-		}
-		else if (IsA(larg, JoinExpr))
-		{
-			JoinExprNode((JoinExpr*) larg, jumble, size, i, rtable);
-		}
-		else
-		{
-			elog(ERROR, "unrecognized node type for larg: %d",
-				 (int) nodeTag(larg));
-		}
-
-	}
+		JoinExprNodeChild(larg, jumble, size, i, rtable);
 	if (rarg)
+		JoinExprNodeChild(rarg, jumble, size, i, rtable);
+}
+
+static void JoinExprNodeChild(Node *node, int jumble[], size_t size, int* i, List *rtable)
+{
+	if (IsA(node, RangeTblRef))
 	{
-		RangeTblRef *rt = (RangeTblRef*) rarg;
+		RangeTblRef *rt = (RangeTblRef*) node;
 		RangeTblEntry *rte = rt_fetch(rt->rtindex, rtable);
-		Query	   *subquery = rte->subquery;
+		ListCell *l;
 
 		jumble[(*i)++] = rte->relid;
 		jumble[(*i)++] = rte->jointype;
 
-		if (subquery)
-			PerformJumble(subquery, jumble, size, i);
+
+		if (rte->subquery)
+			PerformJumble(rte->subquery, jumble, size, i);
+
+		foreach(l, rte->joinaliasvars)
+		{
+			Node *arg = (Node *) lfirst(l);
+			ExprTypes(arg, jumble, size, i);
+		}
+	}
+	else if (IsA(node, JoinExpr))
+	{
+		JoinExprNode((JoinExpr*) node, jumble, size, i, rtable);
+	}
+	else
+	{
+		elog(ERROR, "unrecognized node type for JoinExprNodeChild: %d",
+			 (int) nodeTag(node));
 	}
 }
-
 
 /*
  * JumbleCurQuery: Serialize the query tree such
@@ -674,7 +675,7 @@ static void PerformJumble(Query *parse, int jumble[], size_t size, int* i)
 	FuncExpr *off = (FuncExpr *) parse->limitOffset;	/* # of result tuples to skip (int8 expr) */
 	FuncExpr *limcount = (FuncExpr *) parse->limitCount;	/* # of result tuples to skip (int8 expr) */
 
-	jumble[(*i)++] = (parse->commandType << 0) | (parse->querySource << 1);
+	jumble[(*i)++] = (parse->commandType << 4) | (parse->querySource << 6);
 	if (parse->utilityStmt)
 	{
 		/*
@@ -703,8 +704,44 @@ static void PerformJumble(Query *parse, int jumble[], size_t size, int* i)
 			PerformJumble(cte_query, jumble, size, i);
 	}
 
+	/* Directly iterating over rtable is necessary for nested set operations */
+	foreach(l, parse->rtable)
+	{
+		RangeTblEntry *rte = (RangeTblEntry *) lfirst(l);
+		jumble[(*i)++] = rte->relid;
+		/* TODO: Add logic to handle more than subquery and relation case */
+		if (rte->subquery)
+			PerformJumble(rte->subquery, jumble, size, i);
+
+	}
 	if (jt)
 	{
+		if (jt->quals)
+		{
+
+			if (IsA(jt->quals, OpExpr))
+			{
+				QualsNode((OpExpr*) jt->quals, jumble, size, i);
+			}
+			else if (IsA(jt->quals, BoolExpr))
+			{
+				ListCell *bel;
+				BoolExpr *be = (BoolExpr*) jt->quals;
+				jumble[(*i)++] = be->boolop;
+				foreach(bel, be->args)
+				{
+					Node *ni = (Node *) lfirst(bel);
+					ExprTypes(ni,  jumble, size, i);
+				}
+			}
+			else
+			{
+				elog(ERROR, "unrecognized node type for join tree quals: %d",
+					 (int) nodeTag(jt->quals));
+			}
+
+		}
+
 		/* table join tree */
 		foreach(l, jt->fromlist)
 		{
@@ -725,32 +762,9 @@ static void PerformJumble(Query *parse, int jumble[], size_t size, int* i)
 			}
 			else
 			{
-				elog(ERROR, "unrecognized node type: %d",
+				elog(ERROR, "unrecognized fromlist node type: %d",
 					 (int) nodeTag(fr));
 			}
-		}
-	}
-	if (jt->quals)
-	{
-		if (IsA(jt->quals, OpExpr))
-		{
-			QualsNode((OpExpr*) jt->quals, jumble, size, i);
-		}
-		else if (IsA(jt->quals, BoolExpr))
-		{
-			ListCell *bel;
-			BoolExpr *be = (BoolExpr*) jt->quals;
-			jumble[(*i)++] = be->boolop;
-			foreach(bel, be->args)
-			{
-				Node *ni = (Node *) lfirst(bel);
-				ExprTypes(ni,  jumble, size, i);
-			}
-		}
-		else
-		{
-			elog(ERROR, "unrecognized node type for join tree quals: %d",
-				 (int) nodeTag(jt->quals));
 		}
 	}
 
@@ -834,10 +848,10 @@ static void PerformJumble(Query *parse, int jumble[], size_t size, int* i)
 	 */
 
 	if (off)
-		LimitOffsetNode(off, jumble, size, i);
+		LimitOffsetNode((Node*) off, jumble, size, i);
 
 	if (limcount)
-		LimitOffsetNode(limcount, jumble, size, i);
+		LimitOffsetNode((Node*) limcount, jumble, size, i);
 
 	foreach(l, parse->rowMarks)
 	{
@@ -864,24 +878,18 @@ static void PerformJumble(Query *parse, int jumble[], size_t size, int* i)
 		{
 			RangeTblEntry *rte = rt_fetch(lchild->rtindex, parse->rtable);
 			Query	   *subquery = rte->subquery;
+			Assert(rte->rtekind == RTE_SUBQUERY);
 			PerformJumble(subquery, jumble, size, i);
 		}
 		if (rchild)
 		{
 			RangeTblEntry *rte = rt_fetch(rchild->rtindex, parse->rtable);
 			Query	   *subquery = rte->subquery;
+			Assert(rte->rtekind == RTE_SUBQUERY);
 			PerformJumble(subquery, jumble, size, i);
 		}
 	}
-	/*
-	 * A list of pg_constraint OIDs that the query
-	 * depends on to be semantically valid
-	 */
-	foreach(l, parse->constraintDeps)
-	{
-		Oid constr = lfirst_oid(l);
-		jumble[(*i)++] = constr;
-	}
+
 }
 
 /*

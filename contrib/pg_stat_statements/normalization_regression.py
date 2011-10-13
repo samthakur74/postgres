@@ -23,7 +23,7 @@ def print_queries(conn):
 		print i[0]
 
 
-def verify_statement_equivalency(sql, equiv, conn):
+def verify_statement_equivalency(sql, equiv, conn, test_name = None):
 	# Run both queries in isolation and verify that there
 	# is only a single tuple
 	global test_no
@@ -37,12 +37,12 @@ def verify_statement_equivalency(sql, equiv, conn):
 
 	if tuple_n != 1:
 		#print_queries(conn)
-		raise SystemExit("The SQL statements \n'{0}'\n and \n'{1}'\n do not appear to be equivalent! Test {2} failed.".format(sql, equiv, test_no))
+		raise SystemExit("The SQL statements \n'{0}'\n and \n'{1}'\n do not appear to be equivalent! Test {2} failed.".format(sql, equiv, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no)) )
 
-	print "The statements \n'{0}'\n and \n'{1}'\n are equivalent, as expected. Test {2} passed. ".format(sql, equiv, test_no)
+	print "The statements \n'{0}'\n and \n'{1}'\n are equivalent, as expected. Test {2} passed.\n\n".format(sql, equiv, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no))
 	test_no +=1
 
-def verify_statement_differs(sql, diff, conn):
+def verify_statement_differs(sql, diff, conn, test_name = None):
 	# Run both queries in isolation and verify that there are
 	# two tuples
 	global test_no
@@ -56,9 +56,9 @@ def verify_statement_differs(sql, diff, conn):
 
 	if tuple_n != 2:
 		#print_queries(conn)
-		raise SystemExit("The SQL statements \n'{0}'\n and \n'{1}'\n do not appear to be different! Test {2} failed.".format(sql, diff, test_no))
+		raise SystemExit("The SQL statements \n'{0}'\n and \n'{1}'\n do not appear to be different! Test {2} failed.".format(sql, diff, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no)))
 
-	print "The statements \n'{0}'\n and \n'{1}'\n are not equivalent, as expected. Test {2} passed. ".format(sql, diff, test_no)
+	print "The statements \n'{0}'\n and \n'{1}'\n are not equivalent, as expected. Test {2} passed.\n\n ".format(sql, diff, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no))
 	test_no +=1
 
 def main():
@@ -319,36 +319,36 @@ def main():
 	""",
 	conn)
 
-	verify_statement_differs(
-	"""
-	with recursive j(n) AS (
-	values (1)
-	union all
-	select n + 1 from j where n < 100
-	)
-	select avg(n) from j;
-	""",
-	"""
-	with recursive j(n) AS (
-	values (1)
-	union all
-	select 1 from orders
-	)
-	select avg(n) from j;
-	""",
-	conn)
-
-
 	# set operation normalization occurs by waling the query tree recursively.
 	verify_statement_differs( "select orderid from orders union all select customerid from orders", "select customerid from orders union all select orderid from orders", conn)
+	verify_statement_equivalency(
+	"select 1, 2, 3 except select orderid, 6, 7 from orders",
+	"select 4, 5, 6 except select orderid, 55, 33 from orders",
+	conn)
 
+	verify_statement_differs(
+	"select orderid, 6       from orders union select 1,2 ",
+	"select 55,      orderid from orders union select 4,5 ",
+	conn,
+	"column order differs (left child)")
 
-	verify_statement_equivalency( "select 1, 2, 3 except select orderid, 6, 7 from orders", "select 4, 5, 6 except select orderid, 55, 33 from orders", conn)
+	verify_statement_differs(
+	"select 1, 2 union select orderid,   6       from orders",
+	"select 4, 5 union select 55,        orderid from orderlines",
+	conn,
+	"column order differs (right child easy)")
 
-	verify_statement_differs( "select 1, 2, 3 except select orderid, 6, 7 from orders", "select 4, 5, 6 except select 55, orderid, 33 from orders", conn)
+	verify_statement_differs(
+	"select 1, 2 union select orderid,   6       from orders",
+	"select 4, 5 union select 55,        orderid from orders",
+	conn,
+	"column order differs (right child)")
 
 	# union != union all
-	verify_statement_differs( "select orderid from orders union all select customerid from orders", "select customerid from orders union select orderid from orders", conn)
+	verify_statement_differs(
+	"select customerid from orders union all select customerid from orders",
+	"select customerid from orders union     select customerid from orders",
+	conn, "union != union all")
 
 	verify_statement_equivalency(
 					"""
@@ -380,6 +380,28 @@ def main():
 	"select 1::integer union all select orderid from orders union all select customerid from orders",
 	"select customerid from orders union all select orderid from orders", conn)
 
+	# My attempt to isolate the set operation problem.
+
+	# test passes if there is one less select,
+	# even if it'si an int, or if there's
+	# one more "select 1"
+	verify_statement_differs(
+				"""
+				select 1
+				union
+				select (current_date - orderdate + 5 + 6 + 7 + 8) from orderlines
+				union
+				select 1;
+				""",
+				"""
+				select 1
+				union
+				select orderid from orders
+				union
+				select 1;
+				""",
+				conn, "isolate set operations problem")
+
 	# Same as above, but the one table is different
 	verify_statement_differs(
 					"""
@@ -400,7 +422,9 @@ def main():
 					intersect
 					select 5432, 6667,6337;
 					""",
-					conn)
+					conn, "one table is different")
+
+
 
 	# Same as original, but I've switched a column reference with a constant in
 	# the second query
@@ -426,6 +450,7 @@ def main():
 					conn)
 
 
+
 	# The left node in the set operation tree matches for before and after; we should still catch that
 	verify_statement_differs(
 					"""
@@ -442,6 +467,25 @@ def main():
 						select customerid from orders
 					""", conn)
 
+
+	verify_statement_differs(
+	"""
+	with recursive j(n) AS (
+	values (1)
+	union all
+	select n + 1 from j where n < 100
+	)
+	select avg(n) from j;
+	""",
+	"""
+	with recursive j(n) AS (
+	values (1)
+	union all
+	select 1 from orders
+	)
+	select avg(n) from j;
+	""",
+	conn)
 
 
 if __name__=="__main__":
