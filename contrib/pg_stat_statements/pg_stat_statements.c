@@ -411,18 +411,15 @@ pgss_shmem_shutdown(int code, Datum arg)
 }
 
 /*
- * PluginPlanner: Grab a hash of the normalized query
+ * PluginPlanner: Selectively serialize the query tree for the purposes of
+ * query normalization.
  */
 PlannedStmt *
 PluginPlanner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 {
-	PlannedStmt *result;
-	/*
-	 * Invoke the planner
-	 */
 	JumbleCurQuery(parse);
-	result = standard_planner(parse, cursorOptions, boundParams);
-	return result;
+	/* Invoke the planner */
+	return standard_planner(parse, cursorOptions, boundParams);
 }
 
 static void JumbleCurQuery(Query *parse)
@@ -557,6 +554,29 @@ static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i)
 		jumble[(*i)++] = ae->array_typeid;	/* type of expression result */
 		jumble[(*i)++] = ae->element_typeid;    /* common type of array elements */
 	}
+	else if (IsA(arg, CaseExpr))
+	{
+		CaseExpr *ce = (CaseExpr*) arg;
+		ListCell *l;
+		foreach(l, ce->args)
+		{
+			Node *arg = (Node *) lfirst(l);
+			ExprTypes(arg, jumble, size, i);
+		}
+
+	}
+	else if (IsA(arg, CaseTestExpr))
+	{
+		CaseTestExpr *ct = (CaseTestExpr*) arg;
+		jumble[(*i)++] = ct->typeId;
+	}
+	else if (IsA(arg, CaseWhen))
+	{
+		CaseWhen *cw = (CaseWhen*) arg;
+		Node *e = (Node*) cw->expr;
+		ExprTypes(e, jumble, size, i);
+
+	}
 	else
 	{
 		elog(ERROR, "unrecognized node type for ExprTypes node: %d",
@@ -597,7 +617,7 @@ static void LimitOffsetNode(Node *node, int jumble[], size_t size, int* i)
 	}
 	else if (IsA(node, Const))
 	{
-		/* A limit null expression; for our purposes, equivalent to no limit at all */
+		/* A limit null  or limit all expression; for our purposes, equivalent to no limit at all */
 		return;
 	}
 	else
@@ -1368,7 +1388,7 @@ entry_alloc(pgssHashKey *key, const char* query)
  * qsort comparator for sorting into increasing usage order
  */
 static int
-entry_cmp(const void *lhs, const void *rhs)
+entry_cmp_usage(const void *lhs, const void *rhs)
 {
 	double		l_usage = (*(pgssEntry * const *) lhs)->counters.usage;
 	double		r_usage = (*(pgssEntry * const *) rhs)->counters.usage;
@@ -1406,7 +1426,7 @@ entry_dealloc(void)
 		entry->counters.usage *= USAGE_DECREASE_FACTOR;
 	}
 
-	qsort(entries, i, sizeof(pgssEntry *), entry_cmp);
+	qsort(entries, i, sizeof(pgssEntry *), entry_cmp_usage);
 	nvictims = Max(10, i * USAGE_DEALLOC_PERCENT / 100);
 	nvictims = Min(nvictims, i);
 

@@ -458,7 +458,8 @@ def main():
 						union all
 						select customerid from orders
 						union all
-						select customerid from orders""",
+						select customerid from orders
+					""",
 					"""
 						select orderid from orders
 						union all
@@ -486,6 +487,43 @@ def main():
 	select avg(n) from j;
 	""",
 	conn)
+
+	# Excercise some less frequently used Expr nodes
+	verify_statement_equivalency(
+					"""
+						select
+						case orderid
+						when 0 then 'zero'
+						when 1 then 'one'
+						else 'some other number' end
+						from orders
+					""",
+					"""	select
+						case orderid
+						when 5 then 'five'
+						when 6 then 'six'
+						else 'some other number' end
+						from orders
+
+					""", conn)
+
+	verify_statement_differs(
+					"""
+						select
+						case orderid
+						when 0 then 'zero'
+						else 'some other number' end
+						from orders
+					""",
+					"""	select
+						case orderid
+						when 5 then 'five'
+						when 6 then 'six'
+						else 'some other number' end
+						from orders
+
+					""", conn)
+
 
 
 if __name__=="__main__":
