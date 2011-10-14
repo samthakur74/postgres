@@ -524,6 +524,11 @@ def main():
 
 					""", conn)
 
+	verify_statement_differs( "select min(orderid) from orders", "select max(orderid) from orders", conn, "min not max check")
+
+	# The parser uses a dedicated Expr node	to handle greatest()/least()
+	verify_statement_differs( "select greatest(1,2,3) from orders", "select least(1,2,3) from orders", conn, "greatest/least differ check")
+
 
 
 if __name__=="__main__":

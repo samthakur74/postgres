@@ -577,6 +577,19 @@ static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i)
 		ExprTypes(e, jumble, size, i);
 
 	}
+	else if (IsA(arg, MinMaxExpr))
+	{
+		MinMaxExpr *cw = (MinMaxExpr*) arg;
+		ListCell *l;
+		jumble[(*i)++] = cw->minmaxtype;
+		jumble[(*i)++] = cw->op;
+		foreach(l, cw->args)
+		{
+			Node *arg = (Node *) lfirst(l);
+			ExprTypes(arg, jumble, size, i);
+		}
+
+	}
 	else
 	{
 		elog(ERROR, "unrecognized node type for ExprTypes node: %d",
