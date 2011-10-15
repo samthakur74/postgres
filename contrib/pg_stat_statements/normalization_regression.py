@@ -524,6 +524,48 @@ def main():
 
 					""", conn)
 
+	# Counter-intuitively, these two statements are equivalent...
+	verify_statement_equivalency(
+					"""
+						select
+						case when orderid = 0
+						then 'zero'
+						when orderid = 1
+						then 'one'
+						else 'other number' end
+						from orders
+					""",
+					"""
+						select
+						case when orderid = 0
+						then 'zero'
+						when orderid = 1
+						then 'one' end
+						from orders
+					""", conn, "Case when test")
+
+	# ...this is because no else clause is actually equivalent to "else NULL".
+
+	verify_statement_equivalency(
+					"""
+						select
+						case when orderid = 0
+						then 'zero'
+						when orderid = 1
+						then 'one'
+						else 'other number' end
+						from orders
+					""",
+					"""
+						select
+						case when orderid = 5
+						then 'five'
+						when orderid = 6
+						then 'six'
+						else 'some other number' end
+						from orders
+					""", conn, "second case when test")
+
 	verify_statement_differs( "select min(orderid) from orders", "select max(orderid) from orders", conn, "min not max check")
 
 	# The parser uses a dedicated Expr node	to handle greatest()/least()

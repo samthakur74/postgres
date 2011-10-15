@@ -558,12 +558,24 @@ static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i)
 	{
 		CaseExpr *ce = (CaseExpr*) arg;
 		ListCell *l;
+		Assert(ce->casetype != InvalidOid);
+		jumble[(*i)++] = ce->casetype;
 		foreach(l, ce->args)
 		{
 			Node *arg = (Node *) lfirst(l);
 			ExprTypes(arg, jumble, size, i);
 		}
+		if (ce->arg)
+			ExprTypes((Node*) ce->arg, jumble, size, i);
 
+		if (ce->defresult)
+		{
+			/* Default result (ELSE clause)
+			 * This may be NULL, because no else clause
+			 * was actually specified
+			 */
+			ExprTypes((Node*) ce->defresult, jumble, size, i); /* the default result (ELSE clause) */
+		}
 	}
 	else if (IsA(arg, CaseTestExpr))
 	{
@@ -573,8 +585,12 @@ static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i)
 	else if (IsA(arg, CaseWhen))
 	{
 		CaseWhen *cw = (CaseWhen*) arg;
-		Node *e = (Node*) cw->expr;
-		ExprTypes(e, jumble, size, i);
+		Node *res = (Node*) cw->result;
+		Node *exp = (Node*) cw->expr;
+		if (res)
+			ExprTypes(res, jumble, size, i);
+		if (exp)
+			ExprTypes(exp, jumble, size, i);
 
 	}
 	else if (IsA(arg, MinMaxExpr))
@@ -588,14 +604,12 @@ static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i)
 			Node *arg = (Node *) lfirst(l);
 			ExprTypes(arg, jumble, size, i);
 		}
-
 	}
 	else
 	{
 		elog(ERROR, "unrecognized node type for ExprTypes node: %d",
 				(int) nodeTag(arg));
 	}
-
 }
 
 /*
