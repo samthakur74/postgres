@@ -751,16 +751,6 @@ static void PerformJumble(Query *parse, int jumble[], size_t size, int* i)
 			PerformJumble(cte_query, jumble, size, i);
 	}
 
-	/* Directly iterating over rtable is necessary for nested set operations */
-	foreach(l, parse->rtable)
-	{
-		RangeTblEntry *rte = (RangeTblEntry *) lfirst(l);
-		jumble[(*i)++] = rte->relid;
-		/* TODO: Add logic to handle more than subquery and relation case */
-		if (rte->subquery)
-			PerformJumble(rte->subquery, jumble, size, i);
-
-	}
 	if (jt)
 	{
 		if (jt->quals)
@@ -921,21 +911,17 @@ static void PerformJumble(Query *parse, int jumble[], size_t size, int* i)
 		jumble[(*i)++] = topop->op;
 		jumble[(*i)++] = topop->all;
 
-		if (lchild)
+		/* leaf selects are RTE subselections */
+		foreach(l, parse->rtable)
 		{
-			RangeTblEntry *rte = rt_fetch(lchild->rtindex, parse->rtable);
-			Query	   *subquery = rte->subquery;
-			Assert(rte->rtekind == RTE_SUBQUERY);
-			PerformJumble(subquery, jumble, size, i);
+			RangeTblEntry *rte = (RangeTblEntry *) lfirst(l);
+			if (rte->subquery)
+				PerformJumble(rte->subquery, jumble, size, i);
+
 		}
-		if (rchild)
-		{
-			RangeTblEntry *rte = rt_fetch(rchild->rtindex, parse->rtable);
-			Query	   *subquery = rte->subquery;
-			Assert(rte->rtekind == RTE_SUBQUERY);
-			PerformJumble(subquery, jumble, size, i);
-		}
+
 	}
+
 
 }
 
