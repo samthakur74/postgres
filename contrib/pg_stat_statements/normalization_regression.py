@@ -468,6 +468,19 @@ def main():
 						select customerid from orders
 					""", conn)
 
+	verify_statement_differs(
+					"""
+						select orderid, customerid from orders
+						union
+						select orderid, customerid from orders
+						order by orderid
+					""",
+					"""
+						select orderid, customerid from orders
+						union
+						select orderid, customerid from orders
+						order by customerid
+					""", conn)
 
 	verify_statement_differs(
 	"""

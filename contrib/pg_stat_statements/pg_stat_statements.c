@@ -51,6 +51,20 @@ static const uint32 PGSS_FILE_HEADER = 0x20100108;
 #define USAGE_DECREASE_FACTOR	(0.99)	/* decreased every entry_dealloc */
 #define USAGE_DEALLOC_PERCENT	5		/* free this % of entries at once */
 #define CIRCULAR_BUFFER_SIZE    127   /* Size of circular buffer for selective serialization of Query tree */
+
+#define VolMemCpy(dst, src, len) \
+	do \
+	{ \
+		volatile char* dstp = (volatile char*) dst;\
+		volatile char* srcp = (volatile char*) src;\
+		int count = len;\
+\
+		while (count--) \
+		{\
+		    *dstp++ = *srcp++;\
+		}\
+	} while (0)
+
 /*
  * Hashtable key that defines the identity of a hashtable entry.  The
  * hash comparators do not assume that the query string is null-terminated;
@@ -906,8 +920,6 @@ static void PerformJumble(Query *parse, int jumble[], size_t size, int* i)
 		 * level of a UNION/INTERSECT/EXCEPT query
 		 */
 		SetOperationStmt *topop = (SetOperationStmt *) parse->setOperations;
-		RangeTblRef *lchild = (RangeTblRef*) topop->larg;
-		RangeTblRef *rchild = (RangeTblRef*) topop->rarg;
 		jumble[(*i)++] = topop->op;
 		jumble[(*i)++] = topop->all;
 
@@ -919,10 +931,7 @@ static void PerformJumble(Query *parse, int jumble[], size_t size, int* i)
 				PerformJumble(rte->subquery, jumble, size, i);
 
 		}
-
 	}
-
-
 }
 
 /*
@@ -1176,6 +1185,8 @@ pgss_store(const char *query, int parse_jumble[], double total_time, uint64 rows
 	/* Grab the spinlock while updating the counters. */
 	{
 		volatile pgssEntry *e = (volatile pgssEntry *) entry;
+		int query_len = strlen(entry->query);
+		volatile const char *q =  (volatile const char *) query;
 
 		SpinLockAcquire(&e->mutex);
 		e->counters.calls += 1;
@@ -1190,17 +1201,13 @@ pgss_store(const char *query, int parse_jumble[], double total_time, uint64 rows
 		e->counters.temp_blks_read += bufusage->temp_blks_read;
 		e->counters.temp_blks_written += bufusage->temp_blks_written;
 		e->counters.usage += usage;
-		/* TODO: Either honor SpinLockAcquire's contract by
-		 * not allowing the implicit conversion to a non volatile
-		 * pointer here, or come up with some other form of
-		 * lock. With the number of instructions here now,
-		 * a LWLock might be preferable.
+		/* The use of macro variants of C stdlib functions
+		 * maintains the volatility of the pointer, and avoids
+		 * reordering issues
 		 */
-		/* memset() previous entry */
-		memset(e->query, 0, strlen(e->query));
-		/* perform memcpy inline to respect volatility of */
-		memcpy(e->query, query, strlen(query));
-		e->query_len = strlen(query);
+		MemSet(e->query, 0, query_len);
+		VolMemCpy(e->query, q, query_len);
+		e->query_len = query_len;
 		SpinLockRelease(&e->mutex);
 	}
 
