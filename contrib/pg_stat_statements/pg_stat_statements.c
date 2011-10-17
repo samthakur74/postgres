@@ -1186,6 +1186,7 @@ pgss_store(const char *query, int parse_jumble[], double total_time, uint64 rows
 	{
 		volatile pgssEntry *e = (volatile pgssEntry *) entry;
 		int query_len = strlen(entry->query);
+		int new_query_len = strlen(query);
 		volatile const char *q =  (volatile const char *) query;
 
 		SpinLockAcquire(&e->mutex);
@@ -1206,8 +1207,8 @@ pgss_store(const char *query, int parse_jumble[], double total_time, uint64 rows
 		 * reordering issues
 		 */
 		MemSet(e->query, 0, query_len);
-		VolMemCpy(e->query, q, query_len);
-		e->query_len = query_len;
+		VolMemCpy(e->query, q, new_query_len);
+		e->query_len = new_query_len;
 		SpinLockRelease(&e->mutex);
 	}
 

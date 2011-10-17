@@ -22,6 +22,31 @@ def print_queries(conn):
 	for i in cur:
 		print i[0]
 
+def verify_basic_integrity(conn):
+	# Queries are not being corrupted in an obvious way
+	global test_no
+	error_mess = "Basic problem with pg_stat_statements storage detected"
+	cur = conn.cursor()
+	cur.execute("select pg_stat_statements_reset();")
+	sql = "select least(45555,45555,55555) from orders;"
+	cur.execute(sql)
+	cur.execute("select count(*) from pg_stat_statements where query = '{0}';".format(sql))
+	for i in cur:
+		tuple_n = i[0]
+
+	if tuple_n != 1:
+		raise SystemExit(error_mess)
+
+	sql = "select least(5,5,5) from orders;"
+	cur.execute(sql)
+	cur.execute("select count(*) from pg_stat_statements where query = '{0}';".format(sql))
+
+	for i in cur:
+		tuple_n = i[0]
+
+	if tuple_n != 1:
+		raise SystemExit(error_mess)
+
 
 def verify_statement_equivalency(sql, equiv, conn, test_name = None):
 	# Run both queries in isolation and verify that there
@@ -64,6 +89,10 @@ def verify_statement_differs(sql, diff, conn, test_name = None):
 def main():
 	conn = psycopg2.connect("")
 	# Just let exceptions propagate
+
+
+	verify_basic_integrity(conn)
+
 
 	verify_statement_equivalency("select '5'::integer;", "select  '17'::integer;", conn)
 	verify_statement_equivalency("select 1;", "select      5   ;", conn)
