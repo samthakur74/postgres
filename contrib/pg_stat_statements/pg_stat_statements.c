@@ -50,7 +50,7 @@ static const uint32 PGSS_FILE_HEADER = 0x20100108;
 #define USAGE_INIT				(1.0)	/* including initial planning */
 #define USAGE_DECREASE_FACTOR	(0.99)	/* decreased every entry_dealloc */
 #define USAGE_DEALLOC_PERCENT	5		/* free this % of entries at once */
-#define CIRCULAR_BUFFER_SIZE    127   /* Size of circular buffer for selective serialization of Query tree */
+#define JUM_BUF_SIZE    127   /* Size of circular buffer for selective serialization of Query tree */
 
 #define VolMemCpy(dst, src, len) \
 	do \
@@ -76,10 +76,10 @@ static const uint32 PGSS_FILE_HEADER = 0x20100108;
  */
 typedef struct pgssHashKey
 {
-	Oid			userid;			/* user OID */
-	Oid			dbid;			/* database OID */
-	int			encoding;		/* query encoding */
-	int			parse_jumble[CIRCULAR_BUFFER_SIZE];	/* Some integers jumbled together from a query tree */
+	int			parse_jumble[JUM_BUF_SIZE];	/* Some integers jumbled together from a query tree */
+	Oid			userid;				/* user OID */
+	Oid			dbid;				/* database OID */
+	int			encoding;			/* query encoding */
 } pgssHashKey;
 
 /*
@@ -110,8 +110,8 @@ typedef struct pgssEntry
 {
 	pgssHashKey key;			/* hash key of entry - MUST BE FIRST */
 	Counters	counters;		/* the statistics for this query */
-	slock_t		mutex;			/* protects the counters only */
 	int		query_len;		/* # of valid bytes in query string */
+	slock_t		mutex;			/* protects the counters only */
 	char		query[1];		/* VARIABLE LENGTH ARRAY - MUST BE LAST */
 	/* Note: the allocated length of query[] is actually pgss->query_size */
 } pgssEntry;
@@ -126,7 +126,7 @@ typedef struct pgssSharedState
 } pgssSharedState;
 
 /*---- Local variables ----*/
-int last_parse_jumble[CIRCULAR_BUFFER_SIZE];	/* Some integers jumbled from last query tree seen */
+int last_parse_jumble[JUM_BUF_SIZE];	/* Some integers jumbled from last query tree seen */
 
 /* Current nesting depth of ExecutorRun calls */
 static int	nested_level = 0;
@@ -334,15 +334,14 @@ _PG_fini(void)
 static void
 pgss_shmem_startup(void)
 {
-	/* TODO: Rewrite this function to work with query normalization*/
 	bool		found;
 	HASHCTL		info;
 	FILE	   *file;
-//	uint32		header;
-//	int32		num;
-//	int32		i;
+	uint32		header;
+	int32		num;
+	int32		i;
 	int			query_size;
-//	int			buffer_size;
+	int			buffer_size;
 	char	   *buffer = NULL;
 
 	if (prev_shmem_startup_hook)
@@ -397,8 +396,69 @@ pgss_shmem_startup(void)
 	if (found || !pgss_save)
 		return;
 
+	/*
+	 * Note: we don't bother with locks here, because there should be no other
+	 * processes running when this code is reached.
+	 */
+	file = AllocateFile(PGSS_DUMP_FILE, PG_BINARY_R);
+	if (file == NULL)
+	{
+		if (errno == ENOENT)
+			return;				/* ignore not-found error */
+		goto error;
+	}
+
+	buffer_size = query_size;
+	buffer = (char *) palloc(buffer_size);
+
+	if (fread(&header, sizeof(uint32), 1, file) != 1 ||
+		header != PGSS_FILE_HEADER ||
+		fread(&num, sizeof(int32), 1, file) != 1)
+		goto error;
+
+	for (i = 0; i < num; i++)
+	{
+		pgssEntry	temp;
+		pgssEntry  *entry;
+
+		if (fread(&temp, offsetof(pgssEntry, mutex), 1, file) != 1)
+			goto error;
+
+		/* Encoding is the only field we can easily sanity-check */
+		if (!PG_VALID_BE_ENCODING(temp.key.encoding))
+			goto error;
+
+
+		/* Previous incarnation might have had a larger query_size */
+		if (temp.query_len >= buffer_size)
+		{
+			buffer = (char *) repalloc(buffer, temp.query_len + 1);
+			buffer_size = temp.query_len + 1;
+		}
+
+		if (fread(buffer, 1, temp.query_len, file) != temp.query_len)
+			goto error;
+		buffer[temp.query_len] = '\0';
+
+
+		/* Clip to available length if needed */
+		if (temp.query_len >= query_size)
+			temp.query_len = pg_encoding_mbcliplen(temp.key.encoding,
+													   buffer,
+													   temp.query_len,
+													   query_size - 1);
+
+		/* make the hashtable entry (discards old entries if too many) */
+		entry = entry_alloc(&temp.key, buffer);
+
+		/* copy in the actual stats */
+		entry->counters = temp.counters;
+	}
+
+	pfree(buffer);
+	FreeFile(file);
 	return;
-	goto error;
+
 error:
 	ereport(LOG,
 			(errcode_for_file_access(),
@@ -421,7 +481,60 @@ error:
 static void
 pgss_shmem_shutdown(int code, Datum arg)
 {
-	/* TODO: Rewrite this function to work with query normalization */
+	FILE	   *file;
+	HASH_SEQ_STATUS hash_seq;
+	int32		num_entries;
+	pgssEntry  *entry;
+
+	/* Don't try to dump during a crash. */
+	if (code)
+		return;
+
+	/* Safety check ... shouldn't get here unless shmem is set up. */
+	if (!pgss || !pgss_hash)
+		return;
+
+	/* Don't dump if told not to. */
+	if (!pgss_save)
+		return;
+
+	file = AllocateFile(PGSS_DUMP_FILE, PG_BINARY_W);
+	if (file == NULL)
+		goto error;
+
+	if (fwrite(&PGSS_FILE_HEADER, sizeof(uint32), 1, file) != 1)
+		goto error;
+	num_entries = hash_get_num_entries(pgss_hash);
+	if (fwrite(&num_entries, sizeof(int32), 1, file) != 1)
+		goto error;
+
+	hash_seq_init(&hash_seq, pgss_hash);
+	while ((entry = hash_seq_search(&hash_seq)) != NULL)
+	{
+		int			len = entry->query_len;
+
+		if (fwrite(entry, offsetof(pgssEntry, mutex), 1, file) != 1 ||
+			fwrite(entry->query, 1, len, file) != len)
+			goto error;
+	}
+
+	if (FreeFile(file))
+	{
+		file = NULL;
+		goto error;
+	}
+
+	return;
+
+error:
+	ereport(LOG,
+			(errcode_for_file_access(),
+			 errmsg("could not write pg_stat_statement file \"%s\": %m",
+					PGSS_DUMP_FILE)));
+	if (file)
+		FreeFile(file);
+	unlink(PGSS_DUMP_FILE);
+
 }
 
 /*
@@ -433,7 +546,11 @@ PluginPlanner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 {
 	JumbleCurQuery(parse);
 	/* Invoke the planner */
-	return standard_planner(parse, cursorOptions, boundParams);
+	if (prev_Planner)
+		return prev_Planner(parse, cursorOptions, boundParams);
+	else
+		return standard_planner(parse, cursorOptions, boundParams);
+
 }
 
 static void JumbleCurQuery(Query *parse)
@@ -463,7 +580,6 @@ static void PerformArgs(List *args,  int jumble[], size_t size, int* i)
 		Node *arg = (Node *) lfirst(l);
 		ExprTypes(arg, jumble, size, i);
 	}
-
 }
 
 static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i)
@@ -565,8 +681,16 @@ static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i)
 	else if (IsA(arg, ArrayExpr))
 	{
 		ArrayExpr *ae = (ArrayExpr *) arg;
+		ListCell *l;
 		jumble[(*i)++] = ae->array_typeid;	/* type of expression result */
 		jumble[(*i)++] = ae->element_typeid;    /* common type of array elements */
+
+		foreach(l, ae->elements)
+		{
+			Node *arg = (Node *) lfirst(l);
+			ExprTypes(arg, jumble, size, i);
+		}
+
 	}
 	else if (IsA(arg, CaseExpr))
 	{
@@ -585,8 +709,9 @@ static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i)
 		if (ce->defresult)
 		{
 			/* Default result (ELSE clause)
-			 * This may be NULL, because no else clause
-			 * was actually specified
+			 * The ptr may be NULL, because no else clause
+			 * was actually specified, and thus the value is
+			 * equivalent to SQL ELSE NULL
 			 */
 			ExprTypes((Node*) ce->defresult, jumble, size, i); /* the default result (ELSE clause) */
 		}
@@ -614,6 +739,28 @@ static void ExprTypes(Node *arg,  int jumble[], size_t size, int* i)
 		jumble[(*i)++] = cw->minmaxtype;
 		jumble[(*i)++] = cw->op;
 		foreach(l, cw->args)
+		{
+			Node *arg = (Node *) lfirst(l);
+			ExprTypes(arg, jumble, size, i);
+		}
+	}
+	else if (IsA(arg, ScalarArrayOpExpr))
+	{
+		ScalarArrayOpExpr *sa = (ScalarArrayOpExpr*) arg;
+		ListCell *l;
+		jumble[(*i)++] = sa->opfuncid;
+		jumble[(*i)++] = sa->useOr;
+		foreach(l, sa->args)
+		{
+			Node *arg = (Node *) lfirst(l);
+			ExprTypes(arg, jumble, size, i);
+		}
+	}
+	else if (IsA(arg, CoalesceExpr))
+	{
+		CoalesceExpr *ca = (CoalesceExpr*) arg;
+		ListCell *l;
+		foreach(l, ca->args)
 		{
 			Node *arg = (Node *) lfirst(l);
 			ExprTypes(arg, jumble, size, i);
@@ -702,7 +849,6 @@ static void JoinExprNodeChild(Node *node, int jumble[], size_t size, int* i, Lis
 		jumble[(*i)++] = rte->relid;
 		jumble[(*i)++] = rte->jointype;
 
-
 		if (rte->subquery)
 			PerformJumble(rte->subquery, jumble, size, i);
 
@@ -718,8 +864,7 @@ static void JoinExprNodeChild(Node *node, int jumble[], size_t size, int* i, Lis
 	}
 	else
 	{
-		elog(ERROR, "unrecognized node type for JoinExprNodeChild: %d",
-			 (int) nodeTag(node));
+		ExprTypes(node, jumble, size, i);
 	}
 }
 
@@ -787,10 +932,8 @@ static void PerformJumble(Query *parse, int jumble[], size_t size, int* i)
 			}
 			else
 			{
-				elog(ERROR, "unrecognized node type for join tree quals: %d",
-					 (int) nodeTag(jt->quals));
+				ExprTypes((Node*) jt->quals, jumble, size, i);
 			}
-
 		}
 
 		/* table join tree */
@@ -810,6 +953,10 @@ static void PerformJumble(Query *parse, int jumble[], size_t size, int* i)
 				/* Subselection in where clause */
 				if (rte->subquery)
 					PerformJumble(rte->subquery, jumble, size, i);
+
+				/* Function call in where clause */
+				if (rte->funcexpr)
+					ExprTypes((Node*) rte->funcexpr, jumble, size, i);
 			}
 			else
 			{

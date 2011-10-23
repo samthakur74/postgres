@@ -101,7 +101,9 @@ def main():
 	verify_statement_equivalency("select * from orders where orderdate = '2001-01-01';" ,"select * from orders where orderdate = '1960-01-01'", conn)
 	verify_statement_equivalency("select '5'::integer;","select  '17'::integer;", conn)
 	# We don't care about whitespace or differences in constants:
-	verify_statement_equivalency("select o.orderid from orders o join orderlines ol on o.orderid = ol.orderid     where    customerid        =  12345  ;", "select o.orderid from orders o join orderlines ol on o.orderid = ol.orderid where customerid = 6789;", conn)
+	verify_statement_equivalency(
+	"select o.orderid from orders o join orderlines ol on o.orderid = ol.orderid     where    customerid        =  12345  ;",
+	"select o.orderid from orders o join orderlines ol on o.orderid = ol.orderid where customerid = 6789;", conn)
 
 	# "select * from " and "select <enumerate columns> from " equivalency:
 	verify_statement_equivalency("select * from orders", "select orderid, orderdate, customerid, netamount, tax, totalamount from orders;", conn)
@@ -127,6 +129,28 @@ def main():
 	# Different logical operator means different query though:
 	verify_statement_differs("select orderid from orders where orderid = 5 and 1=1;",
 				 "select orderid from orders where orderid = 7 or 3=3;", conn)
+
+	verify_statement_equivalency(
+		"values(1, 2, 3);",
+		"values(4, 5, 6);", conn)
+
+	verify_statement_differs(
+		"values(1, 2, 3);",
+		"values(4, 5, 6, 7);", conn)
+
+	verify_statement_equivalency(
+		"select * from (values(1, 2, 3)) as v;",
+		"select * from (values(4, 5, 6)) as v;", conn)
+
+	verify_statement_differs(
+		"select * from (values(1, 2, 3)) as v;",
+		"select * from (values(4, 5, 6, 7)) as v;", conn)
+
+	# Coalesce
+	verify_statement_equivalency("select coalesce(orderid, null, null) from orders where orderid = 5 and 1=1;",
+				 "select coalesce(orderid, 5, 5) from orders where orderid = 7 and 3=3;", conn)
+	verify_statement_differs("select coalesce(orderid, 5, 5, 6 ) from orders where orderid = 5 and 1=1;",
+				 "select coalesce(orderid, 5, 5) from orders where orderid = 7 and 3=3;", conn)
 
 
 	# Observe what we can do with noise words (no "outer" in later statement, plus we use AS in the second query):
@@ -158,6 +182,16 @@ def main():
 	verify_statement_equivalency(
 	"select upper(lower(upper(lower(initcap(lower('Foo'))))));",
 	"select upper(lower(upper(lower(initcap(lower('Bar'))))));",
+				conn)
+	# Do same again, but put function in FROM
+	verify_statement_differs(
+	"select * from upper(lower(upper(lower  (initcap(lower('Foo'))))));",
+	"select * from upper(lower(upper(initcap(initcap(lower('Foo'))))));",
+				conn)
+
+	verify_statement_equivalency(
+	"select * from upper(lower(upper(lower(initcap(lower('Foo'))))));",
+	"select * from upper(lower(upper(lower(initcap(lower('Bar'))))));",
 				conn)
 
 	# In the where clause too:
@@ -218,13 +252,11 @@ def main():
 	"select ARRAY[1,2,3]::integer[] && ARRAY[1]::integer[];",
 	"select ARRAY[1,2,3]::integer[] <@ ARRAY[1]::integer[];",
 				conn)
-	# Number of elements in ARRAY[] expression is not a differentiator:
-	verify_statement_equivalency(
+	# Number of elements in ARRAY[] expression is a differentiator:
+	verify_statement_differs(
 	"select ARRAY[1,2,3]::integer[] <@ ARRAY[1]::integer[];",
 	"select ARRAY[999]::integer[]   <@ ARRAY[342, 543, 634 ,753]::integer[];",
 				conn)
-
-
 
 	# subqueries
 
@@ -251,7 +283,7 @@ def main():
 	"select * from orderlines ol join orders o on o.orderid = ol.orderid join (select orderid b from orders where orderid = 5) as t on ol.orderid = t.b;", conn)
 	# Even though these two queries will result in the same plan, they are not yet equivalent - they are not
 	# semantically equivalent, as least by our standard. We could probably figure out a way of having the
-	# equivalency recognized, but I highly doubt it's worth bothering, since recognising most kinds of semantic
+	# equivalency recognized, but I highly doubt it's worth bothering, since recognizing most kinds of semantic
 	# equivalence is generally more of a neat consequence of our implementation than a practical feature:
 	verify_statement_differs("select * from orderlines ol inner join orders o on o.orderid = ol.orderid;",
 				 "select * from orderlines ol, orders o where o.orderid = ol.orderid;", conn)
@@ -614,6 +646,59 @@ def main():
 	verify_statement_differs( "select greatest(1,2,3) from orders", "select least(1,2,3) from orders", conn, "greatest/least differ check")
 
 
+	verify_statement_differs(
+		"""
+			 SELECT c.oid AS relid,
+				n.nspname AS schemaname,
+				c.relname
+			   FROM pg_class c
+			   LEFT JOIN pg_index i ON c.oid = i.indrelid
+			   LEFT JOIN pg_class t ON c.reltoastrelid = t.oid
+			   LEFT JOIN pg_class x ON t.reltoastidxid = x.oid
+			   LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+			  WHERE c.relkind = ANY (ARRAY['r'::"char", 't'::"char"])
+			  GROUP BY c.oid, n.nspname, c.relname, t.oid, x.oid;
+		"""
+		,
+		"""
+			 SELECT c.oid AS relid,
+				n.nspname AS schemaname,
+				c.relname
+			   FROM pg_class c
+			   LEFT JOIN pg_index i ON c.oid = i.indrelid
+			   LEFT JOIN pg_class t ON c.reltoastrelid = t.oid
+			   LEFT JOIN pg_class x ON t.reltoastidxid = x.oid
+			   LEFT JOIN pg_namespace n ON n.oid = c.relnamespace
+			  WHERE c.relkind = ANY (ARRAY['r'::"char", 't'::"char", 'v'::"char"])
+			  GROUP BY c.oid, n.nspname, c.relname, t.oid, x.oid;
+		"""
+
+		,conn, "number of ARRAY elements varies in ANY()  in where clause")
+
+	# Don't confuse functions and function-like dedicated ExprNodes, or pairs of
+	# function-like dedicated ExprNodes
+
+	# I'd speculate that if this was performed with every ExprNode that resembles
+	# a function, it wouldn't actually fail, since there tends to be a good reason
+	# for having a dedicated though function-like ExprNode rather than just an
+	# SQL-callable function, and I'm naturally already serializing those differences
+	# as they're rather obviously essential to the query
+
+	# The concern here is a specific case of a more general one - that successive
+	# queries with similar ExprNodes could incorrectly be considered equivalent.
+
+	# NB:
+
+	# I consider the question of whether or not it is necessary to escape query-tree
+	# serializations (in a way that includes a magic number for the ExprNode, such as
+	# its offset in the NodeTag enum) to be an open one.
+
+	# Part of the difficulty is that OIDs cannot be expected to remain unique
+	# over time and across pg_* tables
+	verify_statement_differs(
+	"select coalesce(orderid) from orders;",
+	"select sum(orderid) from orders;",
+	conn, "Don't confuse functions/function like nodes")
 
 if __name__=="__main__":
 	main()
