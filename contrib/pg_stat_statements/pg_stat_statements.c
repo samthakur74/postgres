@@ -205,7 +205,7 @@ static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
 static void pgss_store(const char *query, int parse_jumble[], double total_time, uint64 rows,
 		   const BufferUsage *bufusage);
 static Size pgss_memsize(void);
-static pgssEntry *entry_alloc(pgssHashKey *key, const char* query);
+static pgssEntry *entry_alloc(pgssHashKey *key, const char* query, int new_query_len);
 static void entry_dealloc(void);
 static void entry_reset(void);
 
@@ -448,7 +448,7 @@ pgss_shmem_startup(void)
 													   query_size - 1);
 
 		/* make the hashtable entry (discards old entries if too many) */
-		entry = entry_alloc(&temp.key, buffer);
+		entry = entry_alloc(&temp.key, buffer, temp.query_len);
 
 		/* copy in the actual stats */
 		entry->counters = temp.counters;
@@ -549,7 +549,6 @@ PluginPlanner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		return prev_Planner(parse, cursorOptions, boundParams);
 	else
 		return standard_planner(parse, cursorOptions, boundParams);
-
 }
 
 /*
@@ -1356,6 +1355,7 @@ pgss_store(const char *query, int parse_jumble[], double total_time, uint64 rows
 	pgssHashKey key;
 	double		usage;
 	pgssEntry  *entry;
+	int new_query_len = strlen(query);
 
 	Assert(query != NULL);
 
@@ -1369,6 +1369,11 @@ pgss_store(const char *query, int parse_jumble[], double total_time, uint64 rows
 	key.encoding = GetDatabaseEncoding();
 	memcpy(key.parse_jumble, parse_jumble, sizeof(key.parse_jumble));
 
+	if (new_query_len >= pgss->query_size)
+		new_query_len = pg_encoding_mbcliplen(key.encoding,
+											  query,
+											  new_query_len,
+											  pgss->query_size - 1);
 	usage = USAGE_EXEC(duration);
 
 	/* Lookup the hash table entry with shared lock. */
@@ -1380,14 +1385,13 @@ pgss_store(const char *query, int parse_jumble[], double total_time, uint64 rows
 		/* Must acquire exclusive lock to add a new entry. */
 		LWLockRelease(pgss->lock);
 		LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
-		entry = entry_alloc(&key, query);
+		entry = entry_alloc(&key, query, new_query_len);
 	}
 
 	/* Grab the spinlock while updating the counters. */
 	{
 		volatile pgssEntry *e = (volatile pgssEntry *) entry;
-		int query_len = strlen(entry->query);
-		int new_query_len = strlen(query);
+		int exis_query_len = strlen(entry->query);
 		volatile const char *q =  (volatile const char *) query;
 
 		SpinLockAcquire(&e->mutex);
@@ -1407,7 +1411,7 @@ pgss_store(const char *query, int parse_jumble[], double total_time, uint64 rows
 		 * maintains the volatility of the pointer, and avoids
 		 * reordering issues
 		 */
-		MemSet(e->query, 0, query_len);
+		MemSet(e->query, 0, exis_query_len);
 		VolMemCpy(e->query, q, new_query_len);
 		e->query_len = new_query_len;
 		SpinLockRelease(&e->mutex);
@@ -1570,7 +1574,7 @@ pgss_memsize(void)
  * have made the entry while we waited to get exclusive lock.
  */
 static pgssEntry *
-entry_alloc(pgssHashKey *key, const char* query)
+entry_alloc(pgssHashKey *key, const char* query, int new_query_len)
 {
 	pgssEntry  *entry;
 	bool		found;
@@ -1585,7 +1589,7 @@ entry_alloc(pgssHashKey *key, const char* query)
 
 	if (!found)
 	{
-		entry->query_len = strlen(query);
+		entry->query_len = new_query_len;
 		Assert(entry->query_len > 0);
 		/* New entry, initialize it */
 
