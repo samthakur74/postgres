@@ -645,8 +645,9 @@ static void ValidateXLOGDirectoryStructure(void);
 static void CleanupBackupHistory(void);
 static void UpdateMinRecoveryPoint(XLogRecPtr lsn, bool force);
 static XLogRecord *ReadRecord(XLogRecPtr *RecPtr, int emode, bool fetching_ckpt);
-static void CheckRecoveryConsistency(void);
 static bool ValidXLOGHeader(XLogPageHeader hdr, int emode);
+static void StartHotStandbyIfConsistent(
+	TransactionId *oldestActiveXID, bool wasShutdown, CheckPoint checkPoint);
 static XLogRecord *ReadCheckpointRecord(XLogRecPtr RecPtr, int whichChkpt);
 static List *readTimeLineHistory(TimeLineID targetTLI);
 static bool existsTimeLineHistory(TimeLineID probeTLI);
@@ -6388,66 +6389,6 @@ StartupXLOG(void)
 		 */
 		DeleteAllExportedSnapshotFiles();
 
-		/*
-		 * Initialize for Hot Standby, if enabled. We won't let backends in
-		 * yet, not until we've reached the min recovery point specified in
-		 * control file and we've established a recovery snapshot from a
-		 * running-xacts WAL record.
-		 */
-		if (InArchiveRecovery && EnableHotStandby)
-		{
-			TransactionId *xids;
-			int			nxids;
-
-			ereport(DEBUG1,
-					(errmsg("initializing for hot standby")));
-
-			InitRecoveryTransactionEnvironment();
-
-			if (wasShutdown)
-				oldestActiveXID = PrescanPreparedTransactions(&xids, &nxids);
-			else
-				oldestActiveXID = checkPoint.oldestActiveXid;
-			Assert(TransactionIdIsValid(oldestActiveXID));
-
-			/* Startup commit log and related stuff */
-			StartupCLOG();
-			StartupSUBTRANS(oldestActiveXID);
-			StartupMultiXact();
-
-			/*
-			 * If we're beginning at a shutdown checkpoint, we know that
-			 * nothing was running on the master at this point. So fake-up an
-			 * empty running-xacts record and use that here and now. Recover
-			 * additional standby state for prepared transactions.
-			 */
-			if (wasShutdown)
-			{
-				RunningTransactionsData running;
-				TransactionId latestCompletedXid;
-
-				/*
-				 * Construct a RunningTransactions snapshot representing a
-				 * shut down server, with only prepared transactions still
-				 * alive. We're never overflowed at this point because all
-				 * subxids are listed with their parent prepared transactions.
-				 */
-				running.xcnt = nxids;
-				running.subxid_overflow = false;
-				running.nextXid = checkPoint.nextXid;
-				running.oldestRunningXid = oldestActiveXID;
-				latestCompletedXid = checkPoint.nextXid;
-				TransactionIdRetreat(latestCompletedXid);
-				Assert(TransactionIdIsNormal(latestCompletedXid));
-				running.latestCompletedXid = latestCompletedXid;
-				running.xids = xids;
-
-				ProcArrayApplyRecoveryInfo(&running);
-
-				StandbyRecoverPreparedTransactions(false);
-			}
-		}
-
 		/* Initialize resource managers */
 		for (rmid = 0; rmid <= RM_MAX_ID; rmid++)
 		{
@@ -6497,10 +6438,12 @@ StartupXLOG(void)
 		}
 
 		/*
-		 * Allow read-only connections immediately if we're consistent
-		 * already.
+		 * It is possible that the system is already ready for hot standby, as
+		 * a consistent state (minimum recovery point) has been reached, so
+		 * start if this is the case.
 		 */
-		CheckRecoveryConsistency();
+		StartHotStandbyIfConsistent(&oldestActiveXID, wasShutdown,
+									checkPoint);
 
 		/*
 		 * Find the first record that logically follows the checkpoint --- it
@@ -6561,7 +6504,8 @@ StartupXLOG(void)
 				HandleStartupProcInterrupts();
 
 				/* Allow read-only connections if we're consistent now */
-				CheckRecoveryConsistency();
+				StartHotStandbyIfConsistent(&oldestActiveXID, wasShutdown,
+											checkPoint);
 
 				/*
 				 * Have we reached our recovery target?
@@ -6976,13 +6920,16 @@ StartupXLOG(void)
 }
 
 /*
- * Checks if recovery has reached a consistent state. When consistency is
- * reached and we have a valid starting standby snapshot, tell postmaster
- * that it can start accepting read-only connections.
+ * Checks if consistency is reached.  Should we have a valid starting standby
+ * snapshot, initialize hot standby and tell postmaster that it can start
+ * accepting read-only connections.
  */
 static void
-CheckRecoveryConsistency(void)
+StartHotStandbyIfConsistent(TransactionId *oldestActiveXID, bool wasShutdown,
+							CheckPoint checkPoint)
 {
+	static bool alreadyInit = false;
+
 	/*
 	 * Have we passed our safe starting point?
 	 */
@@ -6994,6 +6941,67 @@ CheckRecoveryConsistency(void)
 		ereport(LOG,
 				(errmsg("consistent recovery state reached at %X/%X",
 						EndRecPtr.xlogid, EndRecPtr.xrecoff)));
+	}
+
+	/*
+	 * Initialize hot standby should a minimum recovery point have been
+	 * reached.
+	 */
+	if (!alreadyInit &&
+		reachedMinRecoveryPoint && InArchiveRecovery && EnableHotStandby)
+	{
+		TransactionId	*xids;
+		int              nxids;
+
+		ereport(DEBUG1,
+				(errmsg("initializing for hot standby")));
+
+		InitRecoveryTransactionEnvironment();
+
+		if (wasShutdown)
+			*oldestActiveXID = PrescanPreparedTransactions(&xids, &nxids);
+		else
+			*oldestActiveXID = checkPoint.oldestActiveXid;
+		Assert(TransactionIdIsValid(oldestActiveXID));
+
+		/* Startup commit log and related stuff */
+		StartupCLOG();
+		StartupSUBTRANS(*oldestActiveXID);
+		StartupMultiXact();
+
+		/*
+		 * If we're beginning at a shutdown checkpoint, we know that
+		 * nothing was running on the master at this point. So fake-up an
+		 * empty running-xacts record and use that here and now. Recover
+		 * additional standby state for prepared transactions.
+		 */
+		if (wasShutdown)
+		{
+			RunningTransactionsData running;
+			TransactionId latestCompletedXid;
+
+			/*
+			 * Construct a RunningTransactions snapshot representing a
+			 * shut down server, with only prepared transactions still
+			 * alive. We're never overflowed at this point because all
+			 * subxids are listed with their parent prepared transactions.
+			 */
+			running.xcnt = nxids;
+			running.subxid_overflow = false;
+			running.nextXid = checkPoint.nextXid;
+			running.oldestRunningXid = *oldestActiveXID;
+			latestCompletedXid = checkPoint.nextXid;
+			TransactionIdRetreat(latestCompletedXid);
+			Assert(TransactionIdIsNormal(latestCompletedXid));
+			running.latestCompletedXid = latestCompletedXid;
+			running.xids = xids;
+
+			ProcArrayApplyRecoveryInfo(&running);
+
+			StandbyRecoverPreparedTransactions(false);
+		}
+
+		alreadyInit = true;
 	}
 
 	/*
