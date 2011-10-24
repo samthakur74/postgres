@@ -105,6 +105,11 @@ def main():
 	"select o.orderid from orders o join orderlines ol on o.orderid = ol.orderid     where    customerid        =  12345  ;",
 	"select o.orderid from orders o join orderlines ol on o.orderid = ol.orderid where customerid = 6789;", conn)
 
+	# using clause matters:
+	verify_statement_differs(
+	"select o.orderid from orders o join orders oo using (orderid);",
+	"select o.orderid from orders o join orders oo using (customerid);", conn)
+
 	# "select * from " and "select <enumerate columns> from " equivalency:
 	verify_statement_equivalency("select * from orders", "select orderid, orderdate, customerid, netamount, tax, totalamount from orders;", conn)
 	# The equivalency only holds if you happen to enumerate columns in the exact same order though:
@@ -645,6 +650,21 @@ def main():
 	# The parser uses a dedicated Expr node	to handle greatest()/least()
 	verify_statement_differs( "select greatest(1,2,3) from orders", "select least(1,2,3) from orders", conn, "greatest/least differ check")
 
+	# Window functions
+	verify_statement_differs(
+	"select sum(netamount) over () from orders",
+	"select sum(tax) over () from orders",
+	conn, "window function column check")
+
+	verify_statement_differs(
+	"select sum(netamount) over (partition by customerid) from orders",
+	"select sum(netamount) over (partition by orderdate) from orders",
+	conn, "window function over column differs check")
+
+	verify_statement_differs(
+	"select sum(netamount) over (partition by customerid order by orderid) from orders",
+	"select sum(netamount) over (partition by customerid order by tax) from orders",
+	conn, "window function over column differs check")
 
 	verify_statement_differs(
 		"""
