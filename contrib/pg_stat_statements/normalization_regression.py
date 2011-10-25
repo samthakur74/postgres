@@ -47,6 +47,23 @@ def verify_basic_integrity(conn):
 	if tuple_n != 1:
 		raise SystemExit(error_mess)
 
+def demonstrate_buffer_limitation(conn):
+	# It's expected that comparing a number of sufficiently large queries will result
+	# in their incorrectly being considered equivalent provided the differences occur
+	# after we run out of space to selectively serialize to in our buffer.
+	set_operations = ['union', 'union all', 'except' ]
+	for it, i in enumerate(["select 1,2,3,4",
+				"select upper(lower(upper(lower(initcap(lower('Foo'))))))",
+				"select count(*) from orders o group by orderid" ]):
+		long_query = ""
+		long_long_query = ""
+		for j in range(0,100):
+			long_query += i + (' ' + set_operations[it] + ' \n' if j != 99 else " ")
+		for j in range(0,1000):
+			long_long_query += i + (' ' + set_operations[it] + ' \n' if j != 999 else " ")
+
+		# Ideally, this test would fail, but it doesn't
+		verify_statement_equivalency(long_query, long_long_query, conn, "Differences out of range (iteration {0})".format(it))
 
 def verify_statement_equivalency(sql, equiv, conn, test_name = None):
 	# Run both queries in isolation and verify that there
@@ -61,10 +78,11 @@ def verify_statement_equivalency(sql, equiv, conn, test_name = None):
 		tuple_n = i[0]
 
 	if tuple_n != 1:
-		#print_queries(conn)
-		raise SystemExit("The SQL statements \n'{0}'\n and \n'{1}'\n do not appear to be equivalent! Test {2} failed.".format(sql, equiv, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no)) )
+		raise SystemExit("""The SQL statements \n'{0}'\n and \n'{1}'\n do not appear to be equivalent!
+		Test {2} failed.""".format(sql, equiv, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no)) )
 
-	print "The statements \n'{0}'\n and \n'{1}'\n are equivalent, as expected. Test {2} passed.\n\n".format(sql, equiv, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no))
+	print """The statements \n'{0}'\n and \n'{1}'\n are equivalent, as expected.
+		Test {2} passed.\n\n""".format(sql, equiv, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no))
 	test_no +=1
 
 def verify_statement_differs(sql, diff, conn, test_name = None):
@@ -80,10 +98,11 @@ def verify_statement_differs(sql, diff, conn, test_name = None):
 		tuple_n = i[0]
 
 	if tuple_n != 2:
-		#print_queries(conn)
-		raise SystemExit("The SQL statements \n'{0}'\n and \n'{1}'\n do not appear to be different! Test {2} failed.".format(sql, diff, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no)))
+		raise SystemExit("""The SQL statements \n'{0}'\n and \n'{1}'\n do not appear to be different!
+				Test {2} failed.""".format(sql, diff, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no)))
 
-	print "The statements \n'{0}'\n and \n'{1}'\n are not equivalent, as expected. Test {2} passed.\n\n ".format(sql, diff, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no))
+	print """The statements \n'{0}'\n and \n'{1}'\n are not equivalent, as expected.
+		Test {2} passed.\n\n """.format(sql, diff, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no))
 	test_no +=1
 
 def main():
@@ -92,7 +111,7 @@ def main():
 
 
 	verify_basic_integrity(conn)
-
+	demonstrate_buffer_limitation(conn)
 
 	verify_statement_equivalency("select '5'::integer;", "select  '17'::integer;", conn)
 	verify_statement_equivalency("select 1;", "select      5   ;", conn)
