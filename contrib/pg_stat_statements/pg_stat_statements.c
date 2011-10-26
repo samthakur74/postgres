@@ -35,6 +35,7 @@
 #include "storage/spin.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
+#include "utils/memutils.h"
 
 
 PG_MODULE_MAGIC;
@@ -113,7 +114,7 @@ typedef struct pgssSharedState
 } pgssSharedState;
 
 /*---- Local variables ----*/
-char *last_jumb;	/* Some integers jumbled from last query tree seen */
+static char *last_jumb;	/* Some integers jumbled from last query tree seen */
 
 /* Current nesting depth of ExecutorRun calls */
 static int	nested_level = 0;
@@ -186,12 +187,12 @@ static void pgss_shmem_shutdown(int code, Datum arg);
 static PlannedStmt *PluginPlanner(Query *parse, int cursorOptions, ParamListInfo boundParams);
 static void JumbleCurQuery(Query *parse);
 static bool AppendJumb(char* item, char jumble[], size_t size, int *i);
-static bool PerformJumble(Query *parse, char jumble[], size_t size, int *i);
-static bool QualsNode(OpExpr *node, char jumble[], size_t size, int *i);
-static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i);
-static bool LimitOffsetNode(Node *node, char jumble[], size_t size, int *i);
+static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i);
+static bool QualsNode(const OpExpr *node, char jumble[], size_t size, int *i);
+static bool SerLeafNodes(const Node *arg, char jumble[], size_t size, int *i);
+static bool LimitOffsetNode(const Node *node, char jumble[], size_t size, int *i);
 static bool JoinExprNode(JoinExpr *node, char jumble[], size_t size, int *i, List *rtable);
-static bool JoinExprNodeChild(Node *node, char jumble[], size_t size, int *i, List *rtable);
+static bool JoinExprNodeChild(const Node *node, char jumble[], size_t size, int *i, List *rtable);
 static void pgss_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgss_ExecutorRun(QueryDesc *queryDesc,
 				 ScanDirection direction,
@@ -288,6 +289,11 @@ _PG_init(void)
 	RequestAddinShmemSpace(pgss_memsize());
 	RequestAddinLWLocks(1);
 
+	/* Allocate a buffer to store selective serialization of the query tree
+	 * for the purposes of query normalization.
+	 */
+	last_jumb = MemoryContextAllocZero(TopMemoryContext, JUM_SIZE);
+
 	/*
 	 * Install hooks.
 	 */
@@ -325,6 +331,8 @@ _PG_fini(void)
 	ProcessUtility_hook = prev_ProcessUtility;
 	/* Uninstall planner hook, used for query normalization */
 	prev_Planner = planner_hook;
+
+	pfree(last_jumb);
 }
 
 /*
@@ -350,11 +358,6 @@ pgss_shmem_startup(void)
 	/* reset in case this is a restart within the postmaster */
 	pgss = NULL;
 	pgss_hash = NULL;
-
-	/* Allocate a buffer to store selective serialization of the query tree
-	 * for the purposes of query normalization.
-	 */
-	last_jumb = palloc0(JUM_SIZE);
 
 	/*
 	 * Create or attach to the shared memory state, including hash table
@@ -492,8 +495,6 @@ pgss_shmem_shutdown(int code, Datum arg)
 	int32		num_entries;
 	pgssEntry  *entry;
 
-	/* Free jumble buffer memory */
-	pfree(last_jumb);
 
 	/* Don't try to dump during a crash. */
 	if (code)
@@ -579,7 +580,7 @@ static void JumbleCurQuery(Query *parse)
  */
 static bool AppendJumb(char* item, char jumble[], size_t size, int *i)
 {
-	if (size + *i > JUM_SIZE )
+	if (size + *i > JUM_SIZE)
 		return false;
 
 	memcpy(jumble + (*i), item, size);
@@ -639,7 +640,7 @@ if (!JoinExprNodeChild(item, jumble, size, i, rtable)) \
  * The resultant "jumble" can be hashed to uniquely identify
  * a query that may use different constants in successive calls.
  */
-static bool PerformJumble(Query *parse, char jumble[], size_t size, int *i)
+static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i)
 {
 	ListCell *l;
 	FromExpr* jt = (FromExpr *) parse->jointree;		/* table join tree (FROM and WHERE clauses) */
@@ -672,7 +673,6 @@ static bool PerformJumble(Query *parse, char jumble[], size_t size, int *i)
 		if (cte_query)
 			DoPerformJumble(cte_query, jumble, size, i);
 	}
-
 	if (jt)
 	{
 		if (jt->quals)
@@ -729,7 +729,6 @@ static bool PerformJumble(Query *parse, char jumble[], size_t size, int *i)
 		 */
 		DoSerLeafNodes(e, jumble, size, i);
 	}
-
 	/* return-values list (of TargetEntry) */
 	foreach(l, parse->returningList)
 	{
@@ -776,16 +775,16 @@ static bool PerformJumble(Query *parse, char jumble[], size_t size, int *i)
 	foreach(l, parse->windowClause)
 	{
 		WindowClause *wc = (WindowClause *) lfirst(l);
-		ListCell *ll;
+		ListCell *il;
 		APP_JUMB(wc->frameOptions);
-		foreach(ll, wc->partitionClause) /* PARTITION BY list */
+		foreach(il, wc->partitionClause) /* PARTITION BY list */
 		{
-			Node *n = (Node *) lfirst(l);
+			Node *n = (Node *) lfirst(il);
 			DoSerLeafNodes(n, jumble, size, i);
 		}
-		foreach(ll, wc->orderClause) /* ORDER BY list */
+		foreach(il, wc->orderClause) /* ORDER BY list */
 		{
-			Node *n = (Node *) lfirst(l);
+			Node *n = (Node *) lfirst(il);
 			DoSerLeafNodes(n, jumble, size, i);
 		}
 	}
@@ -842,7 +841,7 @@ static bool PerformJumble(Query *parse, char jumble[], size_t size, int *i)
  * Perform selective serialization of "Quals" nodes when
  * they're IsA(*, OpExpr)
  */
-static bool QualsNode(OpExpr *node, char jumble[], size_t size, int *i)
+static bool QualsNode(const OpExpr *node, char jumble[], size_t size, int *i)
 {
 	ListCell *l;
 	APP_JUMB(node->opno);
@@ -859,8 +858,9 @@ static bool QualsNode(OpExpr *node, char jumble[], size_t size, int *i)
  * though certainly not necesssarily leaf nodes, such as Variables (columns),
  * constants and function calls
  */
-static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
+static bool SerLeafNodes(const Node *arg, char jumble[], size_t size, int *i)
 {
+	ListCell *l;
 	if (IsA(arg, Const))
 	{
 		/*
@@ -869,7 +869,6 @@ static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
 		 */
 		char magic = 0xC0;
 		APP_JUMB(magic);
-
 		/* Datatype of the constant is a
 		 * differentiator
 		 */
@@ -894,7 +893,6 @@ static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
 	else if (IsA(arg, WindowFunc))
 	{
 		WindowFunc *wf =  (WindowFunc *) arg;
-		ListCell *l;
 		APP_JUMB(wf->winfnoid);
 		foreach(l, wf->args)
 		{
@@ -905,7 +903,6 @@ static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
 	else if (IsA(arg, FuncExpr))
 	{
 		FuncExpr *f =  (FuncExpr *) arg;
-		ListCell *l;
 		APP_JUMB(f->funcid);
 		foreach(l, f->args)
 		{
@@ -925,7 +922,6 @@ static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
 	else if (IsA(arg, Aggref))
 	{
 		Aggref *a =  (Aggref *) arg;
-		ListCell *l;
 		APP_JUMB(a->aggfnoid);
 		foreach(l, a->args)
 		{
@@ -952,7 +948,6 @@ static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
 	else if (IsA(arg, BoolExpr))
 	{
 		BoolExpr *be = (BoolExpr *) arg;
-		ListCell *l;
 		APP_JUMB(be->boolop);
 		foreach(l, be->args)
 		{
@@ -971,8 +966,6 @@ static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
 	else if (IsA(arg, ArrayExpr))
 	{
 		ArrayExpr *ae = (ArrayExpr *) arg;
-		ListCell *l;
-
 		APP_JUMB(ae->array_typeid);	/* type of expression result */
 		APP_JUMB(ae->element_typeid);	/* common type of array elements */
 		foreach(l, ae->elements)
@@ -984,7 +977,6 @@ static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
 	else if (IsA(arg, CaseExpr))
 	{
 		CaseExpr *ce = (CaseExpr*) arg;
-		ListCell *l;
 		Assert(ce->casetype != InvalidOid);
 		APP_JUMB(ce->casetype);
 		foreach(l, ce->args)
@@ -1023,7 +1015,6 @@ static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
 	else if (IsA(arg, MinMaxExpr))
 	{
 		MinMaxExpr *cw = (MinMaxExpr*) arg;
-		ListCell *l;
 		APP_JUMB(cw->minmaxtype);
 		APP_JUMB(cw->op);
 		foreach(l, cw->args)
@@ -1035,7 +1026,6 @@ static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
 	else if (IsA(arg, ScalarArrayOpExpr))
 	{
 		ScalarArrayOpExpr *sa = (ScalarArrayOpExpr*) arg;
-		ListCell *l;
 		APP_JUMB(sa->opfuncid);
 		APP_JUMB(sa->useOr);
 		foreach(l, sa->args)
@@ -1047,7 +1037,6 @@ static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
 	else if (IsA(arg, CoalesceExpr))
 	{
 		CoalesceExpr *ca = (CoalesceExpr*) arg;
-		ListCell *l;
 		foreach(l, ca->args)
 		{
 			Node *arg = (Node *) lfirst(l);
@@ -1062,7 +1051,6 @@ static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
 	else if (IsA(arg, WindowClause))
 	{
 		WindowClause *wc = (WindowClause*) arg;
-		ListCell *l;
 		foreach(l, wc->partitionClause)
 		{
 			Node *arg = (Node *) lfirst(l);
@@ -1091,6 +1079,77 @@ static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
 		 * serialize integral values
 		 */
 	}
+	else if (IsA(arg, BooleanTest))
+	{
+		BooleanTest *bt = (BooleanTest *) arg;
+		APP_JUMB(bt->booltesttype);
+		DoSerLeafNodes((Node*) bt->arg, jumble, size, i);
+	}
+	else if (IsA(arg, ArrayRef))
+	{
+		ArrayRef *ar = (ArrayRef*) arg;
+		APP_JUMB(ar->refarraytype);
+		foreach(l, ar->refupperindexpr)
+		{
+			Node *arg = (Node *) lfirst(l);
+			DoSerLeafNodes(arg, jumble, size, i);
+		}
+		foreach(l, ar->reflowerindexpr)
+		{
+			Node *arg = (Node *) lfirst(l);
+			DoSerLeafNodes(arg, jumble, size, i);
+		}
+	}
+	else if (IsA(arg, NullIfExpr))
+	{
+		/* NullIfExpr is just a typedef for OpExpr */
+		DoQualsNode((OpExpr*) arg, jumble, size, i);
+	}
+	else if (IsA(arg, RowExpr))
+	{
+		RowExpr *re = (RowExpr*) arg;
+		APP_JUMB(re->row_format);
+		foreach(l, re->args)
+		{
+			Node *arg = (Node *) lfirst(l);
+			DoSerLeafNodes(arg, jumble, size, i);
+		}
+
+	}
+	else if (IsA(arg, XmlExpr))
+	{
+		XmlExpr *xml = (XmlExpr*) arg;
+		APP_JUMB(xml->op);
+		foreach(l, xml->args)
+		{
+			Node *arg = (Node *) lfirst(l);
+			DoSerLeafNodes(arg, jumble, size, i);
+		}
+		foreach(l, xml->named_args) /* non-XML expressions for xml_attributes */
+		{
+			Node *arg = (Node *) lfirst(l);
+			DoSerLeafNodes(arg, jumble, size, i);
+		}
+		foreach(l, xml->arg_names) /* parallel list of Value strings */
+		{
+			Node *arg = (Node *) lfirst(l);
+			DoSerLeafNodes(arg, jumble, size, i);
+		}
+	}
+	else if (IsA(arg, RowCompareExpr))
+	{
+		RowCompareExpr *rc = (RowCompareExpr*) arg;
+		foreach(l, rc->largs)
+		{
+			Node *arg = (Node *) lfirst(l);
+			DoSerLeafNodes(arg, jumble, size, i);
+		}
+		foreach(l, rc->rargs)
+		{
+			Node *arg = (Node *) lfirst(l);
+			DoSerLeafNodes(arg, jumble, size, i);
+		}
+	}
 	else
 	{
 		elog(ERROR, "unrecognized node type for SerLeafNodes node: %d",
@@ -1102,7 +1161,7 @@ static bool SerLeafNodes(Node *arg, char jumble[], size_t size, int *i)
 /*
  * Perform selective serialization of limit or offset nodes
  */
-static bool LimitOffsetNode(Node *node, char jumble[], size_t size, int *i)
+static bool LimitOffsetNode(const Node *node, char jumble[], size_t size, int *i)
 {
 	ListCell *l;
 	if (IsA(node, FuncExpr))
@@ -1150,13 +1209,22 @@ static bool JoinExprNode(JoinExpr *node, char jumble[], size_t size, int *i, Lis
 	Node	   *rarg = node->rarg;	/* right subtree */
 	ListCell *l;
 
+	Assert( IsA(node, JoinExpr));
+
 	APP_JUMB(node->jointype);
 	APP_JUMB(node->isNatural);
 
 	if (node->quals)
 	{
-		Assert(IsA(node->quals, OpExpr));
-		DoQualsNode((OpExpr*) node->quals, jumble, size, i);
+		if ( IsA(node, OpExpr))
+		{
+			DoQualsNode((OpExpr*) node->quals, jumble, size, i);
+		}
+		else
+		{
+			DoSerLeafNodes((Node*) node->quals, jumble, size, i);
+		}
+
 	}
 	foreach(l, node->usingClause) /* USING clause, if any (list of String) */
 	{
@@ -1174,7 +1242,7 @@ static bool JoinExprNode(JoinExpr *node, char jumble[], size_t size, int *i, Lis
 /*
  * Serialize children of the JoinExpr node
  */
-static bool JoinExprNodeChild(Node *node, char jumble[], size_t size, int *i, List *rtable)
+static bool JoinExprNodeChild(const Node *node, char jumble[], size_t size, int *i, List *rtable)
 {
 	if (IsA(node, RangeTblRef))
 	{

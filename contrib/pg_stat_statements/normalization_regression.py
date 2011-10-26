@@ -110,9 +110,6 @@ def main():
 	# Just let exceptions propagate
 
 
-	verify_basic_integrity(conn)
-	demonstrate_buffer_limitation(conn)
-
 	verify_statement_equivalency("select '5'::integer;", "select  '17'::integer;", conn)
 	verify_statement_equivalency("select 1;", "select      5   ;", conn)
 	verify_statement_equivalency("select 'foo'::text;", "select  'bar'::text;", conn)
@@ -153,6 +150,12 @@ def main():
 	# Different logical operator means different query though:
 	verify_statement_differs("select orderid from orders where orderid = 5 and 1=1;",
 				 "select orderid from orders where orderid = 7 or 3=3;", conn)
+
+	# Boolean Test node:
+	verify_statement_differs(
+	"select orderid from orders where orderid = 5 and (1=1) is true;",
+	"select orderid from orders where orderid = 5 and (1=1) is not true;",
+	conn)
 
 	verify_statement_equivalency(
 		"values(1, 2, 3);",
@@ -265,6 +268,21 @@ def main():
 	"select array_agg(lower(upper(lower(initcap(lower('Baz')))))) from orders;",
 	"select array_agg(lower(upper(lower(initcap(lower('Bar')))))) from orders;",
 				conn)
+	# Row-wise comparison
+	verify_statement_differs(
+	"select (1, 2) < (3, 4);",
+	"select ('a', 'b') < ('c', 'd');",
+				conn)
+	verify_statement_differs(
+	"select (1, 2, 3) < (3, 4, 5);",
+	"select (1, 2) < (3, 4);",
+				conn)
+	verify_statement_equivalency(
+	"select (1, 2, 3) < (3, 4, 5);",
+	"select (3, 4, 5) < (1, 2, 3);",
+				conn)
+
+
 
 	# Use lots of different operators:
 	verify_statement_differs(
@@ -281,6 +299,132 @@ def main():
 	"select ARRAY[1,2,3]::integer[] <@ ARRAY[1]::integer[];",
 	"select ARRAY[999]::integer[]   <@ ARRAY[342, 543, 634 ,753]::integer[];",
 				conn)
+
+	# Array coercion
+	verify_statement_equivalency(
+	"select '{1,2,3}'::oid[]::integer[] from orders;",
+	"select '{4,5,6}'::oid[]::integer[] from orders;",
+				conn)
+
+	# array subscripting operations
+	verify_statement_equivalency(
+	"select (array_agg(lower(upper(lower(initcap(lower('Baz')))))))[5:5] from orders;",
+	"select (array_agg(lower(upper(lower(initcap(lower('Bar')))))))[6:6] from orders;",
+				conn)
+	verify_statement_differs(
+	"select (array_agg(lower(upper(lower(initcap(lower('Baz')))))))[5:5] from orders;",
+	"select (array_agg(lower(upper(lower(initcap(lower('Bar')))))))[6] from orders;",
+				conn)
+
+
+	# nullif, represented as a distinct node but actually just a typedef
+	verify_statement_differs(
+	"select *, (select customerid from orders limit 1), nullif(5,10) from orderlines ol join orders o on o.orderid = ol.orderid;",
+	"select *, (select customerid from orders limit 1), nullif('a','b') from orderlines ol join orders o on o.orderid = ol.orderid;",
+	conn)
+
+	verify_statement_equivalency(
+	"select *, (select customerid from orders limit 1), nullif(5,10) from orderlines ol join orders o on o.orderid = ol.orderid;",
+	"select *, (select customerid from orders limit 1), nullif(10,15) from orderlines ol join orders o on o.orderid = ol.orderid;",
+	conn)
+
+	# Row constructor
+	verify_statement_differs(
+	"select row(1, 2,'this is a test');",
+	"select row(1, 2.5,'this is a test');",
+	conn)
+
+	# XML Stuff
+	verify_statement_differs(
+	"""
+	select xmlagg
+	(
+		xmlelement
+		(	name database,
+			xmlattributes (d.datname as "name"),
+			xmlforest(
+				pg_database_size(d.datname) as size,
+				xact_commit,
+				xact_rollback,
+				blks_read,
+				blks_hit,
+				tup_fetched,
+				tup_returned,
+				tup_inserted,
+				tup_updated,
+				tup_deleted
+				)
+		)
+	)
+	from 		pg_stat_database d
+	right join 	pg_database
+	on 		d.datname = pg_database.datname
+	where 		not datistemplate;
+	"""
+	,
+	"""
+	select xmlagg
+	(
+		xmlelement
+		(	name database,
+			xmlattributes (d.datname as "name"),
+			xmlforest(
+				pg_database_size(d.datname) as size,
+				xact_commit,
+				xact_rollback,
+				blks_read,
+				blks_hit,
+				tup_fetched,
+				tup_returned,
+				tup_updated,
+				tup_deleted
+				)
+		)
+	)
+	from 		pg_stat_database d
+	right join 	pg_database
+	on 		d.datname = pg_database.datname
+	where 		not datistemplate;
+	""",
+	conn)
+
+	verify_statement_differs(
+	"""
+	select xmlagg
+	(
+		xmlelement
+		(	name database,
+			xmlattributes (d.blks_hit as "name"),
+			xmlforest(
+				pg_database_size(d.datname) as size
+				)
+		)
+	)
+	from 		pg_stat_database d
+	right join 	pg_database
+	on 		d.datname = pg_database.datname
+	where 		not datistemplate;
+	"""
+	,
+	"""
+	select xmlagg
+	(
+		xmlelement
+		(	name database,
+			xmlattributes (d.blks_read as "name"),
+			xmlforest(
+				pg_database_size(d.datname) as size
+				)
+		)
+	)
+	from 		pg_stat_database d
+	right join 	pg_database
+	on 		d.datname = pg_database.datname
+	where 		not datistemplate;
+	""",
+	conn)
+
+
 
 	# subqueries
 
@@ -367,7 +511,6 @@ def main():
 				     "select                 customerid, o.orderid from orderlines ol join orders o on o.orderid = ol.orderid;", conn)
 
 
-
 	# Updates are similarly normalised, and their internal representations shares much with select statements
 	verify_statement_equivalency("update orders set orderdate='2011-01-06' where orderid=3;",
 				     "update orders set orderdate='1992-01-06' where orderid     =     10;", conn)
@@ -376,7 +519,11 @@ def main():
 	verify_statement_differs("update orders set orderdate='2011-01-06' where orderid = 3;",
 				 "update orders set orderdate='1992-01-06' where customerid     =     10;", conn)
 
-
+	# default within update statement
+	verify_statement_equivalency(
+	"update products set special=default where prod_id = 7;",
+	"update products set special=default where prod_id = 10;",
+	conn)
 
 	verify_statement_differs(
 	"with a as (select customerid from orders ), b as (select 'foo') select orderid from orders",
@@ -714,6 +861,45 @@ def main():
 
 		,conn, "number of ARRAY elements varies in ANY()  in where clause")
 
+	# problematic query
+	verify_statement_equivalency(
+	"""
+	SELECT c2.relname, i.indisprimary, i.indisunique, i.indisclustered, i.indisvalid, pg_catalog.pg_get_indexdef(i.indexrelid, 0, true),
+	  pg_catalog.pg_get_constraintdef(con.oid, true), contype, condeferrable, condeferred, c2.reltablespace
+	FROM pg_catalog.pg_class c, pg_catalog.pg_class c2, pg_catalog.pg_index i
+	  LEFT JOIN pg_catalog.pg_constraint con ON (conrelid = i.indrelid AND conindid = i.indexrelid AND contype IN ('p','u','x'))
+	WHERE c.oid = i.indrelid AND i.indexrelid = c2.oid
+	ORDER BY i.indisprimary DESC, i.indisunique DESC, c2.relname;
+	""",
+	"""
+	SELECT c2.relname, i.indisprimary, i.indisunique, i.indisclustered, i.indisvalid, pg_catalog.pg_get_indexdef(i.indexrelid, 0, true),
+	  pg_catalog.pg_get_constraintdef(con.oid, true), contype, condeferrable, condeferred, c2.reltablespace
+	FROM pg_catalog.pg_class c, pg_catalog.pg_class c2, pg_catalog.pg_index i
+	  LEFT JOIN pg_catalog.pg_constraint con ON (conrelid = i.indrelid AND conindid = i.indexrelid AND contype IN ('p','d','x'))
+	WHERE c.oid = i.indrelid AND i.indexrelid = c2.oid
+	ORDER BY i.indisprimary DESC, i.indisunique DESC, c2.relname;
+	""",
+	conn)
+
+	verify_statement_differs(
+	"""
+	SELECT c2.relname, i.indisprimary, i.indisunique, i.indisclustered, i.indisvalid, pg_catalog.pg_get_indexdef(i.indexrelid, 0, true),
+	  pg_catalog.pg_get_constraintdef(con.oid, true), contype, condeferrable, condeferred, c2.reltablespace
+	FROM pg_catalog.pg_class c, pg_catalog.pg_class c2, pg_catalog.pg_index i
+	  LEFT JOIN pg_catalog.pg_constraint con ON (conrelid = i.indrelid AND conindid = i.indexrelid AND contype IN ('p','u','x'))
+	WHERE c.oid = i.indrelid AND i.indexrelid = c2.oid
+	ORDER BY i.indisprimary DESC, i.indisunique DESC, c2.relname;
+	""",
+	"""
+	SELECT c2.relname, i.indisprimary, i.indisunique, i.indisclustered, i.indisvalid, pg_catalog.pg_get_indexdef(i.indexrelid, 0, true),
+	  pg_catalog.pg_get_constraintdef(con.oid, true), contype, condeferrable, condeferred, c2.reltablespace
+	FROM pg_catalog.pg_class c, pg_catalog.pg_class c2, pg_catalog.pg_index i
+	  LEFT JOIN pg_catalog.pg_constraint con ON (conrelid = i.indrelid AND conindid = i.indexrelid AND contype IN ('p','d','x', 'd'))
+	WHERE c.oid = i.indrelid AND i.indexrelid = c2.oid
+	ORDER BY i.indisprimary DESC, i.indisunique DESC, c2.relname;
+	""",
+	conn)
+
 	# Don't confuse functions and function-like dedicated ExprNodes, or pairs of
 	# function-like dedicated ExprNodes
 
@@ -738,6 +924,10 @@ def main():
 	"select coalesce(orderid) from orders;",
 	"select sum(orderid) from orders;",
 	conn, "Don't confuse functions/function like nodes")
+
+	verify_basic_integrity(conn)
+	demonstrate_buffer_limitation(conn)
+
 
 if __name__=="__main__":
 	main()
