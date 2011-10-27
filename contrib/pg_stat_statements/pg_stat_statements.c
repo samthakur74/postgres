@@ -292,7 +292,7 @@ _PG_init(void)
 	/* Allocate a buffer to store selective serialization of the query tree
 	 * for the purposes of query normalization.
 	 */
-	last_jumb = MemoryContextAllocZero(TopMemoryContext, JUM_SIZE);
+	last_jumb = MemoryContextAlloc(TopMemoryContext, JUM_SIZE);
 
 	/*
 	 * Install hooks.

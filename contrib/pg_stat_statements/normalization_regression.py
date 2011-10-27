@@ -13,7 +13,7 @@
 
 import psycopg2
 
-test_no = 0
+test_no = 1
 
 def print_queries(conn):
 	print "Queries that were found in pg_stat_statements: "
@@ -63,7 +63,7 @@ def demonstrate_buffer_limitation(conn):
 			long_long_query += i + (' ' + set_operations[it] + ' \n' if j != 999 else " ")
 
 		# Ideally, this test would fail, but it doesn't
-		verify_statement_equivalency(long_query, long_long_query, conn, "Differences out of range (iteration {0})".format(it))
+		verify_statement_equivalency(long_query, long_long_query, conn, "Differences out of range (iteration {0})".format(it + 1))
 
 def verify_statement_equivalency(sql, equiv, conn, test_name = None):
 	# Run both queries in isolation and verify that there
