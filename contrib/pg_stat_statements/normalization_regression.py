@@ -151,6 +151,17 @@ def main():
 	verify_statement_differs("select orderid from orders where orderid = 5 and 1=1;",
 				 "select orderid from orders where orderid = 7 or 3=3;", conn)
 
+	# don't mistake the same column number (MyVar->varno) from different tables:
+	verify_statement_differs("select a.orderid    from orders a join orderlines b on a.orderid = b.orderlineid",
+				 "select b.orderlineid from orders a join orderlines b on a.orderid = b.orderlineid", conn)
+
+	# Note that these queries are considered equivalent, though you could argue that they shouldn't be.
+	# This is because they have the same range table entry. I could look at aliases and differentiate
+	# them that way, but I'm reasonably convinced that to do so would be a mistake. This is a feature,
+	# not a bug.
+	verify_statement_equivalency("select a.orderid from orders a join orders b on a.orderid = b.orderid",
+				 "select b.orderid from orders a join orders b on a.orderid = b.orderid", conn)
+
 	# Boolean Test node:
 	verify_statement_differs(
 	"select orderid from orders where orderid = 5 and (1=1) is true;",
