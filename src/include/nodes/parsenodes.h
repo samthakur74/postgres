@@ -252,7 +252,7 @@ typedef struct A_Const
 	NodeTag		type;
 	Value		val;			/* value (includes type info, see value.h) */
 	int			location;		/* token location, or -1 if unknown */
-	int		tok_len;			/* token length (in bytes) */
+	int			tok_len;		/* token length (in bytes) */
 } A_Const;
 
 /*
@@ -264,7 +264,7 @@ typedef struct TypeCast
 	Node	   *arg;			/* the expression being casted */
 	TypeName   *typeName;		/* the target type */
 	int			location;		/* token location, or -1 if unknown */
-	int		tok_len;			/* token length (in bytes) */
+	int			tok_len;		/* token length (in bytes) */
 } TypeCast;
 
 /*

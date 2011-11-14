@@ -14,7 +14,7 @@
  * Normalization is ignoring components of the query that don't normally
  * make it significantly different.  For example, the statements
  * 'SELECT * FROM t WHERE f=1' and 'SELECT * FROM t WHERE f=2' would both
- * be considered equivalenT after normalization.  This is implemented
+ * be considered equivalent after normalization.  This is implemented
  * by generating a series of integers from the parsed query tree, into
  * what's referred to as a query jumble here.
  *
@@ -55,10 +55,10 @@ static const uint32 PGSS_FILE_HEADER = 0x20100108;
 
 /* XXX: Should USAGE_EXEC reflect execution time and/or buffer usage? */
 #define USAGE_EXEC(duration)	(1.0)
-#define USAGE_INIT		(1.0)	/* including initial planning */
+#define USAGE_INIT				(1.0)	/* including initial planning */
 #define USAGE_DECREASE_FACTOR	(0.99)	/* decreased every entry_dealloc */
-#define USAGE_DEALLOC_PERCENT	5	/* free this % of entries at once */
-#define JUM_SIZE    		512	/* Size of buffer for selective serialization of Query tree */
+#define USAGE_DEALLOC_PERCENT	5		/* free this % of entries at once */
+#define JUMBLE_SIZE				512	    /* query serialization buffer size */
 
 /*
  * Hashtable key that defines the identity of a hashtable entry.  The
@@ -71,10 +71,10 @@ static const uint32 PGSS_FILE_HEADER = 0x20100108;
  */
 typedef struct pgssHashKey
 {
-	char			parse_jumble[JUM_SIZE];	/* Some integers jumbled together from a query tree */
-	Oid			userid;				/* user OID */
-	Oid			dbid;				/* database OID */
-	int			encoding;			/* query encoding */
+	Oid			userid;			/* user OID */
+	Oid			dbid;			/* database OID */
+	int			encoding;		/* query encoding */
+	char		parsed_jumble[JUMBLE_SIZE]; /* Integers from a query tree */
 } pgssHashKey;
 
 /*
@@ -105,7 +105,7 @@ typedef struct pgssEntry
 {
 	pgssHashKey key;			/* hash key of entry - MUST BE FIRST */
 	Counters	counters;		/* the statistics for this query */
-	int		query_len;		/* # of valid bytes in query string */
+	int			query_len;		/* # of valid bytes in query string */
 	slock_t		mutex;			/* protects the counters only */
 	char		query[1];		/* VARIABLE LENGTH ARRAY - MUST BE LAST */
 	/* Note: the allocated length of query[] is actually pgss->query_size */
@@ -117,7 +117,7 @@ typedef struct pgssEntry
 typedef struct pgssSharedState
 {
 	LWLockId	lock;			/* protects hashtable search/modification */
-	int		query_size;		/* max query length in bytes */
+	int			query_size;		/* max query length in bytes */
 } pgssSharedState;
 
 typedef struct pgssTokenOffset
@@ -128,7 +128,7 @@ typedef struct pgssTokenOffset
 
 /*---- Local variables ----*/
 /* Some integers jumbled from last query tree seen */
-static char *last_jumb = NULL;
+static char *last_jumble = NULL;
 /*
  * Array that represents where
  * normalized characters will be
@@ -213,7 +213,7 @@ static void pgss_ProcessUtility(Node *parsetree,
 					DestReceiver *dest, char *completionTag);
 static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
-static void pgss_store(const char *query, char parse_jumble[], double total_time, uint64 rows,
+static void pgss_store(const char *query, char parsed_jumble[], double total_time, uint64 rows,
 		   const BufferUsage *bufusage);
 static Size pgss_memsize(void);
 static pgssEntry *entry_alloc(pgssHashKey *key, const char* query, int new_query_len);
@@ -301,10 +301,10 @@ _PG_init(void)
 	/* Allocate a buffer to store selective serialization of the query tree
 	 * for the purposes of query normalization.
 	 */
-	last_jumb = MemoryContextAlloc(TopMemoryContext, JUM_SIZE);
+	last_jumble = MemoryContextAlloc(TopMemoryContext, JUMBLE_SIZE);
 	/* Allocate space for bookkeeping information for query str normalization */
 	/* TODO: Use a more frugal memory allocation strategy than this */
-	offsets =  MemoryContextAlloc(TopMemoryContext, JUM_SIZE * sizeof(pgssTokenOffset));
+	offsets =  MemoryContextAlloc(TopMemoryContext, JUMBLE_SIZE * sizeof(pgssTokenOffset));
 
 	/*
 	 * Install hooks.
@@ -343,7 +343,7 @@ _PG_fini(void)
 	ProcessUtility_hook = prev_ProcessUtility;
 	prev_Planner = planner_hook;
 
-	pfree(last_jumb);
+	pfree(last_jumble);
 	pfree(offsets);
 }
 
@@ -390,10 +390,9 @@ pgss_shmem_startup(void)
 	/* Be sure everyone agrees on the hash table entry size */
 	query_size = pgss->query_size;
 
-	/* Initialize hash table */
 	memset(&info, 0, sizeof(info));
 	info.keysize = sizeof(pgssHashKey);
-	info.entrysize = offsetof(pgssEntry, query) + query_size;
+	info.entrysize = offsetof(pgssEntry, query) +query_size;
 	info.hash = pgss_hash_fn;
 	info.match = pgss_match_fn;
 	pgss_hash = ShmemInitHash("pg_stat_statements hash",
@@ -507,7 +506,6 @@ pgss_shmem_shutdown(int code, Datum arg)
 	int32		num_entries;
 	pgssEntry  *entry;
 
-
 	/* Don't try to dump during a crash. */
 	if (code)
 		return;
@@ -594,8 +592,8 @@ static void JumbleCurQuery(Query *parse)
 {
 	int i = 0;
 	offset_num = 0;
-	memset(last_jumb, 0, JUM_SIZE);
-	PerformJumble(parse, last_jumb, JUM_SIZE, &i);
+	memset(last_jumble, 0, JUMBLE_SIZE);
+	PerformJumble(parse, last_jumble, JUMBLE_SIZE, &i);
 	/* Sort offsets for query string normalization */
 	qsort(offsets, offset_num, sizeof(pgssTokenOffset), comp_offset);
 }
@@ -607,7 +605,7 @@ static void JumbleCurQuery(Query *parse)
  */
 static bool AppendJumb(char* item, char jumble[], size_t size, int *i)
 {
-	if (size + *i >= JUM_SIZE)
+	if (size + *i >= JUMBLE_SIZE)
 		return false;
 	memcpy(jumble + *i, item, size);
 	*i += size;
@@ -1410,7 +1408,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		InstrEndLoop(queryDesc->totaltime);
 
 		pgss_store(queryDesc->sourceText,
-				last_jumb,
+				   last_jumble,
 				   queryDesc->totaltime->total,
 				   queryDesc->estate->es_processed,
 				   &queryDesc->totaltime->bufusage);
@@ -1484,8 +1482,8 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 		bufusage.temp_blks_written =
 			pgBufferUsage.temp_blks_written - bufusage.temp_blks_written;
 
-		memset(last_jumb, 0, JUM_SIZE); /* Utility statements are all equivalent */
-		pgss_store(queryString, last_jumb, INSTR_TIME_GET_DOUBLE(duration), rows,
+		memset(last_jumble, 0, JUMBLE_SIZE); /* Utility statements are all equivalent */
+		pgss_store(queryString, last_jumble, INSTR_TIME_GET_DOUBLE(duration), rows,
 				   &bufusage);
 	}
 	else
@@ -1510,7 +1508,7 @@ pgss_hash_fn(const void *key, Size keysize)
 	/* we don't bother to include encoding in the hash */
 	return hash_uint32((uint32) k->userid) ^
 		hash_uint32((uint32) k->dbid) ^
-		DatumGetUInt32(hash_any((const unsigned char* ) k->parse_jumble, JUM_SIZE) );
+		DatumGetUInt32(hash_any((const unsigned char* ) k->parsed_jumble, JUMBLE_SIZE) );
 }
 
 /*
@@ -1525,7 +1523,7 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
 	if (k1->userid == k2->userid &&
 		k1->dbid == k2->dbid &&
 		k1->encoding == k2->encoding &&
-		memcmp(k1->parse_jumble, k2->parse_jumble, JUM_SIZE) == 0)
+		memcmp(k1->parsed_jumble, k2->parsed_jumble, JUMBLE_SIZE) == 0)
 		return 0;
 	else
 		return 1;
@@ -1535,7 +1533,7 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
  * Store some statistics for a statement.
  */
 static void
-pgss_store(const char *query, char parse_jumble[], double total_time, uint64 rows,
+pgss_store(const char *query, char parsed_jumble[], double total_time, uint64 rows,
 		   const BufferUsage *bufusage)
 {
 	pgssHashKey key;
@@ -1553,7 +1551,7 @@ pgss_store(const char *query, char parse_jumble[], double total_time, uint64 row
 	key.userid = GetUserId();
 	key.dbid = MyDatabaseId;
 	key.encoding = GetDatabaseEncoding();
-	memcpy(key.parse_jumble, parse_jumble, JUM_SIZE);
+	memcpy(key.parsed_jumble, parsed_jumble, JUMBLE_SIZE);
 
 	if (new_query_len >= pgss->query_size)
 		new_query_len = pg_encoding_mbcliplen(key.encoding,
@@ -1611,7 +1609,9 @@ pgss_store(const char *query, char parse_jumble[], double total_time, uint64 row
 				last_tok_len = tok_len;
 			}
 			/* Finish off last bit of query string */
-			memcpy(norm_query + n_quer_it, query + (off + tok_len), Min( strlen(query) - (off + tok_len ), new_query_len - n_quer_it ) );
+			memcpy(norm_query + n_quer_it, query + (off + tok_len),
+				Min( strlen(query) - (off + tok_len ),
+				new_query_len - n_quer_it ) );
 			elog(DEBUG1, "norm_query: '%s', orig query: '%s'", norm_query, query);
 			/*
 			 * Must acquire exclusive lock to add a new entry.
@@ -1733,7 +1733,6 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 		values[i++] = ObjectIdGetDatum(entry->key.userid);
 		values[i++] = ObjectIdGetDatum(entry->key.dbid);
 
-
 		/* copy counters to a local variable to keep locking time short */
 		{
 			volatile pgssEntry *e = (volatile pgssEntry *) entry;
@@ -1742,6 +1741,7 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 			tmp = e->counters;
 			SpinLockRelease(&e->mutex);
 		}
+
 		if (is_superuser || entry->key.userid == userid)
 		{
 			char	   *qstr;
