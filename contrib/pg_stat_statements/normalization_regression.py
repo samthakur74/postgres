@@ -189,10 +189,6 @@ def main():
 	verify_statement_equivalency("select * from orders o left outer join orderlines ol on o.orderid = ol.orderid;",
 					"select * from orders AS o left join orderlines AS ol on o.orderid = ol.orderid;", conn)
 
-	# A different limit often means a different plan. In the case of limit and offset, constants matter:
-	verify_statement_differs("select * from orders limit 1", "select * from orders limit 2", conn)
-	verify_statement_differs("select * from orders limit 1 offset 1", "select * from orders limit 1 offset 2", conn)
-
 	# Join order in statement matters:
 	verify_statement_differs("select * from orderlines ol join orders o on o.orderid = ol.orderid;",
 				 "select * from orders o join orderlines ol on o.orderid = ol.orderid;", conn)
@@ -934,6 +930,8 @@ def main():
 	verify_normalizes_correctly("select $$bar$$ from pg_database where datname = 'postgres';",
 				    "select ? from pg_database where datname = ?;", conn, "Quals comparison" )
 
+	# You can parameterize a limit constant, so our behavior is consistent with that
+	verify_normalizes_correctly("select * from orders limit 1 offset 5;", "select * from orders limit ? offset ?;", conn, "integer verification" )
 	# Note: Due to :: operator precedence, this behavior is correct:
 	verify_normalizes_correctly("select -12345::integer;", "select -?::integer;", conn, "show operator precedence issue" )
 	verify_normalizes_correctly("select -12345;", "select ?;", conn, "show no operator precedence issue" )

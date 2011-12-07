@@ -667,21 +667,23 @@ if (!JoinExprNodeChild(item, jumble, size, i, rtable)) \
 	return false;\
 
 /*
- * PerformJumble: Serialize the query tree "parse" such that it is usefully
- * normalized, excluding constants that are not essential to the query itself.
+ * PerformJumble: Serialize the query tree "parse" while canonicalizing
+ * constants, while simply skipping over others that are not essential to the
+ * query, such that it is usefully normalized, excluding that which is not
+ * essential to the query itself.
  *
  * A guiding principal as to whether two queries should be considered
  * equivalent is whether whatever difference exists between the two queries
  * could be expected to result in two different plans, assuming that all
- * constants have the same selectivity estimate. Non-obvious examples of
- * such a differentiator include a change in the "limit" constant, or a
- * change in the definition of a view referenced by a query. We pointedly
- * serialize the query tree after rewriting, so entries in pg_stat_statements
- * accurately represent discrete operations, while not involving external
- * factors that are not essential to what the query does. Directly hashing
- * plans would have the undesirable side-effect of potentially having totally
- * external factors like planner cost constants differentiate a query, so that
- * particular implementation was not chosen.
+ * constants have the same selectivity estimate. A Non-obvious example of
+ * such a differentiator is a change in the definition of a view referenced
+ * by a query. We pointedly serialize the query tree *after* the rewriting
+ * stage, so entries in pg_stat_statements accurately represent discrete
+ * operations, while not having artefacts from external factors that are not
+ * essential to what the query does. Directly hashing plans would have the
+ * undesirable side-effect of potentially having totally external factors like
+ * planner cost constants differentiate a query, so that particular
+ * implementation was not chosen.
  *
  * It is necessary to co-ordinate the hashing of a Query with the subsequent
  * use of the hash within executor hooks. Most queries result in a call to
@@ -1242,22 +1244,7 @@ static bool LimitOffsetNode(const Node *node, char jumble[], size_t size, int *i
 		foreach(l, ((FuncExpr*) node)->args)
 		{
 			Node *arg = (Node *) lfirst(l);
-			if (IsA(arg, Const))
-			{
-				/*
-				 * A different limit and/or offset constitutes a different
-				 * query, so this is one constant that we actually want to
-				 * hash
-				 */
-				Datum	constvalue = ((Const*) arg)->constvalue;
-				int64 val = DatumGetInt64(constvalue);
-				APP_JUMB(val);
-			}
-			else
-			{
-				elog(ERROR, "unrecognized node type for FuncExpr limit/offset node: %d",
-						(int) nodeTag(arg));
-			}
+			DoSerLeafNodes(arg, jumble, size, i, rtable);
 		}
 	}
 	else if (IsA(node, Const))
