@@ -36,12 +36,16 @@ typedef union core_YYSTYPE
 /*
  * We track token locations in terms of byte offsets from the start of the
  * source string, not the column number/line number representation that
- * bison uses by default.  Also, to minimize overhead we track only one
- * location (usually the first token location) for each construct, not
- * the beginning and ending locations as bison does by default.  It's
- * therefore sufficient to make YYLTYPE an int.
+ * bison uses by default. We track the beginning of the token, as well
+ * as its total length.
  */
-#define YYLTYPE  int
+typedef struct my_yyltype
+{
+	int begins;
+	int length;
+} my_yyltype;
+
+#define YYLTYPE my_yyltype
 
 /*
  * Another important component of the scanner's API is the token code numbers.

@@ -76,7 +76,8 @@ coerce_to_target_type(ParseState *pstate, Node *expr, Oid exprtype,
 					  Oid targettype, int32 targettypmod,
 					  CoercionContext ccontext,
 					  CoercionForm cformat,
-					  int location)
+					  int location,
+					  int tok_len)
 {
 	Node	   *result;
 	Node	   *origexpr;
@@ -99,7 +100,7 @@ coerce_to_target_type(ParseState *pstate, Node *expr, Oid exprtype,
 
 	result = coerce_type(pstate, expr, exprtype,
 						 targettype, targettypmod,
-						 ccontext, cformat, location);
+						 ccontext, cformat, location, tok_len);
 
 	/*
 	 * If the target is a fixed-length type, it may need a length coercion as
@@ -153,7 +154,7 @@ coerce_to_target_type(ParseState *pstate, Node *expr, Oid exprtype,
 Node *
 coerce_type(ParseState *pstate, Node *node,
 			Oid inputTypeId, Oid targetTypeId, int32 targetTypeMod,
-			CoercionContext ccontext, CoercionForm cformat, int location)
+			CoercionContext ccontext, CoercionForm cformat, int location, int tok_len)
 {
 	Node	   *result;
 	CoercionPathType pathtype;
@@ -282,11 +283,20 @@ coerce_type(ParseState *pstate, Node *node,
 		newcon->constisnull = con->constisnull;
 		/* Use the leftmost of the constant's and coercion's locations */
 		if (location < 0)
+		{
 			newcon->location = con->location;
+			newcon->tok_len = con->tok_len;
+		}
 		else if (con->location >= 0 && con->location < location)
+		{
 			newcon->location = con->location;
+			newcon->tok_len = con->tok_len;
+		}
 		else
+		{
 			newcon->location = location;
+			newcon->tok_len = tok_len;
+		}
 
 		/*
 		 * Set up to point at the constant's text if the input routine throws
@@ -352,7 +362,7 @@ coerce_type(ParseState *pstate, Node *node,
 		newcoll->arg = (Expr *)
 			coerce_type(pstate, (Node *) coll->arg,
 						inputTypeId, targetTypeId, targetTypeMod,
-						ccontext, cformat, location);
+						ccontext, cformat, location, tok_len);
 		newcoll->collOid = coll->collOid;
 		newcoll->location = coll->location;
 		return (Node *) newcoll;
@@ -973,7 +983,7 @@ coerce_record_to_complex(ParseState *pstate, Node *node,
 									  tupdesc->attrs[i]->atttypmod,
 									  ccontext,
 									  COERCE_IMPLICIT_CAST,
-									  -1);
+									  -1, -1);
 		if (cexpr == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_CANNOT_COERCE),
@@ -1033,7 +1043,7 @@ coerce_to_boolean(ParseState *pstate, Node *node,
 										BOOLOID, -1,
 										COERCION_ASSIGNMENT,
 										COERCE_IMPLICIT_CAST,
-										-1);
+										-1, -1);
 		if (newnode == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATATYPE_MISMATCH),
@@ -1080,7 +1090,7 @@ coerce_to_specific_type(ParseState *pstate, Node *node,
 										targetTypeId, -1,
 										COERCION_ASSIGNMENT,
 										COERCE_IMPLICIT_CAST,
-										-1);
+										-1, -1);
 		if (newnode == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATATYPE_MISMATCH),
@@ -1280,7 +1290,7 @@ coerce_to_common_type(ParseState *pstate, Node *node,
 		return node;			/* no work */
 	if (can_coerce_type(1, &inputTypeId, &targetTypeId, COERCION_IMPLICIT))
 		node = coerce_type(pstate, node, inputTypeId, targetTypeId, -1,
-						   COERCION_IMPLICIT, COERCE_IMPLICIT_CAST, -1);
+						   COERCION_IMPLICIT, COERCE_IMPLICIT_CAST, -1, -1);
 	else
 		ereport(ERROR,
 				(errcode(ERRCODE_CANNOT_COERCE),

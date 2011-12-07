@@ -10,6 +10,13 @@
  * an entry, one must hold the lock shared or exclusive (so the entry doesn't
  * disappear!) and also take the entry's mutex spinlock.
  *
+ * Statements go through a normalization process before being stored.
+ * Normalization is ignoring components of the query that don't normally
+ * make it significantly different.  For example, the statements
+ * 'SELECT * FROM t WHERE f=1' and 'SELECT * FROM t WHERE f=2' would both
+ * be considered equivalenT after normalization.  This is implemented
+ * by generating a series of integers from the parsed query tree, into
+ * what's referred to as a query jumble here.
  *
  * Copyright (c) 2008-2012, PostgreSQL Global Development Group
  *
@@ -113,8 +120,22 @@ typedef struct pgssSharedState
 	int		query_size;		/* max query length in bytes */
 } pgssSharedState;
 
+typedef struct pgssTokenOffset
+{
+	int offset; /* Token offset in query string */
+	int len;
+} pgssTokenOffset;
+
 /*---- Local variables ----*/
-static char *last_jumb;	/* Some integers jumbled from last query tree seen */
+/* Some integers jumbled from last query tree seen */
+static char *last_jumb = NULL;
+/*
+ * Array that represents where
+ * normalized characters will be
+ */
+static pgssTokenOffset *offsets = NULL;
+/* Current size of offsets array */
+static size_t offset_num = 0;
 
 /* Current nesting depth of ExecutorRun calls */
 static int	nested_level = 0;
@@ -158,19 +179,6 @@ static bool pgss_save;			/* whether to save stats across shutdown */
 	(pgss_track == PGSS_TRACK_ALL || \
 	(pgss_track == PGSS_TRACK_TOP && nested_level == 0))
 
-#define VolMemCpy(dst, src, len) \
-	do \
-	{ \
-		volatile char* dstp = (volatile char*) dst;\
-		volatile char* srcp = (volatile char*) src;\
-		int count = len;\
-\
-		while (count--) \
-		{\
-		    *dstp++ = *srcp++;\
-		}\
-	} while (0)
-
 /*---- Function declarations ----*/
 
 void		_PG_init(void);
@@ -185,12 +193,13 @@ PG_FUNCTION_INFO_V1(pg_stat_statements);
 static void pgss_shmem_startup(void);
 static void pgss_shmem_shutdown(int code, Datum arg);
 static PlannedStmt *PluginPlanner(Query *parse, int cursorOptions, ParamListInfo boundParams);
+static int comp_offset(const void *a, const void *b);
 static void JumbleCurQuery(Query *parse);
 static bool AppendJumb(char* item, char jumble[], size_t size, int *i);
 static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i);
 static bool QualsNode(const OpExpr *node, char jumble[], size_t size, int *i, List *rtable);
 static bool SerLeafNodes(const Node *arg, char jumble[], size_t size, int *i, List *rtable);
-static bool LimitOffsetNode(const Node *node, char jumble[], size_t size, int *i);
+static bool LimitOffsetNode(const Node *node, char jumble[], size_t size, int *i, List *rtable);
 static bool JoinExprNode(JoinExpr *node, char jumble[], size_t size, int *i, List *rtable);
 static bool JoinExprNodeChild(const Node *node, char jumble[], size_t size, int *i, List *rtable);
 static void pgss_ExecutorStart(QueryDesc *queryDesc, int eflags);
@@ -293,6 +302,9 @@ _PG_init(void)
 	 * for the purposes of query normalization.
 	 */
 	last_jumb = MemoryContextAlloc(TopMemoryContext, JUM_SIZE);
+	/* Allocate space for bookkeeping information for query str normalization */
+	/* TODO: Use a more frugal memory allocation strategy than this */
+	offsets =  MemoryContextAlloc(TopMemoryContext, JUM_SIZE * sizeof(pgssTokenOffset));
 
 	/*
 	 * Install hooks.
@@ -329,10 +341,10 @@ _PG_fini(void)
 	ExecutorFinish_hook = prev_ExecutorFinish;
 	ExecutorEnd_hook = prev_ExecutorEnd;
 	ProcessUtility_hook = prev_ProcessUtility;
-	/* Uninstall planner hook, used for query normalization */
 	prev_Planner = planner_hook;
 
 	pfree(last_jumb);
+	pfree(offsets);
 }
 
 /*
@@ -562,6 +574,18 @@ PluginPlanner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		return standard_planner(parse, cursorOptions, boundParams);
 }
 
+static int comp_offset(const void *a, const void *b)
+{
+	int l = ((pgssTokenOffset*) a)->offset;
+	int r = ((pgssTokenOffset*) b)->offset;
+	if (l < r)
+		return -1;
+	else if (l > r)
+		return +1;
+	else
+		return 0;
+}
+
 /*
  * JumbleCurQuery: Selectively serialize query tree, and store it until
  * needed to hash the current query
@@ -569,8 +593,11 @@ PluginPlanner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 static void JumbleCurQuery(Query *parse)
 {
 	int i = 0;
+	offset_num = 0;
 	memset(last_jumb, 0, JUM_SIZE);
 	PerformJumble(parse, last_jumb, JUM_SIZE, &i);
+	/* Sort offsets for query string normalization */
+	qsort(offsets, offset_num, sizeof(pgssTokenOffset), comp_offset);
 }
 
 /*
@@ -582,7 +609,7 @@ static bool AppendJumb(char* item, char jumble[], size_t size, int *i)
 {
 	if (size + *i >= JUM_SIZE)
 		return false;
-	memcpy(jumble + (*i), item, size);
+	memcpy(jumble + *i, item, size);
 	*i += size;
 
 	return true;
@@ -614,8 +641,8 @@ if (!QualsNode(item, jumble, size, i, rtable)) \
 if (!SerLeafNodes(item, jumble, size, i, rtable)) \
 	return false;\
 
-#define DoLimitOffsetNode(item, jumble, size, i) \
-if (!LimitOffsetNode(item, jumble, size, i)) \
+#define DoLimitOffsetNode(item, jumble, size, i, rtable) \
+if (!LimitOffsetNode(item, jumble, size, i, rtable)) \
 	return false;\
 
 #define DoJoinExprNode(item, jumble, size, i, rtable) \
@@ -637,7 +664,7 @@ if (!JoinExprNodeChild(item, jumble, size, i, rtable)) \
  * in two different plans. A non-obvious example of such a
  * differentiator is a change in the "limit" constant.
  *
- * The resultant "jumble" can be hashed to uniquely identify
+ * The resulting "jumble" can be hashed to uniquely identify
  * a query that may use different constants in successive calls.
  */
 static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i)
@@ -804,10 +831,10 @@ static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i
 	 */
 
 	if (off)
-		DoLimitOffsetNode((Node*) off, jumble, size, i);
+		DoLimitOffsetNode((Node*) off, jumble, size, i, parse->rtable);
 
 	if (limcount)
-		DoLimitOffsetNode((Node*) limcount, jumble, size, i);
+		DoLimitOffsetNode((Node*) limcount, jumble, size, i, parse->rtable);
 
 	foreach(l, parse->rowMarks)
 	{
@@ -870,11 +897,24 @@ static bool SerLeafNodes(const Node *arg, char jumble[], size_t size, int *i, Li
 		 * normalize constants
 		 */
 		char magic = 0xC0;
+		Const *c = (Const *) arg;
 		APP_JUMB(magic);
 		/* Datatype of the constant is a
 		 * differentiator
 		 */
-		APP_JUMB(((Const *) arg)->consttype);
+		APP_JUMB(c->consttype);
+		/* Some Const nodes naturally don't have a location.
+		 * Also, views that have constants in their
+		 * definitions will have a tok_len of 0
+		 */
+		elog(DEBUG1, " (Consttype %d) c->location: %d, c->tok_len: %d",c->consttype, c->location, c->tok_len);
+		if (c->location > 0 && c->tok_len > 0)
+		{
+			offsets[offset_num].offset = c->location;
+			offsets[offset_num].len = c->tok_len;
+			/* should be added in the same order that as query string */
+			offset_num++;
+		}
 	}
 	else if (IsA(arg, Var))
 	{
@@ -1166,7 +1206,7 @@ static bool SerLeafNodes(const Node *arg, char jumble[], size_t size, int *i, Li
 /*
  * Perform selective serialization of limit or offset nodes
  */
-static bool LimitOffsetNode(const Node *node, char jumble[], size_t size, int *i)
+static bool LimitOffsetNode(const Node *node, char jumble[], size_t size, int *i, List *rtable)
 {
 	ListCell *l;
 	if (IsA(node, FuncExpr))
@@ -1194,13 +1234,15 @@ static bool LimitOffsetNode(const Node *node, char jumble[], size_t size, int *i
 	}
 	else if (IsA(node, Const))
 	{
-		/* A limit null  or limit all expression; for our purposes, equivalent to no limit at all */
+		/* This should be a differentiator, as it results in the addition of a limit node */
+		char magic = 0xEA;
+		APP_JUMB(magic);
 		return true;
 	}
 	else
 	{
-		elog(ERROR, "unrecognized node type for limit/offset node: %d",
-				(int) nodeTag(node));
+		/* Fall back on leaf node representation */
+		DoSerLeafNodes(node, jumble, size, i, rtable);
 	}
 	return true;
 }
@@ -1526,17 +1568,74 @@ pgss_store(const char *query, char parse_jumble[], double total_time, uint64 row
 	entry = (pgssEntry *) hash_search(pgss_hash, &key, HASH_FIND, NULL);
 	if (!entry)
 	{
-		/* Must acquire exclusive lock to add a new entry. */
-		LWLockRelease(pgss->lock);
-		LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
-		entry = entry_alloc(&key, query, new_query_len);
+		/*
+		 * It is necessary to generate a normalized version
+		 * of the query string that will be used for this query.
+		 *
+		 * Note that the representation seen by the user will
+		 * only have non-differentiating Const tokens swapped
+		 * with '?' characters, and does not for example take
+		 * account of the fact that alias names could vary
+		 * between successive calls of what we regard as the
+		 * same query.
+		 */
+		if (offset_num > 0)
+		{
+			int i,
+			  last_off = 0,
+			  quer_it = 0,
+			  n_quer_it = 0,
+			  off = 0,
+			  tok_len = 0,
+			  len_to_wrt = 0,
+			  last_tok_len = 0;
+			char *norm_query = palloc0(new_query_len + 1);
+			for(i = 0; i < offset_num; i++)
+			{
+				off = offsets[i].offset;
+				tok_len = offsets[i].len;
+				len_to_wrt = off - last_off;
+				len_to_wrt -= last_tok_len;
+				/*
+				 * Copy everything prior to the current offset/token to be
+				 * replaced, except previously copied things
+				 */
+
+				if (off + tok_len > new_query_len)
+					break;
+				memcpy(norm_query + n_quer_it, query + quer_it, len_to_wrt);
+				n_quer_it += len_to_wrt;
+				norm_query[n_quer_it++] = '?';
+				quer_it += len_to_wrt + tok_len;
+				last_off = off;
+				last_tok_len = tok_len;
+			}
+			/* Finish off last bit of query string */
+			memcpy(norm_query + n_quer_it, query + (off + tok_len), Min( strlen(query) - (off + tok_len ), new_query_len - n_quer_it ) );
+			elog(DEBUG1, "norm_query: '%s', orig query: '%s'", norm_query, query);
+			/*
+			 * Must acquire exclusive lock to add a new entry.
+			 * Leave that until as late as possible.
+			 */
+			LWLockRelease(pgss->lock);
+			LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
+
+			entry = entry_alloc(&key, norm_query, strlen(norm_query));
+			pfree(norm_query);
+		}
+		else
+		{
+			/* Acquire exclusive lock as required by entry_alloc() */
+			LWLockRelease(pgss->lock);
+			LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
+
+			entry = entry_alloc(&key, query, new_query_len);
+		}
 	}
 
 	/* Grab the spinlock while updating the counters. */
 	{
 		volatile pgssEntry *e = (volatile pgssEntry *) entry;
-		int exis_query_len = strlen(entry->query);
-		volatile const char *q =  (volatile const char *) query;
 
 		SpinLockAcquire(&e->mutex);
 		e->counters.calls += 1;
@@ -1551,13 +1650,6 @@ pgss_store(const char *query, char parse_jumble[], double total_time, uint64 row
 		e->counters.temp_blks_read += bufusage->temp_blks_read;
 		e->counters.temp_blks_written += bufusage->temp_blks_written;
 		e->counters.usage += usage;
-		/* The use of macro variants of C stdlib functions
-		 * maintains the volatility of the pointer, and avoids
-		 * reordering issues
-		 */
-		MemSet(e->query, 0, exis_query_len);
-		VolMemCpy(e->query, q, new_query_len);
-		e->query_len = new_query_len;
 		SpinLockRelease(&e->mutex);
 	}
 	LWLockRelease(pgss->lock);

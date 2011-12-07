@@ -4459,7 +4459,7 @@ ATExecAddColumn(List **wqueue, AlteredTableInfo *tab, Relation rel,
 													typmod,
 													COERCION_ASSIGNMENT,
 													COERCE_IMPLICIT_CAST,
-													-1);
+													-1, -1);
 			if (defval == NULL) /* should not happen */
 				elog(ERROR, "failed to coerce base type to domain");
 		}
@@ -6973,7 +6973,7 @@ ATPrepAlterColumnType(List **wqueue,
 										  targettype, targettypmod,
 										  COERCION_ASSIGNMENT,
 										  COERCE_IMPLICIT_CAST,
-										  -1);
+										  -1, -1);
 		if (transform == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATATYPE_MISMATCH),
@@ -7140,7 +7140,7 @@ ATExecAlterColumnType(AlteredTableInfo *tab, Relation rel,
 											targettype, targettypmod,
 											COERCION_ASSIGNMENT,
 											COERCE_IMPLICIT_CAST,
-											-1);
+											-1, -1);
 		if (defaultexpr == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATATYPE_MISMATCH),

@@ -22,35 +22,11 @@ def print_queries(conn):
 	for i in cur:
 		print i[0]
 
-def verify_basic_integrity(conn):
-	# Queries are not being corrupted in an obvious way
-	global test_no
-	error_mess = "Basic problem with pg_stat_statements storage detected"
-	cur = conn.cursor()
-	cur.execute("select pg_stat_statements_reset();")
-	sql = "select least(45555,45555,55555) from orders;"
-	cur.execute(sql)
-	cur.execute("select count(*) from pg_stat_statements where query = '{0}';".format(sql))
-	for i in cur:
-		tuple_n = i[0]
-
-	if tuple_n != 1:
-		raise SystemExit(error_mess)
-
-	sql = "select least(5,5,5) from orders;"
-	cur.execute(sql)
-	cur.execute("select count(*) from pg_stat_statements where query = '{0}';".format(sql))
-
-	for i in cur:
-		tuple_n = i[0]
-
-	if tuple_n != 1:
-		raise SystemExit(error_mess)
-
 def demonstrate_buffer_limitation(conn):
 	# It's expected that comparing a number of sufficiently large queries will result
 	# in their incorrectly being considered equivalent provided the differences occur
 	# after we run out of space to selectively serialize to in our buffer.
+
 	set_operations = ['union', 'union all', 'except' ]
 	for it, i in enumerate(["select 1,2,3,4",
 				"select upper(lower(upper(lower(initcap(lower('Foo'))))))",
@@ -105,10 +81,27 @@ def verify_statement_differs(sql, diff, conn, test_name = None):
 		Test {2} passed.\n\n """.format(sql, diff, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no))
 	test_no +=1
 
+def verify_normalizes_correctly(sql, norm_sql, conn, test_name = None):
+	global test_no
+	cur = conn.cursor()
+	cur.execute("select pg_stat_statements_reset();")
+	cur.execute(sql)
+	ver_exists = "select exists(select 1 from pg_stat_statements where query = %s);"
+	cur.execute(ver_exists, (norm_sql, ) )
+	for i in cur:
+		exists = i[0]
+
+	if exists:
+		print """The SQL \n'{0}'\n normalizes to \n'{1}'\n , as expected.
+			Test {2} passed.\n\n """.format(sql, norm_sql, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no))
+	else:
+		raise SystemExit("""The SQL statement \n'{0}'\n does not normalize to \n  '{1}'\n , which is not expected!
+				Test {2} failed.""".format(sql, norm_sql, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no)))
+	test_no +=1
+
 def main():
 	conn = psycopg2.connect("")
 	# Just let exceptions propagate
-
 
 	verify_statement_equivalency("select '5'::integer;", "select  '17'::integer;", conn)
 	verify_statement_equivalency("select 1;", "select      5   ;", conn)
@@ -198,10 +191,6 @@ def main():
 	# A different limit often means a different plan. In the case of limit and offset, constants matter:
 	verify_statement_differs("select * from orders limit 1", "select * from orders limit 2", conn)
 	verify_statement_differs("select * from orders limit 1 offset 1", "select * from orders limit 1 offset 2", conn)
-
-	# There are lots of ways limits can be noise
-	verify_statement_equivalency("select * from orders limit null", "select * from orders limit all", conn)
-	verify_statement_equivalency("select * from orders", "select * from orders limit null", conn)
 
 	# Join order in statement matters:
 	verify_statement_differs("select * from orderlines ol join orders o on o.orderid = ol.orderid;",
@@ -936,9 +925,25 @@ def main():
 	"select sum(orderid) from orders;",
 	conn, "Don't confuse functions/function like nodes")
 
-	verify_basic_integrity(conn)
-	demonstrate_buffer_limitation(conn)
 
+	verify_normalizes_correctly("select 1, 2, 3;", "select ?, ?, ?;", conn, "integer verification" )
+	verify_normalizes_correctly("select 'foo';", "select ?;", conn, "unknown/string normalization verification" )
+	verify_normalizes_correctly("select 'bar'::text;", "select ?::text;", conn, "text verification" )
+	verify_normalizes_correctly("select $$bar$$;", "select ?;", conn, "unknown/string normalization verification" )
+	verify_normalizes_correctly("select $$bar$$ from pg_database where datname = 'postgres';",
+				    "select ? from pg_database where datname = ?;", conn, "Quals comparison" )
+
+	# Note: Due to :: operator precedence, this behavior is correct:
+	verify_normalizes_correctly("select -12345::integer;", "select -?::integer;", conn, "show operator precedence issue" )
+	verify_normalizes_correctly("select -12345;", "select ?;", conn, "show no operator precedence issue" )
+
+	verify_normalizes_correctly("select -12345.12345::float;", "select -?::float;", conn, "show operator precedence issue" )
+	verify_normalizes_correctly("select -12345.12345;", "select ?;", conn, "show no operator precedence issue" )
+
+	verify_normalizes_correctly("select array_agg(lower(upper(lower(initcap(lower('Baz')))))) from orders;",
+				    "select array_agg(lower(upper(lower(initcap(lower(?)))))) from orders;", conn, "Function call")
+
+	demonstrate_buffer_limitation(conn)
 
 if __name__=="__main__":
 	main()

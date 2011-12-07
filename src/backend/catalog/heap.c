@@ -2451,7 +2451,7 @@ cookDefault(ParseState *pstate,
 									 atttypid, atttypmod,
 									 COERCION_ASSIGNMENT,
 									 COERCE_IMPLICIT_CAST,
-									 -1);
+									 -1, -1);
 		if (expr == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATATYPE_MISMATCH),
