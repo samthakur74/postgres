@@ -38,6 +38,7 @@ def demonstrate_buffer_limitation(conn):
 		for j in range(0,1000):
 			long_long_query += i + (' ' + set_operations[it] + ' \n' if j != 999 else " ")
 
+		print long_query
 		# Ideally, this test would fail, but it doesn't
 		verify_statement_equivalency(long_query, long_long_query, conn, "Differences out of range (iteration {0})".format(it + 1))
 

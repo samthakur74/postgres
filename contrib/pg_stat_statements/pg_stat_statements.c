@@ -600,13 +600,27 @@ static void JumbleCurQuery(Query *parse)
 
 /*
  * AppendJumb: Append a given value that is substantive to a given
- * query to jumble, while incrementing the iterator. If we've run
- * out of space in the buffer, simply give up
+ * query to jumble, while incrementing the iterator.
  */
 static bool AppendJumb(char* item, char jumble[], size_t size, int *i)
 {
-	if (size + *i >= JUMBLE_SIZE)
+	if (size + *i >= JUMBLE_SIZE * 2)
+		/* Give up completely, lest we overflow the stack */
 		return false;
+	else if (size + *i >= JUMBLE_SIZE)
+	{
+		/*
+		 * Don't append any more, but keep walking the tree to find
+		 * Const nodes to canonicacalize. While byte-for-byte, the
+		 * jumble representation will often be a lot more compact
+		 * than the query string, it's possible JUMBLE_SIZE has been
+		 * set to a very small value. Besides, it's always possible to
+		 * contrive a query where this is not true, such as
+		 * "select * from table_with_many_columns"
+		 */
+		*i += size;
+		return true;
+	}
 	memcpy(jumble + *i, item, size);
 	*i += size;
 
@@ -652,19 +666,31 @@ if (!JoinExprNodeChild(item, jumble, size, i, rtable)) \
 	return false;\
 
 /*
- * PerformJumble: Serialize the query tree "parse" such that it
- * is usefully normalized, excluding constants that are not
- * essential to the query itself.
+ * PerformJumble: Serialize the query tree "parse" such that it is usefully
+ * normalized, excluding constants that are not essential to the query itself.
  *
- * A guiding principal as to whether two queries should
- * be considered equivalent is whether whatever difference
- * exists between the two queries could be expected to result
- * in two different plans. A non-obvious example of such a
- * differentiator is a change in the "limit" constant.
+ * A guiding principal as to whether two queries should be considered
+ * equivalent is whether whatever difference exists between the two queries
+ * could be expected to result in two different plans, assuming that all
+ * constants have the same selectivity estimate. Non-obvious examples of
+ * such a differentiator include a change in the "limit" constant, or a
+ * change in the definition of a view referenced by a query. We pointedly
+ * serialize the query tree after rewriting, so entries in pg_stat_statements
+ * accurately represent discrete operations, while not involving external
+ * factors that are not essential to the query. Directly hashing plans would
+ * have the undesirable side-effect of potentially having totally external
+ * factors like planner cost constants differentiate the same query, so that
+ * particular implementation was not chosen.
  *
- * The resulting "jumble" can be hashed to uniquely identify
- * a query that may use different constants in successive calls.
+ * It is necessary to co-ordinate the hashing of a Query with the subsequent
+ * use of the hash within executor hooks. Most queries result in a call to
+ * the planner hook and a subsequent set of calls to executor hooks, so they
+ * don't require special co-ordination, but prepared statements do.
+ *
+ * The resulting "jumble" can be hashed to uniquely identify a query that may
+ * use different constants in successive calls.
  */
+
 static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i)
 {
 	ListCell *l;
