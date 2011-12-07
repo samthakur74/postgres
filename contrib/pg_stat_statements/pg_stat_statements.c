@@ -134,9 +134,10 @@ static char *last_jumble = NULL;
  * normalized characters will be
  */
 static pgssTokenOffset *offsets = NULL;
-/* Current size of offsets array */
-static size_t offset_num = 0;
-
+/* Length of offsets */
+static int offset_buf_size = 10;
+/* Number of actual offsets currently stored in offsets */
+static int offset_num = 0;
 /* Current nesting depth of ExecutorRun calls */
 static int	nested_level = 0;
 
@@ -303,8 +304,7 @@ _PG_init(void)
 	 */
 	last_jumble = MemoryContextAlloc(TopMemoryContext, JUMBLE_SIZE);
 	/* Allocate space for bookkeeping information for query str normalization */
-	/* TODO: Use a more frugal memory allocation strategy than this */
-	offsets =  MemoryContextAlloc(TopMemoryContext, JUMBLE_SIZE * sizeof(pgssTokenOffset));
+	offsets = MemoryContextAlloc(TopMemoryContext, offset_buf_size * sizeof(pgssTokenOffset));
 
 	/*
 	 * Install hooks.
@@ -933,6 +933,11 @@ static bool SerLeafNodes(const Node *arg, char jumble[], size_t size, int *i, Li
 		 */
 		if (c->location > 0 && c->tok_len > 0)
 		{
+			if (offset_num >= offset_buf_size)
+			{
+				offset_buf_size *= 2;
+				offsets = repalloc(offsets, offset_buf_size * sizeof(pgssTokenOffset));
+			}
 			offsets[offset_num].offset = c->location;
 			offsets[offset_num].len = c->tok_len;
 			/* should be added in the same order that as query string */
@@ -1437,6 +1442,12 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 				   queryDesc->totaltime->total,
 				   queryDesc->estate->es_processed,
 				   &queryDesc->totaltime->bufusage);
+
+		if (offset_buf_size > 10)
+		{
+			offset_buf_size = 10;
+			offsets = repalloc(offsets, offset_buf_size * sizeof(pgssTokenOffset));
+		}
 	}
 
 	if (prev_ExecutorEnd)
