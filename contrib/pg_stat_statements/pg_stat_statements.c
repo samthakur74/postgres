@@ -604,26 +604,27 @@ static void JumbleCurQuery(Query *parse)
  */
 static bool AppendJumb(char* item, char jumble[], size_t size, int *i)
 {
-	if (size + *i >= JUMBLE_SIZE * 2)
-		/* Give up completely, lest we overflow the stack */
-		return false;
-	else if (size + *i >= JUMBLE_SIZE)
+	if (size + *i >= JUMBLE_SIZE)
 	{
 		/*
-		 * Don't append any more, but keep walking the tree to find
-		 * Const nodes to canonicacalize. While byte-for-byte, the
-		 * jumble representation will often be a lot more compact
-		 * than the query string, it's possible JUMBLE_SIZE has been
-		 * set to a very small value. Besides, it's always possible to
-		 * contrive a query where this is not true, such as
-		 * "select * from table_with_many_columns"
+		 * While byte-for-byte, the jumble representation will often be a lot more
+		 * compact than the query string, it's possible JUMBLE_SIZE has been set to
+		 * a very small value. Besides, it's always possible to contrive a query
+		 * where this is not true, such as "select * from table_with_many_columns"
+		 */
+		if (size + *i >= JUMBLE_SIZE * 3)
+			/* Give up completely, lest we overflow the stack */
+			return false;
+		/*
+		 * Don't append any more, but keep walking the tree to find Const nodes to
+		 * canonicalize. Having done all we can with the jumble, we must still
+		 * concern ourselves with the normalized query str.
 		 */
 		*i += size;
 		return true;
 	}
 	memcpy(jumble + *i, item, size);
 	*i += size;
-
 	return true;
 }
 
@@ -677,9 +678,9 @@ if (!JoinExprNodeChild(item, jumble, size, i, rtable)) \
  * change in the definition of a view referenced by a query. We pointedly
  * serialize the query tree after rewriting, so entries in pg_stat_statements
  * accurately represent discrete operations, while not involving external
- * factors that are not essential to the query. Directly hashing plans would
- * have the undesirable side-effect of potentially having totally external
- * factors like planner cost constants differentiate the same query, so that
+ * factors that are not essential to what the query does. Directly hashing
+ * plans would have the undesirable side-effect of potentially having totally
+ * external factors like planner cost constants differentiate a query, so that
  * particular implementation was not chosen.
  *
  * It is necessary to co-ordinate the hashing of a Query with the subsequent
@@ -690,7 +691,6 @@ if (!JoinExprNodeChild(item, jumble, size, i, rtable)) \
  * The resulting "jumble" can be hashed to uniquely identify a query that may
  * use different constants in successive calls.
  */
-
 static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i)
 {
 	ListCell *l;
@@ -931,7 +931,6 @@ static bool SerLeafNodes(const Node *arg, char jumble[], size_t size, int *i, Li
 		 * Also, views that have constants in their
 		 * definitions will have a tok_len of 0
 		 */
-		elog(DEBUG1, " (Consttype %d) c->location: %d, c->tok_len: %d",c->consttype, c->location, c->tok_len);
 		if (c->location > 0 && c->tok_len > 0)
 		{
 			offsets[offset_num].offset = c->location;
@@ -1566,6 +1565,7 @@ pgss_store(const char *query, char parsed_jumble[], double total_time, uint64 ro
 	double		usage;
 	pgssEntry  *entry;
 	int new_query_len = strlen(query);
+	char *norm_query = NULL;
 
 	Assert(query != NULL);
 
@@ -1613,7 +1613,7 @@ pgss_store(const char *query, char parsed_jumble[], double total_time, uint64 ro
 			  tok_len = 0,
 			  len_to_wrt = 0,
 			  last_tok_len = 0;
-			char *norm_query = palloc0(new_query_len + 1);
+			norm_query = palloc0(new_query_len + 1);
 			for(i = 0; i < offset_num; i++)
 			{
 				off = offsets[i].offset;
@@ -1624,7 +1624,6 @@ pgss_store(const char *query, char parsed_jumble[], double total_time, uint64 ro
 				 * Copy everything prior to the current offset/token to be
 				 * replaced, except previously copied things
 				 */
-
 				if (off + tok_len > new_query_len)
 					break;
 				memcpy(norm_query + n_quer_it, query + quer_it, len_to_wrt);
@@ -1634,11 +1633,10 @@ pgss_store(const char *query, char parsed_jumble[], double total_time, uint64 ro
 				last_off = off;
 				last_tok_len = tok_len;
 			}
-			/* Finish off last bit of query string */
+			/* Finish off last piece of query string */
 			memcpy(norm_query + n_quer_it, query + (off + tok_len),
 				Min( strlen(query) - (off + tok_len ),
 				new_query_len - n_quer_it ) );
-			elog(DEBUG1, "norm_query: '%s', orig query: '%s'", norm_query, query);
 			/*
 			 * Must acquire exclusive lock to add a new entry.
 			 * Leave that until as late as possible.
@@ -1647,7 +1645,6 @@ pgss_store(const char *query, char parsed_jumble[], double total_time, uint64 ro
 			LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
 
 			entry = entry_alloc(&key, norm_query, strlen(norm_query));
-			pfree(norm_query);
 		}
 		else
 		{
@@ -1679,6 +1676,8 @@ pgss_store(const char *query, char parsed_jumble[], double total_time, uint64 ro
 		SpinLockRelease(&e->mutex);
 	}
 	LWLockRelease(pgss->lock);
+	if (norm_query)
+		pfree(norm_query);
 }
 
 /*
