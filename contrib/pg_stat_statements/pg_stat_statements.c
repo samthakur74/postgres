@@ -181,7 +181,7 @@ static int	pgss_max;			/* max # statements to track */
 static int	pgss_track;			/* tracking level */
 static bool pgss_track_utility; /* whether to track utility commands */
 static bool pgss_save;			/* whether to save stats across shutdown */
-static bool pgss_string;		/* whether to differentiate on query string */
+static bool pgss_string_key;		/* whether to differentiate on query string */
 
 #define pgss_enabled() \
 	(pgss_track == PGSS_TRACK_ALL || \
@@ -202,7 +202,7 @@ static void pgss_shmem_startup(void);
 static void pgss_shmem_shutdown(int code, Datum arg);
 static PlannedStmt *pgss_PlannerRun(Query *parse, int cursorOptions, ParamListInfo boundParams);
 static int comp_offset(const void *a, const void *b);
-static void JumbleCurQuery(Query *parse);
+static void JumbleQuery(Query *parse);
 static bool AppendJumb(char* item, char jumble[], size_t size, int *i);
 static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i);
 static bool QualsNode(const OpExpr *node, char jumble[], size_t size, int *i, List *rtable);
@@ -301,10 +301,10 @@ _PG_init(void)
 	 * Support legacy pg_stat_statements behavior, for compatibility with
 	 * versions shipped with Postgres 8.4, 9.0 and 9.1
 	 */
-	DefineCustomBoolVariable("pg_stat_statements.string",
+	DefineCustomBoolVariable("pg_stat_statements.string_key",
 			   "Differentiate queries based on query string alone.",
 							 NULL,
-							 &pgss_string,
+							 &pgss_string_key,
 							 false,
 							 PGC_SUSET,
 							 0,
@@ -587,13 +587,13 @@ error:
 PlannedStmt *
 pgss_PlannerRun(Query *parse, int cursorOptions, ParamListInfo boundParams)
 {
-	if (!parse->utilityStmt && !pgss_string)
+	if (!parse->utilityStmt && !pgss_string_key)
 	{
 		/*
-		 * We deal with utility statements by hashing the query str
-		 * directly
+		 * Only generate a jumble if we have no reason to hash the query string
+		 * directly instead
 		 */
-		JumbleCurQuery(parse);
+		JumbleQuery(parse);
 	}
 	/* Invoke the planner */
 	if (prev_Planner)
@@ -602,6 +602,11 @@ pgss_PlannerRun(Query *parse, int cursorOptions, ParamListInfo boundParams)
 		return standard_planner(parse, cursorOptions, boundParams);
 }
 
+/*
+ * comp_offset: Comparator for qsorting pgssTokenOffset values. Often when
+ * walking the query tree, Const tokens will be found in the same order as in
+ * the original query string, but this is certainly not guaranteed.
+ */
 static int comp_offset(const void *a, const void *b)
 {
 	int l = ((pgssTokenOffset*) a)->offset;
@@ -615,10 +620,10 @@ static int comp_offset(const void *a, const void *b)
 }
 
 /*
- * JumbleCurQuery: Selectively serialize query tree, and store it until
- * needed to hash the current query
+ * JumbleQuery: Selectively serialize query tree, and store it until
+ * needed to hash the query "parse".
  */
-static void JumbleCurQuery(Query *parse)
+static void JumbleQuery(Query *parse)
 {
 	int i = 0;
 	last_offset_num = 0;
@@ -952,8 +957,10 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		 * differentiator
 		 */
 		APP_JUMB(c->consttype);
-		/* Some Const nodes naturally don't have a location.
-		 * Also, views that have constants in their
+		/*
+		 * Some Const nodes naturally don't have a location.
+		 *
+		 * Views that have constants in their
 		 * definitions will have a tok_len of 0
 		 */
 		if (c->location > 0 && c->tok_len > 0)
@@ -965,7 +972,6 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 			}
 			last_offsets[last_offset_num].offset = c->location;
 			last_offsets[last_offset_num].len = c->tok_len;
-			/* should be added in the same order that as query string */
 			last_offset_num++;
 		}
 	}
@@ -1447,17 +1453,19 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		 */
 		InstrEndLoop(queryDesc->totaltime);
 
-		if (queryDesc->params || queryDesc->utilitystmt || pgss_string)
+		if (queryDesc->params || queryDesc->utilitystmt || pgss_string_key)
 		{
 			/*
-			 * This query was paramaterized or is a utility statement - hash
-			 * the query string, as the last call to our planner plugin won't
-			 * have hashed this particular query.
+			 * This query was paramaterized or is a utility statement, or
+			 * pg_stat_statements is in legacy pgss_string_key mode - hash the
+			 * query string, as the last call to pgss_PlannerRun won't have
+			 * hashed the tree of this particular query - it may have skipped
+			 * hashing, or there may not have even been a call corresponding to
+			 * a call to this function.
 			 *
 			 * If we're dealing with a parameterized query, the query string
 			 * is the original query string anyway, so there is no need to
-			 * worry about its stability as would be necessary if this was done
-			 * with regular queries that undergo query tree hashing/normalization.
+			 * worry about its stability.
 			 *
 			 * The fact that constants in the prepared query won't be
 			 * canonicalized is clearly a feature rather than a bug, as the
@@ -1470,7 +1478,13 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 				Min(JUMBLE_SIZE - 1, strlen(queryDesc->sourceText) )
 				);
 		}
-
+		/*
+		 * XXX: There is an assumption that last_* variables were set by a prior,
+		 * corresponding call to pgss_PlannerRun within this backend (provided
+		 * that we jumbled the query tree with the intention of hashing it - that
+		 * won't be the case if the jumble is actually just a STR_BUF copy of
+		 * the query string).
+		 */
 		pgss_store(queryDesc->sourceText,
 				   last_jumble,
 				   last_offsets,
@@ -1648,15 +1662,16 @@ pgss_store(const char *query, char parsed_jumble[],
 	if (!entry)
 	{
 		/*
-		 * It is necessary to generate a normalized version
-		 * of the query string that will be used for this query.
+		 * It is necessary to generate a normalized version of the query
+		 * string that will be used to represent it. It's important that
+		 * the user be presented with a stable representation of a canonicalized
+		 * query.
 		 *
-		 * Note that the representation seen by the user will
-		 * only have non-differentiating Const tokens swapped
-		 * with '?' characters, and does not for example take
-		 * account of the fact that alias names could vary
-		 * between successive calls of what we regard as the
-		 * same query.
+		 * Note that the representation seen by the user will only have
+		 * non-differentiating Const tokens swapped with '?' characters, and
+		 * this does not for example take account of the fact that alias names
+		 * could vary between successive calls of what we regard as the same
+		 * query.
 		 */
 		if (off_n > 0)
 		{
