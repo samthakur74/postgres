@@ -133,11 +133,11 @@ static char *last_jumble = NULL;
  * Array that represents where
  * normalized characters will be
  */
-static pgssTokenOffset *offsets = NULL;
+static pgssTokenOffset *last_offsets = NULL;
 /* Length of offsets */
-static int offset_buf_size = 10;
+static int last_offset_buf_size = 10;
 /* Number of actual offsets currently stored in offsets */
-static int offset_num = 0;
+static int last_offset_num = 0;
 /* Current nesting depth of ExecutorRun calls */
 static int	nested_level = 0;
 
@@ -214,8 +214,10 @@ static void pgss_ProcessUtility(Node *parsetree,
 					DestReceiver *dest, char *completionTag);
 static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
-static void pgss_store(const char *query, char parsed_jumble[], double total_time, uint64 rows,
-		   const BufferUsage *bufusage);
+static void pgss_store(const char *query, char parsed_jumble[],
+			pgssTokenOffset *offs, int off_n,
+			double total_time, uint64 rows,
+			   const BufferUsage *bufusage);
 static Size pgss_memsize(void);
 static pgssEntry *entry_alloc(pgssHashKey *key, const char* query, int new_query_len);
 static void entry_dealloc(void);
@@ -304,7 +306,7 @@ _PG_init(void)
 	 */
 	last_jumble = MemoryContextAlloc(TopMemoryContext, JUMBLE_SIZE);
 	/* Allocate space for bookkeeping information for query str normalization */
-	offsets = MemoryContextAlloc(TopMemoryContext, offset_buf_size * sizeof(pgssTokenOffset));
+	last_offsets = MemoryContextAlloc(TopMemoryContext, last_offset_buf_size * sizeof(pgssTokenOffset));
 
 	/*
 	 * Install hooks.
@@ -344,7 +346,7 @@ _PG_fini(void)
 	prev_Planner = planner_hook;
 
 	pfree(last_jumble);
-	pfree(offsets);
+	pfree(last_offsets);
 }
 
 /*
@@ -591,11 +593,11 @@ static int comp_offset(const void *a, const void *b)
 static void JumbleCurQuery(Query *parse)
 {
 	int i = 0;
-	offset_num = 0;
+	last_offset_num = 0;
 	memset(last_jumble, 0, JUMBLE_SIZE);
 	PerformJumble(parse, last_jumble, JUMBLE_SIZE, &i);
 	/* Sort offsets for query string normalization */
-	qsort(offsets, offset_num, sizeof(pgssTokenOffset), comp_offset);
+	qsort(last_offsets, last_offset_num, sizeof(pgssTokenOffset), comp_offset);
 }
 
 /*
@@ -935,15 +937,15 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		 */
 		if (c->location > 0 && c->tok_len > 0)
 		{
-			if (offset_num >= offset_buf_size)
+			if (last_offset_num >= last_offset_buf_size)
 			{
-				offset_buf_size *= 2;
-				offsets = repalloc(offsets, offset_buf_size * sizeof(pgssTokenOffset));
+				last_offset_buf_size *= 2;
+				last_offsets = repalloc(last_offsets, last_offset_buf_size * sizeof(pgssTokenOffset));
 			}
-			offsets[offset_num].offset = c->location;
-			offsets[offset_num].len = c->tok_len;
+			last_offsets[last_offset_num].offset = c->location;
+			last_offsets[last_offset_num].len = c->tok_len;
 			/* should be added in the same order that as query string */
-			offset_num++;
+			last_offset_num++;
 		}
 	}
 	else if (IsA(arg, Var))
@@ -1426,14 +1428,16 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 
 		pgss_store(queryDesc->sourceText,
 				   last_jumble,
+				   last_offsets,
+				   last_offset_num,
 				   queryDesc->totaltime->total,
 				   queryDesc->estate->es_processed,
 				   &queryDesc->totaltime->bufusage);
 
-		if (offset_buf_size > 10)
+		if (last_offset_buf_size > 10)
 		{
-			offset_buf_size = 10;
-			offsets = repalloc(offsets, offset_buf_size * sizeof(pgssTokenOffset));
+			last_offset_buf_size = 10;
+			last_offsets = repalloc(last_offsets, last_offset_buf_size * sizeof(pgssTokenOffset));
 		}
 	}
 
@@ -1506,7 +1510,7 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 			pgBufferUsage.temp_blks_written - bufusage.temp_blks_written;
 
 		memset(last_jumble, 0, JUMBLE_SIZE); /* Utility statements are all equivalent */
-		pgss_store(queryString, last_jumble, INSTR_TIME_GET_DOUBLE(duration), rows,
+		pgss_store(queryString, last_jumble, NULL, 0, INSTR_TIME_GET_DOUBLE(duration), rows,
 				   &bufusage);
 	}
 	else
@@ -1556,7 +1560,9 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
  * Store some statistics for a statement.
  */
 static void
-pgss_store(const char *query, char parsed_jumble[], double total_time, uint64 rows,
+pgss_store(const char *query, char parsed_jumble[],
+			pgssTokenOffset *offs, int off_n,
+			double total_time, uint64 rows,
 		   const BufferUsage *bufusage)
 {
 	pgssHashKey key;
@@ -1601,7 +1607,7 @@ pgss_store(const char *query, char parsed_jumble[], double total_time, uint64 ro
 		 * between successive calls of what we regard as the
 		 * same query.
 		 */
-		if (offset_num > 0)
+		if (off_n > 0)
 		{
 			int i,
 			  last_off = 0,
@@ -1612,10 +1618,10 @@ pgss_store(const char *query, char parsed_jumble[], double total_time, uint64 ro
 			  len_to_wrt = 0,
 			  last_tok_len = 0;
 			norm_query = palloc0(new_query_len + 1);
-			for(i = 0; i < offset_num; i++)
+			for(i = 0; i < off_n; i++)
 			{
-				off = offsets[i].offset;
-				tok_len = offsets[i].len;
+				off = offs[i].offset;
+				tok_len = offs[i].len;
 				len_to_wrt = off - last_off;
 				len_to_wrt -= last_tok_len;
 				/*
