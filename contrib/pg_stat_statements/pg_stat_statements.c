@@ -650,7 +650,7 @@ static bool AppendJumb(char* item, char jumble[], size_t size, int *i)
 		 * "select * from table_with_many_columns"
 		 */
 		if (size + *i >= JUMBLE_SIZE * 2)
-			/* Give up completely, lest we overflow the stack */
+			/* Give up completely, to avoid a possible stack overflow */
 			return false;
 		/*
 		 * Don't append any more, but keep walking the tree to find Const nodes to
@@ -677,8 +677,6 @@ if (!AppendJumb((char*)&item, jumble, sizeof(item), i))\
  * Simple wrappers around functions so that they return upon reaching
  * end of buffer
  */
-
-
 #define PERFORM_JUMBLE(item, jumble, size, i) \
 if (!PerformJumble(item, jumble, size, i)) \
 	return false;\
@@ -1461,7 +1459,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 			 * query string, as the last call to pgss_PlannerRun won't have
 			 * hashed the tree of this particular query - it may have skipped
 			 * hashing, or there may not have even been a call corresponding to
-			 * a call to this function.
+			 * a call to this call of pgss_ExecutorEnd.
 			 *
 			 * If we're dealing with a parameterized query, the query string
 			 * is the original query string anyway, so there is no need to
@@ -1670,7 +1668,7 @@ pgss_store(const char *query, char parsed_jumble[],
 		 * Note that the representation seen by the user will only have
 		 * non-differentiating Const tokens swapped with '?' characters, and
 		 * this does not for example take account of the fact that alias names
-		 * could vary between successive calls of what we regard as the same
+		 * could vary between successive calls of what is regarded as the same
 		 * query.
 		 */
 		if (off_n > 0)
@@ -1928,8 +1926,6 @@ entry_alloc(pgssHashKey *key, const char* query, int new_query_len)
 		/* re-initialize the mutex each time ... we assume no one using it */
 		SpinLockInit(&entry->mutex);
 		/* ... and don't forget the query text */
-		/* memset previous entry in the slot */
-		memset(entry->query, 0, pgss->query_size);
 		memcpy(entry->query, query, entry->query_len);
 		entry->query[entry->query_len] = '\0';
 	}
