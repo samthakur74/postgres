@@ -12,11 +12,14 @@
  *
  * Statements go through a normalization process before being stored.
  * Normalization is ignoring components of the query that don't normally
- * make it significantly different.  For example, the statements
- * 'SELECT * FROM t WHERE f=1' and 'SELECT * FROM t WHERE f=2' would both
- * be considered equivalent after normalization.  This is implemented
- * by generating a series of integers from the parsed query tree, into
- * what's referred to as a query jumble here.
+ * differentiate it for the purposes of isolating slow performing queries.
+ * For example, the statements 'SELECT * FROM t WHERE f=1' and
+ * 'SELECT * FROM t WHERE f=2' would both be considered equivalent after
+ * normalization.  This is implemented by generating a series of integers
+ * from the query tree after the re-write stage, into a "query jumble". A
+ * query jumble is distinct from a straight serialization of the query tree in
+ * that Constants are canonicalized, and various exteneous information is
+ * ignored, such as the collation of Vars.
  *
  * Copyright (c) 2008-2012, PostgreSQL Global Development Group
  *
@@ -58,7 +61,10 @@ static const uint32 PGSS_FILE_HEADER = 0x20100108;
 #define USAGE_INIT				(1.0)	/* including initial planning */
 #define USAGE_DECREASE_FACTOR	(0.99)	/* decreased every entry_dealloc */
 #define USAGE_DEALLOC_PERCENT	5		/* free this % of entries at once */
-#define JUMBLE_SIZE				512	    /* query serialization buffer size */
+#define JUMBLE_SIZE				1024	    /* query serialization buffer size */
+/* Magic values */
+#define HASH_BUF				(0xFA)	/* buffer is a hash of query tree */
+#define STR_BUF					(0xEB)	/* buffer is query string itself */
 
 /*
  * Hashtable key that defines the identity of a hashtable entry.  The
@@ -175,6 +181,7 @@ static int	pgss_max;			/* max # statements to track */
 static int	pgss_track;			/* tracking level */
 static bool pgss_track_utility; /* whether to track utility commands */
 static bool pgss_save;			/* whether to save stats across shutdown */
+static bool pgss_string;		/* whether to differentiate on query string */
 
 #define pgss_enabled() \
 	(pgss_track == PGSS_TRACK_ALL || \
@@ -193,7 +200,7 @@ PG_FUNCTION_INFO_V1(pg_stat_statements);
 
 static void pgss_shmem_startup(void);
 static void pgss_shmem_shutdown(int code, Datum arg);
-static PlannedStmt *PluginPlanner(Query *parse, int cursorOptions, ParamListInfo boundParams);
+static PlannedStmt *pgss_PlannerRun(Query *parse, int cursorOptions, ParamListInfo boundParams);
 static int comp_offset(const void *a, const void *b);
 static void JumbleCurQuery(Query *parse);
 static bool AppendJumb(char* item, char jumble[], size_t size, int *i);
@@ -215,9 +222,9 @@ static void pgss_ProcessUtility(Node *parsetree,
 static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
 static void pgss_store(const char *query, char parsed_jumble[],
-			pgssTokenOffset *offs, int off_n,
+			pgssTokenOffset offs[], int off_n,
 			double total_time, uint64 rows,
-			   const BufferUsage *bufusage);
+			const BufferUsage *bufusage);
 static Size pgss_memsize(void);
 static pgssEntry *entry_alloc(pgssHashKey *key, const char* query, int new_query_len);
 static void entry_dealloc(void);
@@ -290,6 +297,20 @@ _PG_init(void)
 							 NULL,
 							 NULL,
 							 NULL);
+	/*
+	 * Support legacy pg_stat_statements behavior, for compatibility with
+	 * versions shipped with Postgres 8.4, 9.0 and 9.1
+	 */
+	DefineCustomBoolVariable("pg_stat_statements.string",
+			   "Differentiate queries based on query string alone.",
+							 NULL,
+							 &pgss_string,
+							 false,
+							 PGC_SUSET,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
 
 	EmitWarningsOnPlaceholders("pg_stat_statements");
 
@@ -327,7 +348,7 @@ _PG_init(void)
 	 * Install hooks for query normalization
 	 */
 	prev_Planner = planner_hook;
-	planner_hook = PluginPlanner;
+	planner_hook = pgss_PlannerRun;
 }
 
 /*
@@ -560,13 +581,20 @@ error:
 }
 
 /*
- * PluginPlanner: Selectively serialize the query tree for the purposes of
+ * pgss_PlannerRun: Selectively serialize the query tree for the purposes of
  * query normalization.
  */
 PlannedStmt *
-PluginPlanner(Query *parse, int cursorOptions, ParamListInfo boundParams)
+pgss_PlannerRun(Query *parse, int cursorOptions, ParamListInfo boundParams)
 {
-	JumbleCurQuery(parse);
+	if (!parse->utilityStmt && !pgss_string)
+	{
+		/*
+		 * We deal with utility statements by hashing the query str
+		 * directly
+		 */
+		JumbleCurQuery(parse);
+	}
 	/* Invoke the planner */
 	if (prev_Planner)
 		return prev_Planner(parse, cursorOptions, boundParams);
@@ -595,6 +623,7 @@ static void JumbleCurQuery(Query *parse)
 	int i = 0;
 	last_offset_num = 0;
 	memset(last_jumble, 0, JUMBLE_SIZE);
+	last_jumble[++i] = HASH_BUF;
 	PerformJumble(parse, last_jumble, JUMBLE_SIZE, &i);
 	/* Sort offsets for query string normalization */
 	qsort(last_offsets, last_offset_num, sizeof(pgssTokenOffset), comp_offset);
@@ -614,7 +643,7 @@ static bool AppendJumb(char* item, char jumble[], size_t size, int *i)
 		 * a very small value. Besides, it's always possible to contrive a query
 		 * where this is not true, such as "select * from table_with_many_columns"
 		 */
-		if (size + *i >= JUMBLE_SIZE * 3)
+		if (size + *i >= JUMBLE_SIZE * 2)
 			/* Give up completely, lest we overflow the stack */
 			return false;
 		/*
@@ -669,7 +698,7 @@ if (!JoinExprNodeChild(item, jumble, size, i, rtable)) \
 	return false;\
 
 /*
- * PerformJumble: Serialize the query tree "parse" while canonicalizing
+ * PerformJumble: Serialize the query tree "parse" and canonicalize
  * constants, while simply skipping over others that are not essential to the
  * query, such that it is usefully normalized, excluding that which is not
  * essential to the query itself.
@@ -703,15 +732,6 @@ static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i
 	FuncExpr *limcount = (FuncExpr *) parse->limitCount;	/* # of result tuples to skip (int8 expr) */
 
 	APP_JUMB(parse->resultRelation);
-	if (parse->utilityStmt)
-	{
-		/*
-		 * non-null if this is DECLARE CURSOR
-		 * or a non-optimizable statement
-		 */
-
-		/* TODO: Serialize utilityStmt */
-	}
 
 	if (parse->intoClause)
 	{
@@ -1426,6 +1446,27 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		 */
 		InstrEndLoop(queryDesc->totaltime);
 
+		if (queryDesc->params || queryDesc->utilitystmt || pgss_string)
+		{
+			/*
+			 * This query was paramaterized or is a utility
+			 * statement - hash the query string, as the last
+			 * call to our planner plugin won't have hashed this
+			 * query particular query.
+			 *
+			 * If we're dealing with a parameterized query, the
+			 * query string is the original query string anyway, so
+			 * there is no need to worry about its stability as
+			 * would be necessary if this was done with regular queries
+			 * that undergo query tree hashing/normalization.
+			 */
+			memset(last_jumble, 0, JUMBLE_SIZE);
+			last_jumble[0] = STR_BUF;
+			memcpy(last_jumble + 1, queryDesc->sourceText,
+				Min(JUMBLE_SIZE - 1, strlen(queryDesc->sourceText) )
+				);
+		}
+
 		pgss_store(queryDesc->sourceText,
 				   last_jumble,
 				   last_offsets,
@@ -1509,7 +1550,13 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 		bufusage.temp_blks_written =
 			pgBufferUsage.temp_blks_written - bufusage.temp_blks_written;
 
-		memset(last_jumble, 0, JUMBLE_SIZE); /* Utility statements are all equivalent */
+		/* In the case of utility statements, hash the query string directly */
+		memset(last_jumble, 0, JUMBLE_SIZE);
+		last_jumble[0] = STR_BUF;
+		memcpy(last_jumble + 1, queryString,
+			Min(JUMBLE_SIZE - 1, strlen(queryString) )
+			);
+
 		pgss_store(queryString, last_jumble, NULL, 0, INSTR_TIME_GET_DOUBLE(duration), rows,
 				   &bufusage);
 	}
@@ -1561,9 +1608,9 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
  */
 static void
 pgss_store(const char *query, char parsed_jumble[],
-			pgssTokenOffset *offs, int off_n,
+			pgssTokenOffset offs[], int off_n,
 			double total_time, uint64 rows,
-		   const BufferUsage *bufusage)
+			const BufferUsage *bufusage)
 {
 	pgssHashKey key;
 	double		usage;
@@ -1639,8 +1686,8 @@ pgss_store(const char *query, char parsed_jumble[],
 			}
 			/* Finish off last piece of query string */
 			memcpy(norm_query + n_quer_it, query + (off + tok_len),
-				Min( strlen(query) - (off + tok_len ),
-				new_query_len - n_quer_it ) );
+				Min( strlen(query) - (off + tok_len),
+					new_query_len - n_quer_it ) );
 			/*
 			 * Must acquire exclusive lock to add a new entry.
 			 * Leave that until as late as possible.
