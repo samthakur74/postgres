@@ -11758,7 +11758,7 @@ AexprConst: Iconst
 					/* generic type 'literal' syntax */
 					TypeName *t = makeTypeNameFromNameList($1);
 					t->location = @1.begins;
-					$$ = makeStringConstCast($2, @2.begins, @1.length, t);
+					$$ = makeStringConstCast($2, @2.begins, @2.length, t);
 				}
 			| func_name '(' func_arg_list ')' Sconst
 				{
@@ -12411,7 +12411,7 @@ makeStringConstCast(char *str, int location, int length, TypeName *typename)
 {
 	Node *s = makeStringConst(str, location, length);
 
-	return makeTypeCast(s, typename, -1, -1);
+	return makeTypeCast(s, typename, location, length);
 }
 
 static Node *

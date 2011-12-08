@@ -12,7 +12,7 @@
  *
  * Statements go through a normalization process before being stored.
  * Normalization is ignoring components of the query that don't normally
- * differentiate it for the purposes of isolating slow performing queries.
+ * differentiate it for the purposes of isolating poorly performing queries.
  * For example, the statements 'SELECT * FROM t WHERE f=1' and
  * 'SELECT * FROM t WHERE f=2' would both be considered equivalent after
  * normalization.  This is implemented by generating a series of integers
@@ -641,7 +641,8 @@ static bool AppendJumb(char* item, char jumble[], size_t size, int *i)
 		 * While byte-for-byte, the jumble representation will often be a lot more
 		 * compact than the query string, it's possible JUMBLE_SIZE has been set to
 		 * a very small value. Besides, it's always possible to contrive a query
-		 * where this is not true, such as "select * from table_with_many_columns"
+		 * where it won't be as compact, such as
+		 * "select * from table_with_many_columns"
 		 */
 		if (size + *i >= JUMBLE_SIZE * 2)
 			/* Give up completely, lest we overflow the stack */
@@ -1449,16 +1450,19 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		if (queryDesc->params || queryDesc->utilitystmt || pgss_string)
 		{
 			/*
-			 * This query was paramaterized or is a utility
-			 * statement - hash the query string, as the last
-			 * call to our planner plugin won't have hashed this
-			 * query particular query.
+			 * This query was paramaterized or is a utility statement - hash
+			 * the query string, as the last call to our planner plugin won't
+			 * have hashed this particular query.
 			 *
-			 * If we're dealing with a parameterized query, the
-			 * query string is the original query string anyway, so
-			 * there is no need to worry about its stability as
-			 * would be necessary if this was done with regular queries
-			 * that undergo query tree hashing/normalization.
+			 * If we're dealing with a parameterized query, the query string
+			 * is the original query string anyway, so there is no need to
+			 * worry about its stability as would be necessary if this was done
+			 * with regular queries that undergo query tree hashing/normalization.
+			 *
+			 * The fact that constants in the prepared query won't be
+			 * canonicalized is clearly a feature rather than a bug, as the
+			 * user evidently considers the constant essential to the query, or
+			 * they'd have paramaterized it.
 			 */
 			memset(last_jumble, 0, JUMBLE_SIZE);
 			last_jumble[0] = STR_BUF;
@@ -1672,8 +1676,8 @@ pgss_store(const char *query, char parsed_jumble[],
 				len_to_wrt = off - last_off;
 				len_to_wrt -= last_tok_len;
 				/*
-				 * Copy everything prior to the current offset/token to be
-				 * replaced, except previously copied things
+				 * Each iteration copies everything prior to the current
+				 * offset/token to be replaced, except previously copied things
 				 */
 				if (off + tok_len > new_query_len)
 					break;

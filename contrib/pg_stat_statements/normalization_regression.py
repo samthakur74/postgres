@@ -110,6 +110,9 @@ def main():
 	# Date constant normalization
 	verify_statement_equivalency("select * from orders where orderdate = '2001-01-01';" ,"select * from orders where orderdate = '1960-01-01'", conn)
 	verify_statement_equivalency("select '5'::integer;","select  '17'::integer;", conn)
+	# Test equivalency of cast syntaxes:
+	verify_statement_equivalency("select '5'::integer;","select integer '5'", conn)
+
 	# We don't care about whitespace or differences in constants:
 	verify_statement_equivalency(
 	"select o.orderid from orders o join orderlines ol on o.orderid = ol.orderid     where    customerid        =  12345  ;",
@@ -941,6 +944,21 @@ def main():
 
 	verify_normalizes_correctly("select array_agg(lower(upper(lower(initcap(lower('Baz')))))) from orders;",
 				    "select array_agg(lower(upper(lower(initcap(lower(?)))))) from orders;", conn, "Function call")
+
+	# Test this cast syntax works:
+	verify_normalizes_correctly("select timestamp without time zone '2009-05-05 15:34:24';",
+								"select timestamp without time zone ?;", conn, "excercise special handling, timestamp")
+	verify_normalizes_correctly("select timestamptz '2009-05-05 15:34:24.1234';",
+								"select timestamptz ?;", conn, "excercise special handling, timestamptz")
+	verify_normalizes_correctly("select date '2009-05-05';",
+								"select date ?;", conn, "excercise special handling, date")
+	verify_normalizes_correctly("select time '15:15:15';",
+								"select time ?;", conn, "excercise special handling, time")
+	verify_normalizes_correctly("select time with time zone '15:15:15';",
+								"select time with time zone ?;", conn, "excercise special handling, time with time zone")
+
+
+	verify_normalizes_correctly("select interval '1 hour';", "select interval ?;", conn, "excercise special handling, interval")
 
 	demonstrate_buffer_limitation(conn)
 

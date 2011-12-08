@@ -955,10 +955,10 @@ other			.
 					keyword = ScanKeywordLookup(yytext,
 												yyextra->keywords,
 												yyextra->num_keywords);
+					SET_YYLLOC_LEN();
 					if (keyword != NULL)
 					{
 						yylval->keyword = keyword->name;
-						SET_YYLLOC_LEN();
 						return keyword->value;
 					}
 
@@ -968,7 +968,6 @@ other			.
 					 */
 					ident = downcase_truncate_identifier(yytext, yyleng, true);
 					yylval->str = ident;
-					SET_YYLLOC_LEN();
 					return IDENT;
 				}
 
