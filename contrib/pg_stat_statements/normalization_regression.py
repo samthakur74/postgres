@@ -42,15 +42,25 @@ def demonstrate_buffer_limitation(conn):
 		# Ideally, this test would fail, but it doesn't
 		verify_statement_equivalency(long_query, long_long_query, conn, "Differences out of range (iteration {0})".format(it + 1))
 
-def verify_statement_equivalency(sql, equiv, conn, test_name = None):
+def verify_statement_equivalency(sql, equiv, conn, test_name = None, cleanup_sql = None):
 	# Run both queries in isolation and verify that there
 	# is only a single tuple
 	global test_no
 	cur = conn.cursor()
 	cur.execute("select pg_stat_statements_reset();")
 	cur.execute(sql)
+	if cleanup_sql is not None:
+		cur.execute(cleanup_sql)
+
 	cur.execute(equiv)
-	cur.execute("select count(*) from pg_stat_statements where query not ilike '%pg_stat_statements%';")
+	if cleanup_sql is not None:
+		cur.execute(cleanup_sql)
+
+	cur.execute(
+	"select count(*) from pg_stat_statements where query not ilike '%pg_stat_statements%' {0};".format(
+		"" if cleanup_sql is None else "and query != '{0}'".format(cleanup_sql))
+			)
+
 	for i in cur:
 		tuple_n = i[0]
 
@@ -62,15 +72,23 @@ def verify_statement_equivalency(sql, equiv, conn, test_name = None):
 		Test {2} passed.\n\n""".format(sql, equiv, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no))
 	test_no +=1
 
-def verify_statement_differs(sql, diff, conn, test_name = None):
+def verify_statement_differs(sql, diff, conn, test_name = None, cleanup_sql = None):
 	# Run both queries in isolation and verify that there are
 	# two tuples
 	global test_no
 	cur = conn.cursor()
 	cur.execute("select pg_stat_statements_reset();")
 	cur.execute(sql)
+	if cleanup_sql is not None:
+		cur.execute(cleanup_sql)
 	cur.execute(diff)
-	cur.execute("select count(*) from pg_stat_statements where query not ilike '%pg_stat_statements%';")
+	if cleanup_sql is not None:
+		cur.execute(cleanup_sql)
+
+	cur.execute(
+	"select count(*) from pg_stat_statements where query not ilike '%pg_stat_statements%' {0};".format(
+		"" if cleanup_sql is None else "and query != '{0}'".format(cleanup_sql))
+			)
 	for i in cur:
 		tuple_n = i[0]
 
@@ -524,14 +542,36 @@ def main():
 	"update products set special=default where prod_id = 7;",
 	"update products set special=default where prod_id = 10;",
 	conn)
+	# select into
+	verify_statement_equivalency(
+	"select * into orders_recent FROM orders WHERE orderdate >= '2002-01-01';",
+	"select * into orders_recent FROM orders WHERE orderdate >= '2010-01-01';",
+	cleanup_sql = "drop table if exists orders_recent;", conn = conn)
 
+	verify_statement_differs(
+	"select * into orders_recent FROM orders WHERE orderdate >= '2002-01-01';",
+	"select * into orders_recent FROM orders WHERE orderdate >  '2002-01-01';",
+	cleanup_sql = "drop table if exists orders_recent;", conn = conn)
+
+	verify_statement_differs(
+	"select orderdate into orders_recent FROM orders WHERE orderdate > '2002-01-01';",
+	"select orderid   into orders_recent FROM orders WHERE orderdate > '2002-01-01';",
+	cleanup_sql = "drop table if exists orders_recent;", conn = conn)
+
+	# Here, name of new relation matters:
+	verify_statement_differs(
+	"select * into orders_recent  FROM orders WHERE orderdate > '2002-01-01';",
+	"select * into orders_recent2 FROM orders WHERE orderdate > '2002-01-01';",
+	cleanup_sql = "drop table if exists orders_recent; drop table if exists orders_recent2;", conn = conn)
+
+	# CTE
 	verify_statement_differs(
 	"with a as (select customerid from orders ), b as (select 'foo') select orderid from orders",
 	"with a as (select customerid from orders ), b as (select 1)     select orderid from orders",
 	conn)
 
 
-	# Ditto recursive CTEs
+	# temporary column name within recursive CTEs doesn't differentiate
 	verify_statement_equivalency(
 	"""
 	with recursive j(n) AS (
@@ -551,7 +591,7 @@ def main():
 	""",
 	conn)
 
-	# set operation normalization occurs by waling the query tree recursively.
+	# set operation normalization occurs by walking the query tree recursively.
 	verify_statement_differs( "select orderid from orders union all select customerid from orders", "select customerid from orders union all select orderid from orders", conn)
 	verify_statement_equivalency(
 	"select 1, 2, 3 except select orderid, 6, 7 from orders",

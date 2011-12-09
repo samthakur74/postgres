@@ -18,7 +18,7 @@
  * normalization.  This is implemented by generating a series of integers
  * from the query tree after the re-write stage, into a "query jumble". A
  * query jumble is distinct from a straight serialization of the query tree in
- * that Constants are canonicalized, and various exteneous information is
+ * that Constants are canonicalized, and various extraneous information is
  * ignored, such as the collation of Vars.
  *
  * Copyright (c) 2008-2012, PostgreSQL Global Development Group
@@ -200,13 +200,13 @@ static void pgss_shmem_shutdown(int code, Datum arg);
 static PlannedStmt *pgss_PlannerRun(Query *parse, int cursorOptions, ParamListInfo boundParams);
 static int comp_offset(const void *a, const void *b);
 static void JumbleQuery(Query *parse);
-static bool AppendJumb(char* item, char jumble[], size_t size, int *i);
-static bool PerformJumble(const Query *parse, size_t size, int *i);
-static bool QualsNode(const OpExpr *node, size_t size, int *i, List *rtable);
-static bool LeafNodes(const Node *arg, size_t size, int *i, List *rtable);
-static bool LimitOffsetNode(const Node *node, size_t size, int *i, List *rtable);
-static bool JoinExprNode(JoinExpr *node, size_t size, int *i, List *rtable);
-static bool JoinExprNodeChild(const Node *node, size_t size, int *i, List *rtable);
+static bool AppendJumb(char* item, char jumble[], size_t size, size_t *i);
+static bool PerformJumble(const Query *parse, size_t size, size_t *i);
+static bool QualsNode(const OpExpr *node, size_t size, size_t *i, List *rtable);
+static bool LeafNodes(const Node *arg, size_t size, size_t *i, List *rtable);
+static bool LimitOffsetNode(const Node *node, size_t size, size_t *i, List *rtable);
+static bool JoinExprNode(JoinExpr *node, size_t size, size_t *i, List *rtable);
+static bool JoinExprNodeChild(const Node *node, size_t size, size_t *i, List *rtable);
 static void pgss_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgss_ExecutorRun(QueryDesc *queryDesc,
 				 ScanDirection direction,
@@ -625,7 +625,7 @@ static int comp_offset(const void *a, const void *b)
 static void JumbleQuery(Query *parse)
 {
 	/* State for this run of PerformJumble */
-	int i = 0;
+	size_t i = 0;
 	last_offset_num = 0;
 	memset(last_jumble, 0, JUMBLE_SIZE);
 	last_jumble[++i] = HASH_BUF;
@@ -638,8 +638,18 @@ static void JumbleQuery(Query *parse)
  * AppendJumb: Append a value that is substantive to a given query to jumble,
  * while incrementing the iterator.
  */
-static bool AppendJumb(char* item, char jumble[], size_t size, int *i)
+static bool AppendJumb(char* item, char jumble[], size_t size, size_t *i)
 {
+	Assert(item != NULL);
+	Assert(jumble != NULL);
+	Assert(i != NULL);
+
+	/*
+	 * Copy the entire item to the buffer, or as much of it as possible to fill
+	 * the buffer to capacity.
+	 */
+	memcpy(jumble + *i, item, Min(*i >= JUMBLE_SIZE? 0:JUMBLE_SIZE - *i, size));
+
 	if (size + *i >= JUMBLE_SIZE)
 	{
 		/*
@@ -650,18 +660,16 @@ static bool AppendJumb(char* item, char jumble[], size_t size, int *i)
 		 * "select * from table_with_many_columns". Control is not expected to
 		 * reach here most of the time, as this is considered an edge-case.
 		 */
-		if (size + *i >= JUMBLE_SIZE * 2)
+		if (size + *i >= JUMBLE_SIZE * 5)
 			/* Give up completely, to avoid a possible stack overflow */
 			return false;
 		/*
-		 * Don't append any more, but keep walking the tree to find Const nodes to
-		 * canonicalize. Having done all we can with the jumble, we must still
-		 * concern ourselves with the normalized query str.
+		 * Don't give up yet...don't append any more, but keep walking the tree
+		 * to find Const nodes to canonicalize. Having done all we can with the
+		 * jumble, we must still concern ourselves with the normalized query
+		 * str.
 		 */
-		*i += size;
-		return true;
 	}
-	memcpy(jumble + *i, item, size);
 	*i += size;
 	return true;
 }
@@ -729,11 +737,11 @@ if (!JoinExprNodeChild(item, size, i, rtable)) \
  * uniquely identify a query that may use different constants in successive
  * calls.
  */
-static bool PerformJumble(const Query *parse, size_t size, int *i)
+static bool PerformJumble(const Query *parse, size_t size, size_t *i)
 {
 	ListCell *l;
 	/* table join tree (FROM and WHERE clauses) */
-	FromExpr* jt = (FromExpr *) parse->jointree;
+	FromExpr *jt = (FromExpr *) parse->jointree;
 	/* # of result tuples to skip (int8 expr) */
 	FuncExpr *off = (FuncExpr *) parse->limitOffset;
 	/* # of result tuples to skip (int8 expr) */
@@ -744,15 +752,30 @@ static bool PerformJumble(const Query *parse, size_t size, int *i)
 	if (parse->intoClause)
 	{
 		IntoClause *ic = parse->intoClause;
-		APP_JUMB(ic->onCommit)
-		/* TODO: Serialize more from intoClause */
+		RangeVar   *rel = ic->rel;
+		APP_JUMB(ic->onCommit);
+		APP_JUMB(ic->skipData);
+		if (rel)
+		{
+			APP_JUMB(rel->relpersistence);
+			/* Bypass macro abstraction to supply size directly.
+			 *
+			 * Serialize schemaname, relname themselves - this is to be
+			 * somewhat consistent with the behavior of utility statements like "create
+			 * table".
+			 */
+			if ( (rel->schemaname && !AppendJumb(rel->schemaname, last_jumble, strlen(rel->schemaname), i)) ||
+				 (rel->relname && !AppendJumb(rel->relname, last_jumble, strlen(rel->relname), i) 	)
+				)
+				return false;
+		}
 	}
 
 	/* WITH list (of CommonTableExpr's) */
 	foreach(l, parse->cteList)
 	{
-		CommonTableExpr *cte = (CommonTableExpr *) lfirst(l);
-		Query *cteq = (Query*) cte->ctequery;
+		CommonTableExpr	*cte = (CommonTableExpr *) lfirst(l);
+		Query			*cteq = (Query*) cte->ctequery;
 		if (cteq)
 			PERFORM_JUMBLE(cteq, size, i);
 	}
@@ -779,7 +802,7 @@ static bool PerformJumble(const Query *parse, size_t size, int *i)
 			}
 			else if (IsA(fr, RangeTblRef))
 			{
-				RangeTblRef *rtf = (RangeTblRef *) fr;
+				RangeTblRef   *rtf = (RangeTblRef *) fr;
 				RangeTblEntry *rte = rt_fetch(rtf->rtindex, parse->rtable);
 				APP_JUMB(rte->relid);
 				APP_JUMB(rte->rtekind);
@@ -805,7 +828,7 @@ static bool PerformJumble(const Query *parse, size_t size, int *i)
 	foreach(l, parse->targetList)
 	{
 		TargetEntry *tg = (TargetEntry *) lfirst(l);
-		Node *e = (Node*) tg->expr;
+		Node        *e  = (Node*) tg->expr;
 		if (tg->ressortgroupref)
 			APP_JUMB(tg->ressortgroupref); /* nonzero if referenced by a sort/group - for ORDER BY */
 		APP_JUMB(tg->resno); /* column number for select */
@@ -818,7 +841,7 @@ static bool PerformJumble(const Query *parse, size_t size, int *i)
 	foreach(l, parse->returningList)
 	{
 		TargetEntry *rt = (TargetEntry *) lfirst(l);
-		Expr *e = (Expr*) rt->expr;
+		Expr        *e  = (Expr*) rt->expr;
 		/*
 		 * Handle the various types of nodes in
 		 * the select list of this query
@@ -860,7 +883,7 @@ static bool PerformJumble(const Query *parse, size_t size, int *i)
 	foreach(l, parse->windowClause)
 	{
 		WindowClause *wc = (WindowClause *) lfirst(l);
-		ListCell *il;
+		ListCell     *il;
 		APP_JUMB(wc->frameOptions);
 		foreach(il, wc->partitionClause) /* PARTITION BY list */
 		{
@@ -926,7 +949,7 @@ static bool PerformJumble(const Query *parse, size_t size, int *i)
  * Perform selective serialization of "Quals" nodes when
  * they're IsA(*, OpExpr)
  */
-static bool QualsNode(const OpExpr *node, size_t size, int *i, List *rtable)
+static bool QualsNode(const OpExpr *node, size_t size, size_t *i, List *rtable)
 {
 	ListCell *l;
 	APP_JUMB(node->opno);
@@ -943,7 +966,7 @@ static bool QualsNode(const OpExpr *node, size_t size, int *i, List *rtable)
  * frequently, though certainly not necesssarily leaf nodes, such as Vars
  * (columns), constants and function calls
  */
-static bool LeafNodes(const Node *arg, size_t size, int *i, List *rtable)
+static bool LeafNodes(const Node *arg, size_t size, size_t *i, List *rtable)
 {
 	ListCell *l;
 	if (IsA(arg, Const))
@@ -952,7 +975,7 @@ static bool LeafNodes(const Node *arg, size_t size, int *i, List *rtable)
 		 * Serialize generic magic value to
 		 * normalize constants
 		 */
-		char magic = 0xC0;
+		char  magic = 0xC0;
 		Const *c = (Const *) arg;
 		APP_JUMB(magic);
 		/* Datatype of the constant is a
@@ -979,8 +1002,8 @@ static bool LeafNodes(const Node *arg, size_t size, int *i, List *rtable)
 	}
 	else if (IsA(arg, Var))
 	{
-		char magic = 0xFA;
-		Var *v = (Var *) arg;
+		char		  magic = 0xFA;
+		Var			  *v = (Var *) arg;
 		RangeTblEntry *rte = rt_fetch(v->varno, rtable);
 		APP_JUMB(magic);
 		APP_JUMB(rte->relid);
@@ -998,7 +1021,7 @@ static bool LeafNodes(const Node *arg, size_t size, int *i, List *rtable)
 	}
 	else if (IsA(arg, WindowFunc))
 	{
-		WindowFunc *wf =  (WindowFunc *) arg;
+		WindowFunc *wf = (WindowFunc *) arg;
 		APP_JUMB(wf->winfnoid);
 		foreach(l, wf->args)
 		{
@@ -1008,7 +1031,7 @@ static bool LeafNodes(const Node *arg, size_t size, int *i, List *rtable)
 	}
 	else if (IsA(arg, FuncExpr))
 	{
-		FuncExpr *f =  (FuncExpr *) arg;
+		FuncExpr *f = (FuncExpr *) arg;
 		APP_JUMB(f->funcid);
 		foreach(l, f->args)
 		{
@@ -1064,7 +1087,7 @@ static bool LeafNodes(const Node *arg, size_t size, int *i, List *rtable)
 	else if (IsA(arg, NullTest))
 	{
 		NullTest *nt = (NullTest *) arg;
-		Node *arg = (Node *) nt->arg;
+		Node     *arg = (Node *) nt->arg;
 		APP_JUMB(nt->nulltesttype);	/* IS NULL, IS NOT NULL */
 		APP_JUMB(nt->argisrow);		/* is input a composite type ? */
 		LEAF_NODES(arg, size, i, rtable);
@@ -1111,8 +1134,8 @@ static bool LeafNodes(const Node *arg, size_t size, int *i, List *rtable)
 	else if (IsA(arg, CaseWhen))
 	{
 		CaseWhen *cw = (CaseWhen*) arg;
-		Node *res = (Node*) cw->result;
-		Node *exp = (Node*) cw->expr;
+		Node     *res = (Node*) cw->result;
+		Node     *exp = (Node*) cw->expr;
 		if (res)
 			LEAF_NODES(res, size, i, rtable);
 		if (exp)
@@ -1267,7 +1290,7 @@ static bool LeafNodes(const Node *arg, size_t size, int *i, List *rtable)
 /*
  * Perform selective serialization of limit or offset nodes
  */
-static bool LimitOffsetNode(const Node *node, size_t size, int *i, List *rtable)
+static bool LimitOffsetNode(const Node *node, size_t size, size_t *i, List *rtable)
 {
 	ListCell *l;
 	if (IsA(node, FuncExpr))
@@ -1283,7 +1306,6 @@ static bool LimitOffsetNode(const Node *node, size_t size, int *i, List *rtable)
 		/* This should be a differentiator, as it results in the addition of a limit node */
 		char magic = 0xEA;
 		APP_JUMB(magic);
-		return true;
 	}
 	else
 	{
@@ -1296,10 +1318,10 @@ static bool LimitOffsetNode(const Node *node, size_t size, int *i, List *rtable)
 /*
  * JoinExprNode: Perform selective serialization of JoinExpr nodes
  */
-static bool JoinExprNode(JoinExpr *node, size_t size, int *i, List *rtable)
+static bool JoinExprNode(JoinExpr *node, size_t size, size_t *i, List *rtable)
 {
-	Node	   *larg = node->larg;	/* left subtree */
-	Node	   *rarg = node->rarg;	/* right subtree */
+	Node	 *larg = node->larg;	/* left subtree */
+	Node	 *rarg = node->rarg;	/* right subtree */
 	ListCell *l;
 
 	Assert( IsA(node, JoinExpr));
@@ -1335,13 +1357,13 @@ static bool JoinExprNode(JoinExpr *node, size_t size, int *i, List *rtable)
 /*
  * JoinExprNodeChild: Serialize children of the JoinExpr node
  */
-static bool JoinExprNodeChild(const Node *node, size_t size, int *i, List *rtable)
+static bool JoinExprNodeChild(const Node *node, size_t size, size_t *i, List *rtable)
 {
 	if (IsA(node, RangeTblRef))
 	{
-		RangeTblRef *rt = (RangeTblRef*) node;
+		RangeTblRef   *rt = (RangeTblRef*) node;
 		RangeTblEntry *rte = rt_fetch(rt->rtindex, rtable);
-		ListCell *l;
+		ListCell      *l;
 
 		APP_JUMB(rte->relid);
 		APP_JUMB(rte->jointype);
@@ -1634,9 +1656,9 @@ pgss_store(const char *query, char jumble[],
 {
 	pgssHashKey key;
 	double		usage;
+	int		    new_query_len = strlen(query);
+	char	   *norm_query = NULL;
 	pgssEntry  *entry;
-	int new_query_len = strlen(query);
-	char *norm_query = NULL;
 
 	Assert(query != NULL);
 
@@ -1684,6 +1706,7 @@ pgss_store(const char *query, char jumble[],
 			  tok_len = 0,
 			  len_to_wrt = 0,
 			  last_tok_len = 0;
+
 			norm_query = palloc0(new_query_len + 1);
 			for(i = 0; i < off_n; i++)
 			{
@@ -1699,6 +1722,7 @@ pgss_store(const char *query, char jumble[],
 				if (off + tok_len > new_query_len)
 					break;
 				memcpy(norm_query + n_quer_it, query + quer_it, len_to_wrt);
+
 				n_quer_it += len_to_wrt;
 				norm_query[n_quer_it++] = '?';
 				quer_it += len_to_wrt + tok_len;
