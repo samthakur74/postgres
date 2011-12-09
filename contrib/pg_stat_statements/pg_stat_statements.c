@@ -80,7 +80,7 @@ typedef struct pgssHashKey
 	Oid			userid;			/* user OID */
 	Oid			dbid;			/* database OID */
 	int			encoding;		/* query encoding */
-	char		parsed_jumble[JUMBLE_SIZE]; /* Integers from a query tree */
+	char		jumble[JUMBLE_SIZE]; /* Integers from a query tree */
 } pgssHashKey;
 
 /*
@@ -128,22 +128,19 @@ typedef struct pgssSharedState
 
 typedef struct pgssTokenOffset
 {
-	int offset; /* Token offset in query string */
-	int len;
+	int offset;					/* token offset in query string in bytes */
+	int len;					/* length of token in bytes */
 } pgssTokenOffset;
 
 /*---- Local variables ----*/
-/* Some integers jumbled from last query tree seen */
+/* Jumble of last query tree seen by pgss_PlannerRun */
 static char *last_jumble = NULL;
-/*
- * Array that represents where
- * normalized characters will be
- */
+/* Ptr to buffer that represents position of normalized characters */
 static pgssTokenOffset *last_offsets = NULL;
-/* Length of offsets */
-static int last_offset_buf_size = 10;
-/* Number of actual offsets currently stored in offsets */
-static int last_offset_num = 0;
+/* Current Length of last_offsets buffer */
+static size_t last_offset_buf_size = 10;
+/* Current number of actual offsets stored in last_offsets */
+static size_t last_offset_num = 0;
 /* Current nesting depth of ExecutorRun calls */
 static int	nested_level = 0;
 
@@ -181,7 +178,7 @@ static int	pgss_max;			/* max # statements to track */
 static int	pgss_track;			/* tracking level */
 static bool pgss_track_utility; /* whether to track utility commands */
 static bool pgss_save;			/* whether to save stats across shutdown */
-static bool pgss_string_key;		/* whether to differentiate on query string */
+static bool pgss_string_key;	/* whether to always only hash query str */
 
 #define pgss_enabled() \
 	(pgss_track == PGSS_TRACK_ALL || \
@@ -204,12 +201,12 @@ static PlannedStmt *pgss_PlannerRun(Query *parse, int cursorOptions, ParamListIn
 static int comp_offset(const void *a, const void *b);
 static void JumbleQuery(Query *parse);
 static bool AppendJumb(char* item, char jumble[], size_t size, int *i);
-static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i);
-static bool QualsNode(const OpExpr *node, char jumble[], size_t size, int *i, List *rtable);
-static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List *rtable);
-static bool LimitOffsetNode(const Node *node, char jumble[], size_t size, int *i, List *rtable);
-static bool JoinExprNode(JoinExpr *node, char jumble[], size_t size, int *i, List *rtable);
-static bool JoinExprNodeChild(const Node *node, char jumble[], size_t size, int *i, List *rtable);
+static bool PerformJumble(const Query *parse, size_t size, int *i);
+static bool QualsNode(const OpExpr *node, size_t size, int *i, List *rtable);
+static bool LeafNodes(const Node *arg, size_t size, int *i, List *rtable);
+static bool LimitOffsetNode(const Node *node, size_t size, int *i, List *rtable);
+static bool JoinExprNode(JoinExpr *node, size_t size, int *i, List *rtable);
+static bool JoinExprNodeChild(const Node *node, size_t size, int *i, List *rtable);
 static void pgss_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgss_ExecutorRun(QueryDesc *queryDesc,
 				 ScanDirection direction,
@@ -221,7 +218,7 @@ static void pgss_ProcessUtility(Node *parsetree,
 					DestReceiver *dest, char *completionTag);
 static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
-static void pgss_store(const char *query, char parsed_jumble[],
+static void pgss_store(const char *query, char jumble[],
 			pgssTokenOffset offs[], int off_n,
 			double total_time, uint64 rows,
 			const BufferUsage *bufusage);
@@ -297,6 +294,7 @@ _PG_init(void)
 							 NULL,
 							 NULL,
 							 NULL);
+
 	/*
 	 * Support legacy pg_stat_statements behavior, for compatibility with
 	 * versions shipped with Postgres 8.4, 9.0 and 9.1
@@ -306,7 +304,7 @@ _PG_init(void)
 							 NULL,
 							 &pgss_string_key,
 							 false,
-							 PGC_SUSET,
+							 PGC_POSTMASTER,
 							 0,
 							 NULL,
 							 NULL,
@@ -581,8 +579,8 @@ error:
 }
 
 /*
- * pgss_PlannerRun: Selectively serialize the query tree for the purposes of
- * query normalization.
+ * pgss_PlannerRun: Planner plugin. Will selectively serialize the query tree
+ * for the purposes of query normalization if that's appropriate.
  */
 PlannedStmt *
 pgss_PlannerRun(Query *parse, int cursorOptions, ParamListInfo boundParams)
@@ -603,9 +601,10 @@ pgss_PlannerRun(Query *parse, int cursorOptions, ParamListInfo boundParams)
 }
 
 /*
- * comp_offset: Comparator for qsorting pgssTokenOffset values. Often when
- * walking the query tree, Const tokens will be found in the same order as in
- * the original query string, but this is certainly not guaranteed.
+ * comp_offset: Comparator for qsorting pgssTokenOffset values by their
+ * position in the original query string. Often when walking the query tree,
+ * Const tokens will be found in the same order as in the original query string,
+ * but this is certainly not guaranteed.
  */
 static int comp_offset(const void *a, const void *b)
 {
@@ -625,18 +624,19 @@ static int comp_offset(const void *a, const void *b)
  */
 static void JumbleQuery(Query *parse)
 {
+	/* State for this run of PerformJumble */
 	int i = 0;
 	last_offset_num = 0;
 	memset(last_jumble, 0, JUMBLE_SIZE);
 	last_jumble[++i] = HASH_BUF;
-	PerformJumble(parse, last_jumble, JUMBLE_SIZE, &i);
+	PerformJumble(parse, JUMBLE_SIZE, &i);
 	/* Sort offsets for query string normalization */
 	qsort(last_offsets, last_offset_num, sizeof(pgssTokenOffset), comp_offset);
 }
 
 /*
- * AppendJumb: Append a given value that is substantive to a given
- * query to jumble, while incrementing the iterator.
+ * AppendJumb: Append a value that is substantive to a given query to jumble,
+ * while incrementing the iterator.
  */
 static bool AppendJumb(char* item, char jumble[], size_t size, int *i)
 {
@@ -647,7 +647,8 @@ static bool AppendJumb(char* item, char jumble[], size_t size, int *i)
 		 * compact than the query string, it's possible JUMBLE_SIZE has been set to
 		 * a very small value. Besides, it's always possible to contrive a query
 		 * where it won't be as compact, such as
-		 * "select * from table_with_many_columns"
+		 * "select * from table_with_many_columns". Control is not expected to
+		 * reach here most of the time, as this is considered an edge-case.
 		 */
 		if (size + *i >= JUMBLE_SIZE * 2)
 			/* Give up completely, to avoid a possible stack overflow */
@@ -670,70 +671,73 @@ static bool AppendJumb(char* item, char jumble[], size_t size, int *i)
  * of individual elements.
  */
 #define APP_JUMB(item) \
-if (!AppendJumb((char*)&item, jumble, sizeof(item), i))\
+if (!AppendJumb((char*)&item, last_jumble, sizeof(item), i))\
 	return false;
 
 /*
  * Simple wrappers around functions so that they return upon reaching
  * end of buffer
  */
-#define PERFORM_JUMBLE(item, jumble, size, i) \
-if (!PerformJumble(item, jumble, size, i)) \
-	return false;\
+#define PERFORM_JUMBLE(item, size, i) \
+if (!PerformJumble(item, size, i))\
+	return false;
 
-#define QUALS_NODE(item, jumble, size, i, rtable) \
-if (!QualsNode(item, jumble, size, i, rtable)) \
-	return false;\
+#define QUALS_NODE(item, size, i, rtable) \
+if (!QualsNode(item, size, i, rtable)) \
+	return false;
 
-#define LEAF_NODES(item, jumble, size, i, rtable) \
-if (!LeafNodes(item, jumble, size, i, rtable)) \
-	return false;\
+#define LEAF_NODES(item, size, i, rtable) \
+if (!LeafNodes(item, size, i, rtable)) \
+	return false;
 
-#define LIMIT_OFFSET_NODE(item, jumble, size, i, rtable) \
-if (!LimitOffsetNode(item, jumble, size, i, rtable)) \
-	return false;\
+#define LIMIT_OFFSET_NODE(item, size, i, rtable) \
+if (!LimitOffsetNode(item, size, i, rtable)) \
+	return false;
 
-#define JOIN_EXPR_NODE(item, jumble, size, i, rtable) \
-if (!JoinExprNode(item, jumble, size, i, rtable)) \
-	return false;\
+#define JOIN_EXPR_NODE(item, size, i, rtable) \
+if (!JoinExprNode(item, size, i, rtable)) \
+	return false;
 
-#define JOIN_EXPR_NODE_CHILD(item, jumble, size, i, rtable) \
-if (!JoinExprNodeChild(item, jumble, size, i, rtable)) \
-	return false;\
+#define JOIN_EXPR_NODE_CHILD(item, size, i, rtable) \
+if (!JoinExprNodeChild(item, size, i, rtable)) \
+	return false;
 
 /*
  * PerformJumble: Serialize the query tree "parse" and canonicalize
  * constants, while simply skipping over others that are not essential to the
- * query, such that it is usefully normalized, excluding that which is not
- * essential to the query itself.
+ * query, such that it is usefully normalized, excluding things from the tree
+ * that are not essential to the query itself.
  *
  * A guiding principal as to whether two queries should be considered
  * equivalent is whether whatever difference exists between the two queries
  * could be expected to result in two different plans, assuming that all
- * constants have the same selectivity estimate. A Non-obvious example of
- * such a differentiator is a change in the definition of a view referenced
- * by a query. We pointedly serialize the query tree *after* the rewriting
- * stage, so entries in pg_stat_statements accurately represent discrete
- * operations, while not having artefacts from external factors that are not
- * essential to what the query does. Directly hashing plans would have the
- * undesirable side-effect of potentially having totally external factors like
- * planner cost constants differentiate a query, so that particular
- * implementation was not chosen.
+ * constants have the same selectivity estimate and excluding factors that are
+ * not essential to the query and the relations on which it operates. A
+ * non-obvious example of such a differentiator is a change in the definition
+ * of a view referenced by a query. We pointedly serialize the query tree
+ * *after* the rewriting stage, so entries in pg_stat_statements accurately
+ * represent discrete operations, while not having artifacts from external
+ * factors that are not essential to what the query actually does. Directly
+ * hashing plans would have the undesirable side-effect of potentially having
+ * totally external factors like planner cost constants differentiate a query,
+ * so that particular implementation was not chosen. Directly hashing the raw
+ * parse tree would prevent us from benefiting from the parser's own
+ * normalization of queries in later stages, such as removing differences
+ * between equivalent syntax, so that implementation was avoided too.
  *
- * It is necessary to co-ordinate the hashing of a Query with the subsequent
- * use of the hash within executor hooks. Most queries result in a call to
- * the planner hook and a subsequent set of calls to executor hooks, so they
- * don't require special co-ordination, but prepared statements do.
- *
- * The resulting "jumble" can be hashed to uniquely identify a query that may
- * use different constants in successive calls.
+ * The last_jumble buffer, that this function scribbles on, can be hashed to
+ * uniquely identify a query that may use different constants in successive
+ * calls.
  */
-static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i)
+static bool PerformJumble(const Query *parse, size_t size, int *i)
 {
 	ListCell *l;
-	FromExpr* jt = (FromExpr *) parse->jointree;		/* table join tree (FROM and WHERE clauses) */
-	FuncExpr *off = (FuncExpr *) parse->limitOffset;	/* # of result tuples to skip (int8 expr) */
-	FuncExpr *limcount = (FuncExpr *) parse->limitCount;	/* # of result tuples to skip (int8 expr) */
+	/* table join tree (FROM and WHERE clauses) */
+	FromExpr* jt = (FromExpr *) parse->jointree;
+	/* # of result tuples to skip (int8 expr) */
+	FuncExpr *off = (FuncExpr *) parse->limitOffset;
+	/* # of result tuples to skip (int8 expr) */
+	FuncExpr *limcount = (FuncExpr *) parse->limitCount;
 
 	APP_JUMB(parse->resultRelation);
 
@@ -748,9 +752,9 @@ static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i
 	foreach(l, parse->cteList)
 	{
 		CommonTableExpr *cte = (CommonTableExpr *) lfirst(l);
-		Query *cte_query = (Query*) cte->ctequery;
-		if (cte_query)
-			PERFORM_JUMBLE(cte_query, jumble, size, i);
+		Query *cteq = (Query*) cte->ctequery;
+		if (cteq)
+			PERFORM_JUMBLE(cteq, size, i);
 	}
 	if (jt)
 	{
@@ -758,11 +762,11 @@ static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i
 		{
 			if (IsA(jt->quals, OpExpr))
 			{
-				QUALS_NODE((OpExpr*) jt->quals, jumble, size, i, parse->rtable);
+				QUALS_NODE((OpExpr*) jt->quals, size, i, parse->rtable);
 			}
 			else
 			{
-				LEAF_NODES((Node*) jt->quals, jumble, size, i, parse->rtable);
+				LEAF_NODES((Node*) jt->quals, size, i, parse->rtable);
 			}
 		}
 		/* table join tree */
@@ -771,7 +775,7 @@ static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i
 			Node* fr = lfirst(l);
 			if (IsA(fr, JoinExpr))
 			{
-				JOIN_EXPR_NODE((JoinExpr*) fr, jumble, size, i, parse->rtable);
+				JOIN_EXPR_NODE((JoinExpr*) fr, size, i, parse->rtable);
 			}
 			else if (IsA(fr, RangeTblRef))
 			{
@@ -781,11 +785,11 @@ static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i
 				APP_JUMB(rte->rtekind);
 				/* Subselection in where clause */
 				if (rte->subquery)
-					PERFORM_JUMBLE(rte->subquery, jumble, size, i);
+					PERFORM_JUMBLE(rte->subquery, size, i);
 
 				/* Function call in where clause */
 				if (rte->funcexpr)
-					LEAF_NODES((Node*) rte->funcexpr, jumble, size, i, parse->rtable);
+					LEAF_NODES((Node*) rte->funcexpr, size, i, parse->rtable);
 			}
 			else
 			{
@@ -808,7 +812,7 @@ static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i
 		/* Handle the various types of nodes in
 		 * the select list of this query
 		 */
-		LEAF_NODES(e, jumble, size, i, parse->rtable);
+		LEAF_NODES(e, size, i, parse->rtable);
 	}
 	/* return-values list (of TargetEntry) */
 	foreach(l, parse->returningList)
@@ -845,7 +849,7 @@ static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i
 		if (IsA(parse->havingQual, OpExpr))
 		{
 			OpExpr *na = (OpExpr *) parse->havingQual;
-			QUALS_NODE(na,  jumble, size, i, parse->rtable);
+			QUALS_NODE(na, size, i, parse->rtable);
 		}
 		else
 		{
@@ -861,12 +865,12 @@ static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i
 		foreach(il, wc->partitionClause) /* PARTITION BY list */
 		{
 			Node *n = (Node *) lfirst(il);
-			LEAF_NODES(n, jumble, size, i, parse->rtable);
+			LEAF_NODES(n, size, i, parse->rtable);
 		}
 		foreach(il, wc->orderClause) /* ORDER BY list */
 		{
 			Node *n = (Node *) lfirst(il);
-			LEAF_NODES(n, jumble, size, i, parse->rtable);
+			LEAF_NODES(n, size, i, parse->rtable);
 		}
 	}
 
@@ -883,10 +887,10 @@ static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i
 	 */
 
 	if (off)
-		LIMIT_OFFSET_NODE((Node*) off, jumble, size, i, parse->rtable);
+		LIMIT_OFFSET_NODE((Node*) off, size, i, parse->rtable);
 
 	if (limcount)
-		LIMIT_OFFSET_NODE((Node*) limcount, jumble, size, i, parse->rtable);
+		LIMIT_OFFSET_NODE((Node*) limcount, size, i, parse->rtable);
 
 	foreach(l, parse->rowMarks)
 	{
@@ -910,9 +914,9 @@ static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i
 		/* leaf selects are RTE subselections */
 		foreach(l, parse->rtable)
 		{
-			RangeTblEntry *rte = (RangeTblEntry *) lfirst(l);
-			if (rte->subquery)
-				PERFORM_JUMBLE(rte->subquery, jumble, size, i);
+			RangeTblEntry *r = (RangeTblEntry *) lfirst(l);
+			if (r->subquery)
+				PERFORM_JUMBLE(r->subquery, size, i);
 		}
 	}
 	return true;
@@ -922,24 +926,24 @@ static bool PerformJumble(const Query *parse, char jumble[], size_t size, int *i
  * Perform selective serialization of "Quals" nodes when
  * they're IsA(*, OpExpr)
  */
-static bool QualsNode(const OpExpr *node, char jumble[], size_t size, int *i, List *rtable)
+static bool QualsNode(const OpExpr *node, size_t size, int *i, List *rtable)
 {
 	ListCell *l;
 	APP_JUMB(node->opno);
 	foreach(l, node->args)
 	{
 		Node *arg = (Node *) lfirst(l);
-		LEAF_NODES(arg, jumble, size, i, rtable);
+		LEAF_NODES(arg, size, i, rtable);
 	}
 	return true;
 }
 
 /*
- * SerLeafNodes: Serialize a selection of parser/prim nodes that are frequently,
- * though certainly not necesssarily leaf nodes, such as Variables (columns),
- * constants and function calls
+ * LeafNodes: Selectively serialize a selection of parser/prim nodes that are
+ * frequently, though certainly not necesssarily leaf nodes, such as Vars
+ * (columns), constants and function calls
  */
-static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List *rtable)
+static bool LeafNodes(const Node *arg, size_t size, int *i, List *rtable)
 {
 	ListCell *l;
 	if (IsA(arg, Const))
@@ -999,7 +1003,7 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, wf->args)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(arg, FuncExpr))
@@ -1009,12 +1013,12 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, f->args)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(arg, OpExpr))
 	{
-		QUALS_NODE((OpExpr*) arg, jumble, size, i, rtable);
+		QUALS_NODE((OpExpr*) arg, size, i, rtable);
 	}
 	else if (IsA(arg, CoerceViaIO))
 	{
@@ -1028,7 +1032,7 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, a->args)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(arg, SubLink))
@@ -1037,7 +1041,7 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		APP_JUMB(s->subLinkType);
 		/* Serialize select-list subselect recursively */
 		if (s->subselect)
-			PERFORM_JUMBLE( (Query*) s->subselect, jumble, size, i);
+			PERFORM_JUMBLE((Query*) s->subselect, size, i);
 	}
 	else if (IsA(arg, TargetEntry))
 	{
@@ -1045,7 +1049,7 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		Node *e = (Node*) rt->expr;
 		APP_JUMB(rt->resorigtbl); /* OID of column's source table */
 		APP_JUMB(rt->ressortgroupref); /*  nonzero if referenced by a sort/group - for ORDER BY */
-		LEAF_NODES(e, jumble, size, i, rtable);
+		LEAF_NODES(e, size, i, rtable);
 	}
 	else if (IsA(arg, BoolExpr))
 	{
@@ -1054,7 +1058,7 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, be->args)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(arg, NullTest))
@@ -1063,7 +1067,7 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		Node *arg = (Node *) nt->arg;
 		APP_JUMB(nt->nulltesttype);	/* IS NULL, IS NOT NULL */
 		APP_JUMB(nt->argisrow);		/* is input a composite type ? */
-		LEAF_NODES(arg, jumble, size, i, rtable);
+		LEAF_NODES(arg, size, i, rtable);
 	}
 	else if (IsA(arg, ArrayExpr))
 	{
@@ -1073,7 +1077,7 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, ae->elements)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(arg, CaseExpr))
@@ -1084,10 +1088,10 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, ce->args)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 		if (ce->arg)
-			LEAF_NODES((Node*) ce->arg, jumble, size, i, rtable);
+			LEAF_NODES((Node*) ce->arg, size, i, rtable);
 
 		if (ce->defresult)
 		{
@@ -1096,7 +1100,7 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 			 * was actually specified, and thus the value is
 			 * equivalent to SQL ELSE NULL
 			 */
-			LEAF_NODES((Node*) ce->defresult, jumble, size, i, rtable); /* the default result (ELSE clause) */
+			LEAF_NODES((Node*) ce->defresult, size, i, rtable); /* the default result (ELSE clause) */
 		}
 	}
 	else if (IsA(arg, CaseTestExpr))
@@ -1110,9 +1114,9 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		Node *res = (Node*) cw->result;
 		Node *exp = (Node*) cw->expr;
 		if (res)
-			LEAF_NODES(res, jumble, size, i, rtable);
+			LEAF_NODES(res, size, i, rtable);
 		if (exp)
-			LEAF_NODES(exp, jumble, size, i, rtable);
+			LEAF_NODES(exp, size, i, rtable);
 	}
 	else if (IsA(arg, MinMaxExpr))
 	{
@@ -1122,7 +1126,7 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, cw->args)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(arg, ScalarArrayOpExpr))
@@ -1133,7 +1137,7 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, sa->args)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(arg, CoalesceExpr))
@@ -1142,13 +1146,13 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, ca->args)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(arg, ArrayCoerceExpr))
 	{
 		ArrayCoerceExpr *ac = (ArrayCoerceExpr *) arg;
-		LEAF_NODES((Node*) ac->arg, jumble, size, i, rtable);
+		LEAF_NODES((Node*) ac->arg, size, i, rtable);
 	}
 	else if (IsA(arg, WindowClause))
 	{
@@ -1156,12 +1160,12 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, wc->partitionClause)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 		foreach(l, wc->orderClause)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(arg, SortGroupClause))
@@ -1185,7 +1189,7 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 	{
 		BooleanTest *bt = (BooleanTest *) arg;
 		APP_JUMB(bt->booltesttype);
-		LEAF_NODES((Node*) bt->arg, jumble, size, i, rtable);
+		LEAF_NODES((Node*) bt->arg, size, i, rtable);
 	}
 	else if (IsA(arg, ArrayRef))
 	{
@@ -1194,18 +1198,18 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, ar->refupperindexpr)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 		foreach(l, ar->reflowerindexpr)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(arg, NullIfExpr))
 	{
 		/* NullIfExpr is just a typedef for OpExpr */
-		QUALS_NODE((OpExpr*) arg, jumble, size, i, rtable);
+		QUALS_NODE((OpExpr*) arg, size, i, rtable);
 	}
 	else if (IsA(arg, RowExpr))
 	{
@@ -1214,7 +1218,7 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, re->args)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 
 	}
@@ -1225,17 +1229,17 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, xml->args)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 		foreach(l, xml->named_args) /* non-XML expressions for xml_attributes */
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 		foreach(l, xml->arg_names) /* parallel list of Value strings */
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(arg, RowCompareExpr))
@@ -1244,12 +1248,12 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 		foreach(l, rc->largs)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 		foreach(l, rc->rargs)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else
@@ -1263,7 +1267,7 @@ static bool LeafNodes(const Node *arg, char jumble[], size_t size, int *i, List 
 /*
  * Perform selective serialization of limit or offset nodes
  */
-static bool LimitOffsetNode(const Node *node, char jumble[], size_t size, int *i, List *rtable)
+static bool LimitOffsetNode(const Node *node, size_t size, int *i, List *rtable)
 {
 	ListCell *l;
 	if (IsA(node, FuncExpr))
@@ -1271,7 +1275,7 @@ static bool LimitOffsetNode(const Node *node, char jumble[], size_t size, int *i
 		foreach(l, ((FuncExpr*) node)->args)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(node, Const))
@@ -1284,15 +1288,15 @@ static bool LimitOffsetNode(const Node *node, char jumble[], size_t size, int *i
 	else
 	{
 		/* Fall back on leaf node representation */
-		LEAF_NODES(node, jumble, size, i, rtable);
+		LEAF_NODES(node, size, i, rtable);
 	}
 	return true;
 }
 
 /*
- * Perform selective serialization of JoinExpr nodes
+ * JoinExprNode: Perform selective serialization of JoinExpr nodes
  */
-static bool JoinExprNode(JoinExpr *node, char jumble[], size_t size, int *i, List *rtable)
+static bool JoinExprNode(JoinExpr *node, size_t size, int *i, List *rtable)
 {
 	Node	   *larg = node->larg;	/* left subtree */
 	Node	   *rarg = node->rarg;	/* right subtree */
@@ -1307,31 +1311,31 @@ static bool JoinExprNode(JoinExpr *node, char jumble[], size_t size, int *i, Lis
 	{
 		if ( IsA(node, OpExpr))
 		{
-			QUALS_NODE((OpExpr*) node->quals, jumble, size, i, rtable);
+			QUALS_NODE((OpExpr*) node->quals, size, i, rtable);
 		}
 		else
 		{
-			LEAF_NODES((Node*) node->quals, jumble, size, i, rtable);
+			LEAF_NODES((Node*) node->quals, size, i, rtable);
 		}
 
 	}
 	foreach(l, node->usingClause) /* USING clause, if any (list of String) */
 	{
 		Node *arg = (Node *) lfirst(l);
-		LEAF_NODES(arg, jumble, size, i, rtable);
+		LEAF_NODES(arg, size, i, rtable);
 	}
 	if (larg)
-		JOIN_EXPR_NODE_CHILD(larg, jumble, size, i, rtable);
+		JOIN_EXPR_NODE_CHILD(larg, size, i, rtable);
 	if (rarg)
-		JOIN_EXPR_NODE_CHILD(rarg, jumble, size, i, rtable);
+		JOIN_EXPR_NODE_CHILD(rarg, size, i, rtable);
 
 	return true;
 }
 
 /*
- * Serialize children of the JoinExpr node
+ * JoinExprNodeChild: Serialize children of the JoinExpr node
  */
-static bool JoinExprNodeChild(const Node *node, char jumble[], size_t size, int *i, List *rtable)
+static bool JoinExprNodeChild(const Node *node, size_t size, int *i, List *rtable)
 {
 	if (IsA(node, RangeTblRef))
 	{
@@ -1343,21 +1347,21 @@ static bool JoinExprNodeChild(const Node *node, char jumble[], size_t size, int 
 		APP_JUMB(rte->jointype);
 
 		if (rte->subquery)
-			PERFORM_JUMBLE(rte->subquery, jumble, size, i);
+			PERFORM_JUMBLE((Query*) rte->subquery, size, i);
 
 		foreach(l, rte->joinaliasvars)
 		{
 			Node *arg = (Node *) lfirst(l);
-			LEAF_NODES(arg, jumble, size, i, rtable);
+			LEAF_NODES(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(node, JoinExpr))
 	{
-		JOIN_EXPR_NODE((JoinExpr*) node, jumble, size, i, rtable);
+		JOIN_EXPR_NODE((JoinExpr*) node, size, i, rtable);
 	}
 	else
 	{
-		LEAF_NODES(node, jumble, size, i, rtable);
+		LEAF_NODES(node, size, i, rtable);
 	}
 	return true;
 }
@@ -1467,8 +1471,8 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 			 *
 			 * The fact that constants in the prepared query won't be
 			 * canonicalized is clearly a feature rather than a bug, as the
-			 * user evidently considers the constant essential to the query, or
-			 * they'd have paramaterized it.
+			 * user evidently considers such constant essential to the query, or
+			 * they'd have paramaterized them.
 			 */
 			memset(last_jumble, 0, JUMBLE_SIZE);
 			last_jumble[0] = STR_BUF;
@@ -1477,7 +1481,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 				);
 		}
 		/*
-		 * XXX: There is an assumption that last_* variables were set by a prior,
+		 * There is an assumption that last_* variables were set by a prior,
 		 * corresponding call to pgss_PlannerRun within this backend (provided
 		 * that we jumbled the query tree with the intention of hashing it - that
 		 * won't be the case if the jumble is actually just a STR_BUF copy of
@@ -1598,7 +1602,7 @@ pgss_hash_fn(const void *key, Size keysize)
 	/* we don't bother to include encoding in the hash */
 	return hash_uint32((uint32) k->userid) ^
 		hash_uint32((uint32) k->dbid) ^
-		DatumGetUInt32(hash_any((const unsigned char* ) k->parsed_jumble, JUMBLE_SIZE) );
+		DatumGetUInt32(hash_any((const unsigned char* ) k->jumble, JUMBLE_SIZE) );
 }
 
 /*
@@ -1613,7 +1617,7 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
 	if (k1->userid == k2->userid &&
 		k1->dbid == k2->dbid &&
 		k1->encoding == k2->encoding &&
-		memcmp(k1->parsed_jumble, k2->parsed_jumble, JUMBLE_SIZE) == 0)
+		memcmp(k1->jumble, k2->jumble, JUMBLE_SIZE) == 0)
 		return 0;
 	else
 		return 1;
@@ -1623,7 +1627,7 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
  * Store some statistics for a statement.
  */
 static void
-pgss_store(const char *query, char parsed_jumble[],
+pgss_store(const char *query, char jumble[],
 			pgssTokenOffset offs[], int off_n,
 			double total_time, uint64 rows,
 			const BufferUsage *bufusage)
@@ -1644,7 +1648,7 @@ pgss_store(const char *query, char parsed_jumble[],
 	key.userid = GetUserId();
 	key.dbid = MyDatabaseId;
 	key.encoding = GetDatabaseEncoding();
-	memcpy(key.parsed_jumble, parsed_jumble, JUMBLE_SIZE);
+	memcpy(key.jumble, jumble, JUMBLE_SIZE);
 
 	if (new_query_len >= pgss->query_size)
 		new_query_len = pg_encoding_mbcliplen(key.encoding,
@@ -1662,8 +1666,7 @@ pgss_store(const char *query, char parsed_jumble[],
 		/*
 		 * It is necessary to generate a normalized version of the query
 		 * string that will be used to represent it. It's important that
-		 * the user be presented with a stable representation of a canonicalized
-		 * query.
+		 * the user be presented with a stable representation of the query.
 		 *
 		 * Note that the representation seen by the user will only have
 		 * non-differentiating Const tokens swapped with '?' characters, and
@@ -1690,7 +1693,8 @@ pgss_store(const char *query, char parsed_jumble[],
 				len_to_wrt -= last_tok_len;
 				/*
 				 * Each iteration copies everything prior to the current
-				 * offset/token to be replaced, except previously copied things
+				 * offset/token to be replaced, except bytes copied in
+				 * previous iterations
 				 */
 				if (off + tok_len > new_query_len)
 					break;
