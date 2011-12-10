@@ -130,7 +130,7 @@ static void insertSelectOptions(SelectStmt *stmt,
 								WithClause *withClause,
 								core_yyscan_t yyscanner);
 static Node *makeSetOp(SetOperation op, bool all, Node *larg, Node *rarg);
-static Node *doNegate(Node *n, int location, int length);
+static Node *doNegate(Node *n, int location);
 static void doNegateFloat(Value *v);
 static Node *makeAArrayExpr(List *elements, int location);
 static Node *makeXmlExpr(XmlExprOp op, char *name, List *named_args,
@@ -9794,7 +9794,7 @@ a_expr:		c_expr									{ $$ = $1; }
 			| '+' a_expr					%prec UMINUS
 				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "+", NULL, $2, @1.begins); }
 			| '-' a_expr					%prec UMINUS
-				{ $$ = doNegate($2, @1.begins, @1.length); }
+				{ $$ = doNegate($2, @1.begins); }
 			| a_expr '+' a_expr
 				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "+", $1, $3, @2.begins); }
 			| a_expr '-' a_expr
@@ -10195,7 +10195,7 @@ b_expr:		c_expr
 			| '+' b_expr					%prec UMINUS
 				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "+", NULL, $2, @1.begins); }
 			| '-' b_expr					%prec UMINUS
-				{ $$ = doNegate($2, @1.begins, @1.length); }
+				{ $$ = doNegate($2, @1.begins); }
 			| b_expr '+' b_expr
 				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "+", $1, $3, @2.begins); }
 			| b_expr '-' b_expr
@@ -12734,7 +12734,7 @@ SystemTypeName(char *name)
  * until we know what the desired type is.
  */
 static Node *
-doNegate(Node *n, int location, int length)
+doNegate(Node *n, int location)
 {
 	if (IsA(n, A_Const))
 	{
@@ -12742,13 +12742,11 @@ doNegate(Node *n, int location, int length)
 
 		/* report the constant's location as that of the '-' sign */
 		con->location = location;
-		/* TODO: A more elegant job of calculating length than this */
-		/*con->tok_len = length; */
 
 		if (con->val.type == T_Integer)
 		{
 			con->val.val.ival = -con->val.val.ival;
-			con->tok_len = (con->val.val.ival==0? 2: ((int) log10(fabs(con->val.val.ival)) + 2 ) );
+			con->tok_len = snprintf(NULL, 0, "%ld", con->val.val.ival);
 			return n;
 		}
 		if (con->val.type == T_Float)
