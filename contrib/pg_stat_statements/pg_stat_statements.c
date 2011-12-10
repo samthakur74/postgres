@@ -61,7 +61,7 @@ static const uint32 PGSS_FILE_HEADER = 0x20100108;
 #define USAGE_INIT				(1.0)	/* including initial planning */
 #define USAGE_DECREASE_FACTOR	(0.99)	/* decreased every entry_dealloc */
 #define USAGE_DEALLOC_PERCENT	5		/* free this % of entries at once */
-#define JUMBLE_SIZE				1024	    /* query serialization buffer size */
+#define JUMB_SIZE				1024    /* query serialization buffer size */
 /* Magic values */
 #define HASH_BUF				(0xFA)	/* buffer is a hash of query tree */
 #define STR_BUF					(0xEB)	/* buffer is query string itself */
@@ -77,10 +77,10 @@ static const uint32 PGSS_FILE_HEADER = 0x20100108;
  */
 typedef struct pgssHashKey
 {
-	Oid			userid;			/* user OID */
-	Oid			dbid;			/* database OID */
-	int			encoding;		/* query encoding */
-	char		jumble[JUMBLE_SIZE]; /* Integers from a query tree */
+	Oid			userid;				/* user OID */
+	Oid			dbid;				/* database OID */
+	int			encoding;			/* query encoding */
+	char		jumble[JUMB_SIZE];	/* Integers from a query tree */
 } pgssHashKey;
 
 /*
@@ -219,9 +219,9 @@ static void pgss_ProcessUtility(Node *parsetree,
 static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
 static void pgss_store(const char *query, char jumble[],
-			pgssTokenOffset offs[], int off_n,
-			double total_time, uint64 rows,
-			const BufferUsage *bufusage);
+				pgssTokenOffset offs[], int off_n,
+				double total_time, uint64 rows,
+				const BufferUsage *bufusage);
 static Size pgss_memsize(void);
 static pgssEntry *entry_alloc(pgssHashKey *key, const char* query, int new_query_len);
 static void entry_dealloc(void);
@@ -323,7 +323,7 @@ _PG_init(void)
 	/* Allocate a buffer to store selective serialization of the query tree
 	 * for the purposes of query normalization.
 	 */
-	last_jumble = MemoryContextAlloc(TopMemoryContext, JUMBLE_SIZE);
+	last_jumble = MemoryContextAlloc(TopMemoryContext, JUMB_SIZE);
 	/* Allocate space for bookkeeping information for query str normalization */
 	last_offsets = MemoryContextAlloc(TopMemoryContext, last_offset_buf_size * sizeof(pgssTokenOffset));
 
@@ -606,7 +606,8 @@ pgss_PlannerRun(Query *parse, int cursorOptions, ParamListInfo boundParams)
  * Const tokens will be found in the same order as in the original query string,
  * but this is certainly not guaranteed.
  */
-static int comp_offset(const void *a, const void *b)
+static int
+comp_offset(const void *a, const void *b)
 {
 	int l = ((pgssTokenOffset*) a)->offset;
 	int r = ((pgssTokenOffset*) b)->offset;
@@ -622,14 +623,15 @@ static int comp_offset(const void *a, const void *b)
  * JumbleQuery: Selectively serialize query tree, and store it until
  * needed to hash the query "parse".
  */
-static void JumbleQuery(Query *parse)
+static void
+JumbleQuery(Query *parse)
 {
 	/* State for this run of PerformJumble */
 	size_t i = 0;
 	last_offset_num = 0;
-	memset(last_jumble, 0, JUMBLE_SIZE);
+	memset(last_jumble, 0, JUMB_SIZE);
 	last_jumble[++i] = HASH_BUF;
-	PerformJumble(parse, JUMBLE_SIZE, &i);
+	PerformJumble(parse, JUMB_SIZE, &i);
 	/* Sort offsets for query string normalization */
 	qsort(last_offsets, last_offset_num, sizeof(pgssTokenOffset), comp_offset);
 }
@@ -638,7 +640,8 @@ static void JumbleQuery(Query *parse)
  * AppendJumb: Append a value that is substantive to a given query to jumble,
  * while incrementing the iterator.
  */
-static bool AppendJumb(char* item, char jumble[], size_t size, size_t *i)
+static bool
+AppendJumb(char* item, char jumble[], size_t size, size_t *i)
 {
 	Assert(item != NULL);
 	Assert(jumble != NULL);
@@ -648,19 +651,19 @@ static bool AppendJumb(char* item, char jumble[], size_t size, size_t *i)
 	 * Copy the entire item to the buffer, or as much of it as possible to fill
 	 * the buffer to capacity.
 	 */
-	memcpy(jumble + *i, item, Min(*i >= JUMBLE_SIZE? 0:JUMBLE_SIZE - *i, size));
+	memcpy(jumble + *i, item, Min(*i >= JUMB_SIZE? 0:JUMB_SIZE - *i, size));
 
-	if (size + *i >= JUMBLE_SIZE)
+	if (size + *i >= JUMB_SIZE)
 	{
 		/*
 		 * While byte-for-byte, the jumble representation will often be a lot more
-		 * compact than the query string, it's possible JUMBLE_SIZE has been set to
+		 * compact than the query string, it's possible JUMB_SIZE has been set to
 		 * a very small value. Besides, it's always possible to contrive a query
 		 * where it won't be as compact, such as
 		 * "select * from table_with_many_columns". Control is not expected to
 		 * reach here most of the time, as this is considered an edge-case.
 		 */
-		if (size + *i >= JUMBLE_SIZE * 5)
+		if (size + *i >= JUMB_SIZE * 5)
 			/* Give up completely, to avoid a possible stack overflow */
 			return false;
 		/*
@@ -737,7 +740,8 @@ if (!JoinExprNodeChild(item, size, i, rtable)) \
  * uniquely identify a query that may use different constants in successive
  * calls.
  */
-static bool PerformJumble(const Query *parse, size_t size, size_t *i)
+static bool
+PerformJumble(const Query *parse, size_t size, size_t *i)
 {
 	ListCell *l;
 	/* table join tree (FROM and WHERE clauses) */
@@ -949,7 +953,8 @@ static bool PerformJumble(const Query *parse, size_t size, size_t *i)
  * Perform selective serialization of "Quals" nodes when
  * they're IsA(*, OpExpr)
  */
-static bool QualsNode(const OpExpr *node, size_t size, size_t *i, List *rtable)
+static bool
+QualsNode(const OpExpr *node, size_t size, size_t *i, List *rtable)
 {
 	ListCell *l;
 	APP_JUMB(node->opno);
@@ -966,7 +971,8 @@ static bool QualsNode(const OpExpr *node, size_t size, size_t *i, List *rtable)
  * frequently, though certainly not necesssarily leaf nodes, such as Vars
  * (columns), constants and function calls
  */
-static bool LeafNodes(const Node *arg, size_t size, size_t *i, List *rtable)
+static bool
+LeafNodes(const Node *arg, size_t size, size_t *i, List *rtable)
 {
 	ListCell *l;
 	if (IsA(arg, Const))
@@ -1290,7 +1296,8 @@ static bool LeafNodes(const Node *arg, size_t size, size_t *i, List *rtable)
 /*
  * Perform selective serialization of limit or offset nodes
  */
-static bool LimitOffsetNode(const Node *node, size_t size, size_t *i, List *rtable)
+static bool
+LimitOffsetNode(const Node *node, size_t size, size_t *i, List *rtable)
 {
 	ListCell *l;
 	if (IsA(node, FuncExpr))
@@ -1318,7 +1325,8 @@ static bool LimitOffsetNode(const Node *node, size_t size, size_t *i, List *rtab
 /*
  * JoinExprNode: Perform selective serialization of JoinExpr nodes
  */
-static bool JoinExprNode(JoinExpr *node, size_t size, size_t *i, List *rtable)
+static bool
+JoinExprNode(JoinExpr *node, size_t size, size_t *i, List *rtable)
 {
 	Node	 *larg = node->larg;	/* left subtree */
 	Node	 *rarg = node->rarg;	/* right subtree */
@@ -1357,7 +1365,8 @@ static bool JoinExprNode(JoinExpr *node, size_t size, size_t *i, List *rtable)
 /*
  * JoinExprNodeChild: Serialize children of the JoinExpr node
  */
-static bool JoinExprNodeChild(const Node *node, size_t size, size_t *i, List *rtable)
+static bool
+JoinExprNodeChild(const Node *node, size_t size, size_t *i, List *rtable)
 {
 	if (IsA(node, RangeTblRef))
 	{
@@ -1496,10 +1505,10 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 			 * user evidently considers such constant essential to the query, or
 			 * they'd have paramaterized them.
 			 */
-			memset(last_jumble, 0, JUMBLE_SIZE);
+			memset(last_jumble, 0, JUMB_SIZE);
 			last_jumble[0] = STR_BUF;
 			memcpy(last_jumble + 1, queryDesc->sourceText,
-				Min(JUMBLE_SIZE - 1, strlen(queryDesc->sourceText) )
+				Min(JUMB_SIZE - 1, strlen(queryDesc->sourceText) )
 				);
 		}
 		/*
@@ -1593,11 +1602,11 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 			pgBufferUsage.temp_blks_written - bufusage.temp_blks_written;
 
 		/* In the case of utility statements, hash the query string directly */
-		memset(last_jumble, 0, JUMBLE_SIZE);
+		memset(last_jumble, 0, JUMB_SIZE);
 		last_jumble[0] = STR_BUF;
 		memcpy(last_jumble + 1, queryString,
-			Min(JUMBLE_SIZE - 1, strlen(queryString) )
-			);
+			Min(JUMB_SIZE - 1, strlen(queryString) )
+				);
 
 		pgss_store(queryString, last_jumble, NULL, 0, INSTR_TIME_GET_DOUBLE(duration), rows,
 				   &bufusage);
@@ -1624,7 +1633,7 @@ pgss_hash_fn(const void *key, Size keysize)
 	/* we don't bother to include encoding in the hash */
 	return hash_uint32((uint32) k->userid) ^
 		hash_uint32((uint32) k->dbid) ^
-		DatumGetUInt32(hash_any((const unsigned char* ) k->jumble, JUMBLE_SIZE) );
+		DatumGetUInt32(hash_any((const unsigned char* ) k->jumble, JUMB_SIZE) );
 }
 
 /*
@@ -1639,7 +1648,7 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
 	if (k1->userid == k2->userid &&
 		k1->dbid == k2->dbid &&
 		k1->encoding == k2->encoding &&
-		memcmp(k1->jumble, k2->jumble, JUMBLE_SIZE) == 0)
+		memcmp(k1->jumble, k2->jumble, JUMB_SIZE) == 0)
 		return 0;
 	else
 		return 1;
@@ -1650,9 +1659,9 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
  */
 static void
 pgss_store(const char *query, char jumble[],
-			pgssTokenOffset offs[], int off_n,
-			double total_time, uint64 rows,
-			const BufferUsage *bufusage)
+				pgssTokenOffset offs[], int off_n,
+				double total_time, uint64 rows,
+				const BufferUsage *bufusage)
 {
 	pgssHashKey key;
 	double		usage;
@@ -1670,7 +1679,7 @@ pgss_store(const char *query, char jumble[],
 	key.userid = GetUserId();
 	key.dbid = MyDatabaseId;
 	key.encoding = GetDatabaseEncoding();
-	memcpy(key.jumble, jumble, JUMBLE_SIZE);
+	memcpy(key.jumble, jumble, JUMB_SIZE);
 
 	if (new_query_len >= pgss->query_size)
 		new_query_len = pg_encoding_mbcliplen(key.encoding,
