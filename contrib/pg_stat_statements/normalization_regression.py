@@ -1069,19 +1069,20 @@ def main():
 
 	# Test this cast syntax works:
 	verify_normalizes_correctly("select timestamp without time zone '2009-05-05 15:34:24';",
-								"select timestamp without time zone ?;", conn, "excercise special handling, timestamp")
+								"select timestamp without time zone ?;", conn, "excercise alternative cast syntax, timestamp")
 	verify_normalizes_correctly("select timestamptz '2009-05-05 15:34:24.1234';",
-								"select timestamptz ?;", conn, "excercise special handling, timestamptz")
+								"select timestamptz ?;", conn, "excercise alternative cast syntax, timestamptz")
 	verify_normalizes_correctly("select date '2009-05-05';",
-								"select date ?;", conn, "excercise special handling, date")
+								"select date ?;", conn, "excercise alternative cast syntax, date")
 	verify_normalizes_correctly("select time '15:15:15';",
-								"select time ?;", conn, "excercise special handling, time")
+								"select time ?;", conn, "excercise alternative cast syntax, time")
 	verify_normalizes_correctly("select time with time zone '15:15:15';",
-								"select time with time zone ?;", conn, "excercise special handling, time with time zone")
+								"select time with time zone ?;", conn, "excercise alternative cast syntax, time with time zone")
 
 
-	verify_normalizes_correctly("select interval '1 hour';", "select interval ?;", conn, "excercise special handling, interval")
-
+	verify_normalizes_correctly("select interval '1 hour';", "select interval ?;", conn, "excercise alternative cast syntax, interval")
+	# Binary/bit strings have special handling within parser
+	verify_normalizes_correctly("select B'1001' | B'1111';", "select ? | ?;", conn, "bitstring parser handling")
 	demonstrate_buffer_limitation(conn)
 
 if __name__=="__main__":

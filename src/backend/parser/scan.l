@@ -73,8 +73,8 @@ bool			standard_conforming_strings = true;
  * this should be done in the first such rule, else yylloc will point
  * into the middle of the token.
  */
-#define SET_YYLLOC_BEGINS() yylloc->length = 0; yylloc->begins = yytext - yyextra->scanbuf;
-#define SET_YYLLOC_LEN()  yylloc->length += strlen(yytext);
+#define SET_YYLLOC_BEGINS()	yylloc->length = 0; yylloc->begins = yytext - yyextra->scanbuf;
+#define SET_YYLLOC_LEN()	yylloc->length += strlen(yytext);
 
 
 /*
@@ -439,8 +439,8 @@ other			.
 				}
 <xh>{xhinside}	|
 <xb>{xbinside}	{
-					addlit(yytext, yyleng, yyscanner);
 					SET_YYLLOC_LEN();
+					addlit(yytext, yyleng, yyscanner);
 				}
 <xh>{quotecontinue}	|
 <xb>{quotecontinue}	{

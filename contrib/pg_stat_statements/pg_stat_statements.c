@@ -1235,7 +1235,10 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 		  IsA(arg, Null)
 		)
 	{
-		/* It is not necessary to serialize integral values */
+		/* It is not necessary to serialize Value nodes - they are seen when
+		 * aliases are used, which is not something that is serialized.
+		 */
+		return;
 	}
 	else if (IsA(arg, BooleanTest))
 	{
