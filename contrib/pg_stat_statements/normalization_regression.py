@@ -15,6 +15,15 @@ import psycopg2
 
 test_no = 1
 
+def do_post_mortem(conn):
+	print "Post-mortem:"
+	cur = conn.cursor()
+	cur.execute("select * from pg_stat_statements();")
+	for i in cur:
+		print i
+
+	print "\n"
+
 def print_queries(conn):
 	print "Queries that were found in pg_stat_statements: "
 	cur = conn.cursor()
@@ -57,7 +66,12 @@ def verify_statement_equivalency(sql, equiv, conn, test_name = None, cleanup_sql
 		cur.execute(cleanup_sql)
 
 	cur.execute(
-	"select count(*) from pg_stat_statements where query not ilike '%pg_stat_statements%' {0};".format(
+	# Exclude both pg_stat_statements_reset() calls and foreign key enforcement queries
+	"""select count(*) from pg_stat_statements
+		where query not like '%pg_stat_statements_reset%'
+		and
+		query not like 'SELECT 1 FROM ONLY%'
+		{0};""".format(
 		"" if cleanup_sql is None else "and query != '{0}'".format(cleanup_sql))
 			)
 
@@ -65,6 +79,7 @@ def verify_statement_equivalency(sql, equiv, conn, test_name = None, cleanup_sql
 		tuple_n = i[0]
 
 	if tuple_n != 1:
+		do_post_mortem(conn)
 		raise SystemExit("""The SQL statements \n'{0}'\n and \n'{1}'\n do not appear to be equivalent!
 		Test {2} failed.""".format(sql, equiv, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no)) )
 
@@ -86,13 +101,19 @@ def verify_statement_differs(sql, diff, conn, test_name = None, cleanup_sql = No
 		cur.execute(cleanup_sql)
 
 	cur.execute(
-	"select count(*) from pg_stat_statements where query not ilike '%pg_stat_statements%' {0};".format(
+	# Exclude both pg_stat_statements_reset() calls and foreign key enforcement queries
+	"""select count(*) from pg_stat_statements
+		where query not like '%pg_stat_statements_reset%'
+		and
+		query not like 'SELECT 1 FROM ONLY%'
+		{0};""".format(
 		"" if cleanup_sql is None else "and query != '{0}'".format(cleanup_sql))
 			)
 	for i in cur:
 		tuple_n = i[0]
 
 	if tuple_n != 2:
+		do_post_mortem(conn)
 		raise SystemExit("""The SQL statements \n'{0}'\n and \n'{1}'\n do not appear to be different!
 				Test {2} failed.""".format(sql, diff, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no)))
 
@@ -114,13 +135,68 @@ def verify_normalizes_correctly(sql, norm_sql, conn, test_name = None):
 		print """The SQL \n'{0}'\n normalizes to \n'{1}'\n , as expected.
 			Test {2} passed.\n\n """.format(sql, norm_sql, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no))
 	else:
+		do_post_mortem(conn)
 		raise SystemExit("""The SQL statement \n'{0}'\n does not normalize to \n  '{1}'\n , which is not expected!
 				Test {2} failed.""".format(sql, norm_sql, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no)))
 	test_no +=1
 
+# Test for bugs in synchronisation between planner and executor
+def test_sync_issues(conn, count=5):
+	global test_no
+	cur = conn.cursor()
+	cur.execute("select pg_stat_statements_reset();")
+
+
+	# Note that the SQL in this plpgsql function is not paramaterized, so
+	# detecting that and hashing on string doesn't get the implementation
+	# off-the-hook:
+	spi_query = "update orders set orderid = 5 where orderid = 5"
+	cur.execute(""" create or replace function test() returns void as
+					$$begin {0};
+					end;$$ language plpgsql""".format(spi_query))
+
+	sql = "select test();"
+
+	for i in range(0, count):
+		cur.execute(sql)
+
+	# Plan caching will make the first call of the function above plan the sql statement after it plans the function call.
+	# This caused the assumption about their synchronisation to fall down in earlier revisions of the patch.
+	# Another concern is that we don't overwrite the jumble that is needed in the executor for an unnested
+	# query with a nested query's jumble
+
+	# pg_stat_statements.track is set to 'all', so we expect to see both the function call and the spi-executed query `count` times
+	cur.execute("select calls from pg_stat_statements where query = '{0}' order by calls;".format(sql));
+	for i in cur:
+		 function_calls = i[0]
+
+	cur.execute("select calls from pg_stat_statements where query = '{0}' order by calls;".format(spi_query));
+	for i in cur:
+		 spi_query_calls = i[0]
+
+	for i in (function_calls, spi_query_calls):
+		name = "function_calls" if i is function_calls else "spi_query_calls"
+
+		if i == count:
+				print "Planner/ Executor sync issue test (test {0}, '{1}') passed. actual calls: {2}".format(test_no, name, i)
+		else:
+			do_post_mortem(conn)
+			raise SystemExit("Planner/ Executor sync issue detected! Test {0} ('{1}') failed! (actual calls: {2}, reported: {3}".format(test_no, name, i, count))
+
+		test_no +=1
+
 def main():
 	conn = psycopg2.connect("")
-	# Just let exceptions propagate
+
+	# Run all tests while tracking all statements (i.e. nested ones too, within
+	# functions). This is necessary for the test_sync_issues() test, but shouldn't
+	# otherwise matter. I suspect that it may usefully increase test coverage
+	# in some cases at some point in the code's development.
+#	cur = conn.cursor()
+#	cur.execute("set pg_stat_statements.track = 'all';")
+
+	## Start tests...just let exceptions propagate
+#	test_sync_issues(conn, 25)
 
 	verify_statement_equivalency("select '5'::integer;", "select  '17'::integer;", conn)
 	verify_statement_equivalency("select 1;", "select      5   ;", conn)
@@ -299,8 +375,6 @@ def main():
 	"select (1, 2, 3) < (3, 4, 5);",
 	"select (3, 4, 5) < (1, 2, 3);",
 				conn)
-
-
 
 	# Use lots of different operators:
 	verify_statement_differs(
@@ -532,7 +606,6 @@ def main():
 	# Updates are similarly normalised, and their internal representations shares much with select statements
 	verify_statement_equivalency("update orders set orderdate='2011-01-06' where orderid=3;",
 				     "update orders set orderdate='1992-01-06' where orderid     =     10;", conn)
-
 	# updates with different columns are not equivalent:
 	verify_statement_differs("update orders set orderdate='2011-01-06' where orderid = 3;",
 				 "update orders set orderdate='1992-01-06' where customerid     =     10;", conn)
@@ -940,7 +1013,16 @@ def main():
 	""",
 	conn)
 
-	# Don't confuse functions and function-like dedicated ExprNodes, or pairs of
+	# Declare cursor is a special sort of utility statement - one with
+	# a query tree that looks pretty much like that of a select statement
+
+	# Not really worth serializing the tree like a select statement though -
+	# Just treat it as a utility statement
+	verify_statement_equivalency(
+	"declare test cursor for select * from orders;",
+	"declare test cursor for select * from orders;",
+	cleanup_sql = "close all;", conn = conn)
+
 	# function-like dedicated ExprNodes
 
 	# I'd speculate that if this was performed with every ExprNode that resembles
