@@ -1504,7 +1504,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		 */
 		InstrEndLoop(queryDesc->totaltime);
 
-		if (queryDesc->params || jumbling_skipped || queryDesc->utilitystmt ||
+		if (queryDesc->params || jumbling_skipped ||
 			pgss_string_key	|| nested_level > 0 ||
 			queryDesc->operation == CMD_UNKNOWN ||
 			queryDesc->operation == CMD_UTILITY ||
@@ -1517,7 +1517,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 			 * pgss_Planner won't have hashed the tree of this particular
 			 * query. It may have skipped hashing, or there may not have even
 			 * been a call corresponding to this call of pgss_ExecutorEnd, such
-			 * as when there is plan caching.
+			 * as when plan caching occurs.
 			 *
 			 * When dealing with a parameterized query, the query string is the
 			 * original query string anyway, so there is no need to worry about
