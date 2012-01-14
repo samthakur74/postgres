@@ -444,10 +444,10 @@ plpgsql_peek2(int *tok1_p, int *tok2_p, int *tok1_loc, int *tok2_loc)
 
 	*tok1_p = tok1;
 	if (tok1_loc)
-		*tok1_loc = aux1.lloc;
+		*tok1_loc = aux1.lloc.begins;
 	*tok2_p = tok2;
 	if (tok2_loc)
-		*tok2_loc = aux2.lloc;
+		*tok2_loc = aux2.lloc.begins;
 
 	push_back_token(tok2, &aux2);
 	push_back_token(tok1, &aux1);

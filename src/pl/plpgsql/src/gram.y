@@ -3460,7 +3460,7 @@ read_cursor_args(PLpgSQL_var *cursor, int until, const char *expected)
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("cursor \"%s\" has no argument named \"%s\"",
 								cursor->refname, argname),
-						 parser_errposition(yylloc)));
+						 parser_errposition(yylloc.begins)));
 
 			/*
 			 * Eat the ":=". We already peeked, so the error should never
@@ -3496,14 +3496,14 @@ read_cursor_args(PLpgSQL_var *cursor, int until, const char *expected)
 					(errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("not enough arguments for cursor \"%s\"",
 							cursor->refname),
-					 parser_errposition(yylloc)));
+					 parser_errposition(yylloc.begins)));
 
 		if (endtoken == ',' && (argc == row->nfields - 1))
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
 					 errmsg("too many arguments for cursor \"%s\"",
 							cursor->refname),
-					 parser_errposition(yylloc)));
+					 parser_errposition(yylloc.begins)));
 
 		if (argv[argpos] != NULL)
 			ereport(ERROR,
