@@ -61,7 +61,7 @@ static const uint32 PGSS_FILE_HEADER = 0x20100108;
 #define USAGE_INIT				(1.0)	/* including initial planning */
 #define USAGE_DECREASE_FACTOR	(0.99)	/* decreased every entry_dealloc */
 #define USAGE_DEALLOC_PERCENT	5		/* free this % of entries at once */
-#define JUMBLE_SIZE				1024    /* query serialization buffer size */
+#define JUMBLE_SIZE				1024	/* query serialization buffer size */
 /* Magic values */
 #define HASH_BUF				(0xFA)	/* buffer is a hash of query tree */
 #define STR_BUF					(0xEB)	/* buffer is query string itself */
@@ -88,18 +88,18 @@ typedef struct pgssHashKey
  */
 typedef struct Counters
 {
-	int64		calls;			/* # of times executed */
-	double		total_time;		/* total execution time in seconds */
-	int64		rows;			/* total # of retrieved or affected rows */
-	int64		shared_blks_hit;	/* # of shared buffer hits */
+	int64		calls;					/* # of times executed */
+	double		total_time;				/* total execution time in seconds */
+	int64		rows;					/* total # of retrieved or affected rows */
+	int64		shared_blks_hit;		/* # of shared buffer hits */
 	int64		shared_blks_read;		/* # of shared disk blocks read */
 	int64		shared_blks_written;	/* # of shared disk blocks written */
-	int64		local_blks_hit; /* # of local buffer hits */
-	int64		local_blks_read;	/* # of local disk blocks read */
+	int64		local_blks_hit;			/* # of local buffer hits */
+	int64		local_blks_read;		/* # of local disk blocks read */
 	int64		local_blks_written;		/* # of local disk blocks written */
-	int64		temp_blks_read; /* # of temp blocks read */
+	int64		temp_blks_read;			/* # of temp blocks read */
 	int64		temp_blks_written;		/* # of temp blocks written */
-	double		usage;			/* usage factor */
+	double		usage;					/* usage factor */
 } Counters;
 
 /*
@@ -133,20 +133,28 @@ typedef struct pgssTokenOffset
 } pgssTokenOffset;
 
 /*---- Local variables ----*/
+
 /* Jumble of last query tree seen by pgss_Planner */
 static unsigned char *last_jumble = NULL;
+
 /* Ptr to buffer that represents position of normalized characters */
 static pgssTokenOffset *last_offsets = NULL;
+
 /* Current Length of last_offsets buffer */
 static size_t last_offset_buf_size = 10;
+
 /* Current number of actual offsets stored in last_offsets */
 static size_t last_offset_num = 0;
+
 /* Current nesting depth of ExecutorRun calls */
 static int	nested_level = 0;
+
 /* Current query skipped jumbling */
 static bool jumbling_skipped = false;
+
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
+
 static ExecutorStart_hook_type prev_ExecutorStart = NULL;
 static ExecutorRun_hook_type prev_ExecutorRun = NULL;
 static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
@@ -181,9 +189,9 @@ static bool pgss_track_utility; /* whether to track utility commands */
 static bool pgss_save;			/* whether to save stats across shutdown */
 static bool pgss_string_key;	/* whether to always only hash query str */
 
-#define pgss_enabled() \
-	(pgss_track == PGSS_TRACK_ALL || \
-	(pgss_track == PGSS_TRACK_TOP && nested_level == 0))
+#define pgss_enabled()				 \
+	(pgss_track == PGSS_TRACK_ALL ||										  \
+	 (pgss_track == PGSS_TRACK_TOP && nested_level == 0))
 
 /*---- Function declarations ----*/
 
@@ -198,33 +206,40 @@ PG_FUNCTION_INFO_V1(pg_stat_statements);
 
 static void pgss_shmem_startup(void);
 static void pgss_shmem_shutdown(int code, Datum arg);
-static PlannedStmt *pgss_Planner(Query *parse, int cursorOptions, ParamListInfo boundParams);
+static PlannedStmt *pgss_Planner(Query *parse, int cursorOptions,
+								 ParamListInfo boundParams);
 static int comp_offset(const void *a, const void *b);
 static void JumbleQuery(Query *parse);
-static void AppendJumb(unsigned char* item, unsigned char jumble[], size_t size, size_t *i);
+static void AppendJumb(unsigned char* item, unsigned char jumble[],
+					   size_t size, size_t *i);
 static void PerformJumble(const Query *parse, size_t size, size_t *i);
-static void QualsNode(const OpExpr *node, size_t size, size_t *i, List *rtable);
+static void QualsNode(const OpExpr *node, size_t size, size_t *i,
+					  List *rtable);
 static void LeafNode(const Node *arg, size_t size, size_t *i, List *rtable);
-static void LimitOffsetNode(const Node *node, size_t size, size_t *i, List *rtable);
+static void LimitOffsetNode(const Node *node, size_t size, size_t *i,
+							List *rtable);
 static void JoinExprNode(JoinExpr *node, size_t size, size_t *i, List *rtable);
-static void JoinExprNodeChild(const Node *node, size_t size, size_t *i, List *rtable);
+static void JoinExprNodeChild(const Node *node, size_t size, size_t *i,
+							  List *rtable);
 static void pgss_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgss_ExecutorRun(QueryDesc *queryDesc,
-				 ScanDirection direction,
-				 long count);
+							 ScanDirection direction,
+							 long count);
 static void pgss_ExecutorFinish(QueryDesc *queryDesc);
 static void pgss_ExecutorEnd(QueryDesc *queryDesc);
 static void pgss_ProcessUtility(Node *parsetree,
-			  const char *queryString, ParamListInfo params, bool isTopLevel,
-					DestReceiver *dest, char *completionTag);
+								const char *queryString, ParamListInfo params,
+								bool isTopLevel, DestReceiver *dest,
+								char *completionTag);
 static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
 static void pgss_store(const char *query, unsigned char jumble[],
-				pgssTokenOffset offs[], int off_n,
-				double total_time, uint64 rows,
-				const BufferUsage *bufusage);
+					   pgssTokenOffset offs[], int off_n,
+					   double total_time, uint64 rows,
+					   const BufferUsage *bufusage);
 static Size pgss_memsize(void);
-static pgssEntry *entry_alloc(pgssHashKey *key, const char* query, int new_query_len);
+static pgssEntry *entry_alloc(pgssHashKey *key, const char* query,
+							  int new_query_len);
 static void entry_dealloc(void);
 static void entry_reset(void);
 
@@ -249,67 +264,72 @@ _PG_init(void)
 	/*
 	 * Define (or redefine) custom GUC variables.
 	 */
-	DefineCustomIntVariable("pg_stat_statements.max",
-	  "Sets the maximum number of statements tracked by pg_stat_statements.",
-							NULL,
-							&pgss_max,
-							1000,
-							100,
-							INT_MAX,
-							PGC_POSTMASTER,
-							0,
-							NULL,
-							NULL,
-							NULL);
+	DefineCustomIntVariable(
+		"pg_stat_statements.max",
+		"Sets the maximum number of statements tracked by pg_stat_statements.",
+		NULL,
+		&pgss_max,
+		1000,
+		100,
+		INT_MAX,
+		PGC_POSTMASTER,
+		0,
+		NULL,
+		NULL,
+		NULL);
 
-	DefineCustomEnumVariable("pg_stat_statements.track",
-			   "Selects which statements are tracked by pg_stat_statements.",
-							 NULL,
-							 &pgss_track,
-							 PGSS_TRACK_TOP,
-							 track_options,
-							 PGC_SUSET,
-							 0,
-							 NULL,
-							 NULL,
-							 NULL);
+	DefineCustomEnumVariable(
+		"pg_stat_statements.track",
+		"Selects which statements are tracked by pg_stat_statements.",
+		NULL,
+		&pgss_track,
+		PGSS_TRACK_TOP,
+		track_options,
+		PGC_SUSET,
+		0,
+		NULL,
+		NULL,
+		NULL);
 
-	DefineCustomBoolVariable("pg_stat_statements.track_utility",
-	   "Selects whether utility commands are tracked by pg_stat_statements.",
-							 NULL,
-							 &pgss_track_utility,
-							 true,
-							 PGC_SUSET,
-							 0,
-							 NULL,
-							 NULL,
-							 NULL);
+	DefineCustomBoolVariable(
+		"pg_stat_statements.track_utility",
+		"Selects whether utility commands are tracked by pg_stat_statements.",
+		NULL,
+		&pgss_track_utility,
+		true,
+		PGC_SUSET,
+		0,
+		NULL,
+		NULL,
+		NULL);
 
-	DefineCustomBoolVariable("pg_stat_statements.save",
-			   "Save pg_stat_statements statistics across server shutdowns.",
-							 NULL,
-							 &pgss_save,
-							 true,
-							 PGC_SIGHUP,
-							 0,
-							 NULL,
-							 NULL,
-							 NULL);
+	DefineCustomBoolVariable(
+		"pg_stat_statements.save",
+		"Save pg_stat_statements statistics across server shutdowns.",
+		NULL,
+		&pgss_save,
+		true,
+		PGC_SIGHUP,
+		0,
+		NULL,
+		NULL,
+		NULL);
 
 	/*
 	 * Support legacy pg_stat_statements behavior, for compatibility with
 	 * versions shipped with Postgres 8.4, 9.0 and 9.1
 	 */
-	DefineCustomBoolVariable("pg_stat_statements.string_key",
-			   "Differentiate queries based on query string alone.",
-							 NULL,
-							 &pgss_string_key,
-							 false,
-							 PGC_POSTMASTER,
-							 0,
-							 NULL,
-							 NULL,
-							 NULL);
+	DefineCustomBoolVariable(
+		"pg_stat_statements.string_key",
+		"Differentiate queries based on query string alone.",
+		NULL,
+		&pgss_string_key,
+		false,
+		PGC_POSTMASTER,
+		0,
+		NULL,
+		NULL,
+		NULL);
 
 	EmitWarningsOnPlaceholders("pg_stat_statements");
 
@@ -321,16 +341,19 @@ _PG_init(void)
 	RequestAddinShmemSpace(pgss_memsize());
 	RequestAddinLWLocks(1);
 
-	/* Allocate a buffer to store selective serialization of the query tree
+	/*
+	 * Allocate a buffer to store selective serialization of the query tree
 	 * for the purposes of query normalization.
 	 */
 	last_jumble = MemoryContextAlloc(TopMemoryContext, JUMBLE_SIZE);
-	/* Allocate space for bookkeeping information for query str normalization */
-	last_offsets = MemoryContextAlloc(TopMemoryContext, last_offset_buf_size * sizeof(pgssTokenOffset));
 
 	/*
-	 * Install hooks.
+	 * Allocate space for bookkeeping information for query str normalization.
 	 */
+	last_offsets = MemoryContextAlloc(TopMemoryContext, last_offset_buf_size *
+									  sizeof(pgssTokenOffset));
+
+	/* Install hooks. */
 	prev_shmem_startup_hook = shmem_startup_hook;
 	shmem_startup_hook = pgss_shmem_startup;
 	prev_ExecutorStart = ExecutorStart_hook;
@@ -343,16 +366,13 @@ _PG_init(void)
 	ExecutorEnd_hook = pgss_ExecutorEnd;
 	prev_ProcessUtility = ProcessUtility_hook;
 	ProcessUtility_hook = pgss_ProcessUtility;
-	/*
-	 * Install hooks for query normalization
-	 */
+
+	/* Install hooks for query normalization */
 	prev_Planner = planner_hook;
 	planner_hook = pgss_Planner;
 }
 
-/*
- * Module unload callback
- */
+/* Module unload callback */
 void
 _PG_fini(void)
 {
@@ -370,8 +390,8 @@ _PG_fini(void)
 }
 
 /*
- * shmem_startup hook: allocate or attach to shared memory,
- * then load any pre-existing statistics from file.
+ * pgss_shmem_startup hook: allocate or attach to shared memory, then load any
+ * pre-existing statistics from file.
  */
 static void
 pgss_shmem_startup(void)
@@ -393,9 +413,7 @@ pgss_shmem_startup(void)
 	pgss = NULL;
 	pgss_hash = NULL;
 
-	/*
-	 * Create or attach to the shared memory state, including hash table
-	 */
+	/* Create or attach to the shared memory state, including hash table */
 	LWLockAcquire(AddinShmemInitLock, LW_EXCLUSIVE);
 
 	pgss = ShmemInitStruct("pg_stat_statements",
@@ -443,10 +461,13 @@ pgss_shmem_startup(void)
 	 * processes running when this code is reached.
 	 */
 	file = AllocateFile(PGSS_DUMP_FILE, PG_BINARY_R);
+
 	if (file == NULL)
 	{
+		/* ignore not-found error */
 		if (errno == ENOENT)
-			return;				/* ignore not-found error */
+			return;
+
 		goto error;
 	}
 
@@ -470,7 +491,6 @@ pgss_shmem_startup(void)
 		if (!PG_VALID_BE_ENCODING(temp.key.encoding))
 			goto error;
 
-
 		/* Previous incarnation might have had a larger query_size */
 		if (temp.query_len >= buffer_size)
 		{
@@ -482,13 +502,12 @@ pgss_shmem_startup(void)
 			goto error;
 		buffer[temp.query_len] = '\0';
 
-
 		/* Clip to available length if needed */
 		if (temp.query_len >= query_size)
 			temp.query_len = pg_encoding_mbcliplen(temp.key.encoding,
-													   buffer,
-													   temp.query_len,
-													   query_size - 1);
+												   buffer,
+												   temp.query_len,
+												   query_size - 1);
 
 		/* make the hashtable entry (discards old entries if too many) */
 		entry = entry_alloc(&temp.key, buffer, temp.query_len);
@@ -508,8 +527,10 @@ error:
 					PGSS_DUMP_FILE)));
 	if (buffer)
 		pfree(buffer);
+
 	if (file)
 		FreeFile(file);
+
 	/* If possible, throw away the bogus file; ignore any error */
 	unlink(PGSS_DUMP_FILE);
 }
@@ -546,11 +567,13 @@ pgss_shmem_shutdown(int code, Datum arg)
 
 	if (fwrite(&PGSS_FILE_HEADER, sizeof(uint32), 1, file) != 1)
 		goto error;
+
 	num_entries = hash_get_num_entries(pgss_hash);
 	if (fwrite(&num_entries, sizeof(int32), 1, file) != 1)
 		goto error;
 
 	hash_seq_init(&hash_seq, pgss_hash);
+
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
 		int			len = entry->query_len;
@@ -575,6 +598,7 @@ error:
 					PGSS_DUMP_FILE)));
 	if (file)
 		FreeFile(file);
+
 	unlink(PGSS_DUMP_FILE);
 
 }
@@ -604,17 +628,15 @@ pgss_Planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	if (nested_level == 0)
 	{
 		if (!pgss_string_key &&
-			!(
-			  parse->commandType == CMD_UNKNOWN ||
+			!(parse->commandType == CMD_UNKNOWN ||
 			  parse->commandType == CMD_UTILITY ||
-			  parse->commandType == CMD_NOTHING
-			 ) &&
+			  parse->commandType == CMD_NOTHING) &&
 			!(boundParams && boundParams->numParams > 0)
 			)
 		{
 			/*
-			 * Only generate a jumble if we have no reason to hash the query string
-			 * directly instead
+			 * Only generate a jumble if we have no reason to hash the query
+			 * string directly instead
 			 */
 			JumbleQuery(parse);
 			jumbling_skipped = false;
@@ -633,14 +655,15 @@ pgss_Planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 /*
  * comp_offset: Comparator for qsorting pgssTokenOffset values by their
  * position in the original query string. Often when walking the query tree,
- * Const tokens will be found in the same order as in the original query string,
- * but this is certainly not guaranteed.
+ * Const tokens will be found in the same order as in the original query
+ * string, but this is certainly not guaranteed.
  */
 static int
 comp_offset(const void *a, const void *b)
 {
 	int l = ((pgssTokenOffset*) a)->offset;
 	int r = ((pgssTokenOffset*) b)->offset;
+
 	if (l < r)
 		return -1;
 	else if (l > r)
@@ -658,10 +681,12 @@ JumbleQuery(Query *parse)
 {
 	/* State for this run of PerformJumble */
 	size_t i = 0;
+
 	last_offset_num = 0;
 	memset(last_jumble, 0, JUMBLE_SIZE);
 	last_jumble[++i] = HASH_BUF;
 	PerformJumble(parse, JUMBLE_SIZE, &i);
+
 	/* Sort offsets for query string normalization */
 	qsort(last_offsets, last_offset_num, sizeof(pgssTokenOffset), comp_offset);
 }
@@ -681,30 +706,31 @@ AppendJumb(unsigned char* item, unsigned char jumble[], size_t size, size_t *i)
 	 * Copy the entire item to the buffer, or as much of it as possible to fill
 	 * the buffer to capacity.
 	 */
-	memcpy(jumble + *i, item, Min(*i >= JUMBLE_SIZE? 0:JUMBLE_SIZE - *i, size));
+	memcpy(jumble + *i, item,
+		   Min(*i >= JUMBLE_SIZE? 0:JUMBLE_SIZE - *i, size));
 
 	/*
-	 * While byte-for-byte, the jumble representation will often be more compact
-	 * than the query string, it's possible JUMBLE_SIZE has been set to a very
-	 * small value. Besides, it's possible to contrive a query where it won't be
-	 * as compact for all values of JUMBLE_SIZE, such as
-	 * "select * from tab_w_many_columns".
+	 * While byte-for-byte, the jumble representation will often be more
+	 * compact than the query string, it's possible JUMBLE_SIZE has been set to
+	 * a very small value. Besides, it's possible to contrive a query where it
+	 * won't be as compact for all values of JUMBLE_SIZE, such as "select *
+	 * from tab_w_many_columns".
 	 *
-	 * It is necessary to walk the query tree in its entirety. Though nothing more
-	 * may be appended to the buffer, we must still find Const nodes to
-	 * canonicalize. Having done all we can with the jumble, we must still concern
-	 * ourselves with the normalized query string.
+	 * It is necessary to walk the query tree in its entirety. Though nothing
+	 * more may be appended to the buffer, we must still find Const nodes to
+	 * canonicalize. Having done all we can with the jumble, we must still
+	 * concern ourselves with the normalized query string.
 	 */
 
 	*i += size;
 }
 
 /*
- * Wrapper around AppendJumb to encapsulate details of serialization
- * of individual local variable elements.
+ * Wrapper around AppendJumb to encapsulate details of serialization of
+ * individual local variable elements.
  */
-#define APP_JUMB(item) \
-AppendJumb((unsigned char*)&item, last_jumble, sizeof(item), i)
+#define APP_JUMB(item)														  \
+	AppendJumb((unsigned char*)&item, last_jumble, sizeof(item), i)
 
 /*
  * Space in the jumble buffer is limited - we can compact enum representations
@@ -718,8 +744,9 @@ AppendJumb((unsigned char*)&item, last_jumble, sizeof(item), i)
  * assigned to constants. This is intended to be used with enums with perhaps
  * less than a dozen possible values, that are never likely to far exceed that.
  */
-#define COMPACT_ENUM(val) \
+#define COMPACT_ENUM(val)													  \
 	(unsigned char) val;
+
 /*
  * PerformJumble: Serialize the query tree "parse" and canonicalize
  * constants, while simply skipping over others that are not essential to the
@@ -751,11 +778,14 @@ static void
 PerformJumble(const Query *parse, size_t size, size_t *i)
 {
 	ListCell *l;
+
 	/* table join tree (FROM and WHERE clauses) */
 	FromExpr *jt = (FromExpr *) parse->jointree;
-	/* # of result tuples to skip (int8 expr) */
+
+	/* number of result tuples to skip (int8 expr) */
 	FuncExpr *off = (FuncExpr *) parse->limitOffset;
-	/* # of result tuples to skip (int8 expr) */
+
+	/* number of result tuples to skip (int8 expr) */
 	FuncExpr *limcount = (FuncExpr *) parse->limitCount;
 
 	APP_JUMB(parse->resultRelation);
@@ -774,18 +804,20 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		if (rel)
 		{
 			APP_JUMB(rel->relpersistence);
-			/* Bypass macro abstraction to supply size directly.
+
+			/*
+			 * Bypass macro abstraction to supply size directly.
 			 *
 			 * Serialize schemaname, relname themselves - this makes us
-			 * somewhat consistent with the behavior of utility statements like "create
-			 * table", which seems appropriate.
+			 * somewhat consistent with the behavior of utility statements like
+			 * "create table", which seems appropriate.
 			 */
 			if (rel->schemaname)
 				AppendJumb((unsigned char *)rel->schemaname, last_jumble,
-								strlen(rel->schemaname), i);
+						   strlen(rel->schemaname), i);
 			if (rel->relname)
 				AppendJumb((unsigned char *)rel->relname, last_jumble,
-								strlen(rel->relname), i);
+						   strlen(rel->relname), i);
 		}
 	}
 
@@ -797,19 +829,17 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		if (cteq)
 			PerformJumble(cteq, size, i);
 	}
+
 	if (jt)
 	{
 		if (jt->quals)
 		{
 			if (IsA(jt->quals, OpExpr))
-			{
 				QualsNode((OpExpr*) jt->quals, size, i, parse->rtable);
-			}
 			else
-			{
 				LeafNode((Node*) jt->quals, size, i, parse->rtable);
-			}
 		}
+
 		/* table join tree */
 		foreach(l, jt->fromlist)
 		{
@@ -823,9 +853,11 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 				unsigned char rtekind;
 				RangeTblRef   *rtf = (RangeTblRef *) fr;
 				RangeTblEntry *rte = rt_fetch(rtf->rtindex, parse->rtable);
+
 				APP_JUMB(rte->relid);
 				rtekind = COMPACT_ENUM(rte->rtekind);
 				APP_JUMB(rtekind);
+
 				/* Subselection in where clause */
 				if (rte->subquery)
 					PerformJumble(rte->subquery, size, i);
@@ -841,6 +873,7 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 			}
 		}
 	}
+
 	/*
 	 * target list (of TargetEntry)
 	 * columns returned by query
@@ -848,10 +881,14 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 	foreach(l, parse->targetList)
 	{
 		TargetEntry *tg = (TargetEntry *) lfirst(l);
-		Node        *e  = (Node*) tg->expr;
+		Node		*e	= (Node*) tg->expr;
+
 		if (tg->ressortgroupref)
+		{
 			/* nonzero if referenced by a sort/group - for ORDER BY */
 			APP_JUMB(tg->ressortgroupref);
+		}
+
 		APP_JUMB(tg->resno); /* column number for select */
 		/*
 		 * Handle the various types of nodes in
@@ -859,11 +896,13 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		 */
 		LeafNode(e, size, i, parse->rtable);
 	}
+
 	/* return-values list (of TargetEntry) */
 	foreach(l, parse->returningList)
 	{
 		TargetEntry *rt = (TargetEntry *) lfirst(l);
-		Expr        *e  = (Expr*) rt->expr;
+		Expr		*e	= (Expr*) rt->expr;
+
 		/*
 		 * Handle the various types of nodes in
 		 * the select list of this query
@@ -879,9 +918,10 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		else
 		{
 			elog(ERROR, "unrecognized node type for returnlist node: %d",
-					(int) nodeTag(e));
+				 (int) nodeTag(e));
 		}
 	}
+
 	/* a list of SortGroupClause's */
 	foreach(l, parse->groupClause)
 	{
@@ -900,19 +940,22 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		else
 		{
 			elog(ERROR, "unrecognized node type for havingclause node: %d",
-					(int) nodeTag(parse->havingQual));
+				 (int) nodeTag(parse->havingQual));
 		}
 	}
+
 	foreach(l, parse->windowClause)
 	{
 		WindowClause *wc = (WindowClause *) lfirst(l);
-		ListCell     *il;
+		ListCell	 *il;
+
 		APP_JUMB(wc->frameOptions);
 		foreach(il, wc->partitionClause) /* PARTITION BY list */
 		{
 			Node *n = (Node *) lfirst(il);
 			LeafNode(n, size, i, parse->rtable);
 		}
+
 		foreach(il, wc->orderClause) /* ORDER BY list */
 		{
 			Node *n = (Node *) lfirst(il);
@@ -927,9 +970,9 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		APP_JUMB(dc->nulls_first);
 	}
 
-	/* Don't look at parse->sortClause,
-	 * because the value ressortgroupref is already
-	 * serialized when we iterate through targetList
+	/*
+	 * Don't look at parse->sortClause, because the value ressortgroupref is
+	 * already serialized when we iterate through targetList
 	 */
 
 	if (off)
@@ -941,10 +984,11 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 	foreach(l, parse->rowMarks)
 	{
 		RowMarkClause *rc = (RowMarkClause *) lfirst(l);
-		APP_JUMB(rc->rti);				/* range table index of target relation */
-		APP_JUMB(rc->forUpdate);			/* true = FOR UPDATE, false = FOR SHARE */
-		APP_JUMB(rc->noWait);				/* NOWAIT option */
-		APP_JUMB(rc->pushedDown);			/* pushed down from higher query level? */
+
+		APP_JUMB(rc->rti);			/* range table index of target relation */
+		APP_JUMB(rc->forUpdate);	/* true = FOR UPDATE, false = FOR SHARE */
+		APP_JUMB(rc->noWait);		/* NOWAIT option */
+		APP_JUMB(rc->pushedDown);	/* pushed down from higher query level? */
 	}
 
 	if (parse->setOperations)
@@ -955,6 +999,7 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		 */
 		unsigned char op;
 		SetOperationStmt *topop = (SetOperationStmt *) parse->setOperations;
+
 		op = COMPACT_ENUM(topop->op);
 		APP_JUMB(op);
 		APP_JUMB(topop->all);
@@ -963,6 +1008,7 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		foreach(l, parse->rtable)
 		{
 			RangeTblEntry *r = (RangeTblEntry *) lfirst(l);
+
 			if (r->subquery)
 				PerformJumble(r->subquery, size, i);
 		}
@@ -977,7 +1023,9 @@ static void
 QualsNode(const OpExpr *node, size_t size, size_t *i, List *rtable)
 {
 	ListCell *l;
+
 	APP_JUMB(node->opno);
+
 	foreach(l, node->args)
 	{
 		Node *arg = (Node *) lfirst(l);
@@ -987,31 +1035,30 @@ QualsNode(const OpExpr *node, size_t size, size_t *i, List *rtable)
 
 /*
  * LeafNode: Selectively serialize a selection of parser/prim nodes that are
- * frequently, though certainly not necesssarily leaf nodes, such as Vars
+ * frequently, though certainly not necessarily leaf nodes, such as Vars
  * (columns), constants and function calls
  */
 static void
 LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 {
 	ListCell *l;
+
 	if (IsA(arg, Const))
 	{
-		/*
-		 * Serialize generic magic value to
-		 * normalize constants
-		 */
+		/* Serialize generic magic value to normalize constants */
 		unsigned char magic = 0xC0;
 		Const *c = (Const *) arg;
+
 		APP_JUMB(magic);
-		/* Datatype of the constant is a
-		 * differentiator
-		 */
+
+		/*  Datatype of the constant is a differentiator */
 		APP_JUMB(c->consttype);
+
 		/*
 		 * Some Const nodes naturally don't have a location.
 		 *
-		 * Views that have constants in their
-		 * definitions will have a tok_len of 0
+		 * Views that have constants in their definitions will have a tok_len
+		 * of 0.
 		 */
 		if (c->location > 0 && c->tok_len > 0)
 		{
@@ -1019,10 +1066,11 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 			{
 				last_offset_buf_size *= 2;
 				last_offsets = repalloc(last_offsets,
-								last_offset_buf_size *
-								sizeof(pgssTokenOffset));
+										last_offset_buf_size *
+										sizeof(pgssTokenOffset));
 
 			}
+
 			last_offsets[last_offset_num].offset = c->location;
 			last_offsets[last_offset_num].len = c->tok_len;
 			last_offset_num++;
@@ -1030,17 +1078,20 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	}
 	else if (IsA(arg, Var))
 	{
-		unsigned char		  magic = 0xFA;
-		Var			  *v = (Var *) arg;
-		RangeTblEntry *rte = rt_fetch(v->varno, rtable);
+		unsigned char	 magic = 0xFA;
+		Var				*v	   = (Var *) arg;
+		RangeTblEntry	*rte   = rt_fetch(v->varno, rtable);
+
 		/* Identify column by XOR'ing relid + col number */
 		Oid col_ident = rte->relid ^ v->varattno;
+
 		APP_JUMB(magic);
 		APP_JUMB(col_ident);
 	}
 	else if (IsA(arg, Param))
 	{
 		Param *p = ((Param *) arg);
+
 		APP_JUMB(p->paramkind);
 		APP_JUMB(p->paramid);
 	}
@@ -1051,6 +1102,7 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	else if (IsA(arg, WindowFunc))
 	{
 		WindowFunc *wf = (WindowFunc *) arg;
+
 		APP_JUMB(wf->winfnoid);
 		foreach(l, wf->args)
 		{
@@ -1061,10 +1113,13 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	else if (IsA(arg, FuncExpr))
 	{
 		FuncExpr *f = (FuncExpr *) arg;
+
 		APP_JUMB(f->funcid);
+
 		foreach(l, f->args)
 		{
 			Node *arg = (Node *) lfirst(l);
+
 			LeafNode(arg, size, i, rtable);
 		}
 	}
@@ -1080,7 +1135,9 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	else if (IsA(arg, Aggref))
 	{
 		Aggref *a =  (Aggref *) arg;
+
 		APP_JUMB(a->aggfnoid);
+
 		foreach(l, a->args)
 		{
 			Node *arg = (Node *) lfirst(l);
@@ -1090,7 +1147,9 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	else if (IsA(arg, SubLink))
 	{
 		SubLink *s = (SubLink*) arg;
+
 		APP_JUMB(s->subLinkType);
+
 		/* Serialize select-list subselect recursively */
 		if (s->subselect)
 			PerformJumble((Query*) s->subselect, size, i);
@@ -1099,15 +1158,19 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	{
 		TargetEntry *rt = (TargetEntry *) arg;
 		Node *e = (Node*) rt->expr;
+
 		/* XOR OID of column's source table + index to sort/group clause */
 		Oid target_repr = rt->resorigtbl ^ rt->ressortgroupref;
+
 		APP_JUMB(target_repr);
 		LeafNode(e, size, i, rtable);
 	}
 	else if (IsA(arg, BoolExpr))
 	{
 		BoolExpr *be = (BoolExpr *) arg;
+
 		APP_JUMB(be->boolop);
+
 		foreach(l, be->args)
 		{
 			Node *arg = (Node *) lfirst(l);
@@ -1117,17 +1180,20 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	else if (IsA(arg, NullTest))
 	{
 		NullTest *nt = (NullTest *) arg;
-		Node     *arg = (Node *) nt->arg;
+		Node	 *arg = (Node *) nt->arg;
 		unsigned char nulltesttype = COMPACT_ENUM(nt->nulltesttype);
-		APP_JUMB(nulltesttype);	/* IS NULL, IS NOT NULL */
+
+		APP_JUMB(nulltesttype);		/* IS NULL, IS NOT NULL */
 		APP_JUMB(nt->argisrow);		/* is input a composite type ? */
 		LeafNode(arg, size, i, rtable);
 	}
 	else if (IsA(arg, ArrayExpr))
 	{
 		ArrayExpr *ae = (ArrayExpr *) arg;
-		APP_JUMB(ae->array_typeid);	/* type of expression result */
+
+		APP_JUMB(ae->array_typeid);		/* type of expression result */
 		APP_JUMB(ae->element_typeid);	/* common type of array elements */
+
 		foreach(l, ae->elements)
 		{
 			Node *arg = (Node *) lfirst(l);
@@ -1137,46 +1203,55 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	else if (IsA(arg, CaseExpr))
 	{
 		CaseExpr *ce = (CaseExpr*) arg;
+
 		Assert(ce->casetype != InvalidOid);
 		APP_JUMB(ce->casetype);
+
 		foreach(l, ce->args)
 		{
 			Node *arg = (Node *) lfirst(l);
 			LeafNode(arg, size, i, rtable);
 		}
+
 		if (ce->arg)
 			LeafNode((Node*) ce->arg, size, i, rtable);
 
 		if (ce->defresult)
 		{
-			/* Default result (ELSE clause)
-			 * The ptr may be NULL, because no else clause
-			 * was actually specified, and thus the value is
-			 * equivalent to SQL ELSE NULL
+			/*
+			 * Default result (ELSE clause)
+			 *
+			 * The ptr may be NULL, because no else clause was actually
+			 * specified, and thus the value is equivalent to SQL ELSE NULL
 			 */
-			LeafNode((Node*) ce->defresult, size, i, rtable); /* the default result (ELSE clause) */
+			LeafNode((Node*) ce->defresult, size, i, rtable);
 		}
 	}
 	else if (IsA(arg, CaseTestExpr))
 	{
 		CaseTestExpr *ct = (CaseTestExpr*) arg;
+
 		APP_JUMB(ct->typeId);
 	}
 	else if (IsA(arg, CaseWhen))
 	{
 		CaseWhen *cw = (CaseWhen*) arg;
-		Node     *res = (Node*) cw->result;
-		Node     *exp = (Node*) cw->expr;
+		Node	 *res = (Node*) cw->result;
+		Node	 *exp = (Node*) cw->expr;
+
 		if (res)
 			LeafNode(res, size, i, rtable);
+
 		if (exp)
 			LeafNode(exp, size, i, rtable);
 	}
 	else if (IsA(arg, MinMaxExpr))
 	{
 		MinMaxExpr *cw = (MinMaxExpr*) arg;
+
 		APP_JUMB(cw->minmaxtype);
 		APP_JUMB(cw->op);
+
 		foreach(l, cw->args)
 		{
 			Node *arg = (Node *) lfirst(l);
@@ -1186,8 +1261,10 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	else if (IsA(arg, ScalarArrayOpExpr))
 	{
 		ScalarArrayOpExpr *sa = (ScalarArrayOpExpr*) arg;
+
 		APP_JUMB(sa->opfuncid);
 		APP_JUMB(sa->useOr);
+
 		foreach(l, sa->args)
 		{
 			Node *arg = (Node *) lfirst(l);
@@ -1197,6 +1274,7 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	else if (IsA(arg, CoalesceExpr))
 	{
 		CoalesceExpr *ca = (CoalesceExpr*) arg;
+
 		foreach(l, ca->args)
 		{
 			Node *arg = (Node *) lfirst(l);
@@ -1206,16 +1284,19 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	else if (IsA(arg, ArrayCoerceExpr))
 	{
 		ArrayCoerceExpr *ac = (ArrayCoerceExpr *) arg;
+
 		LeafNode((Node*) ac->arg, size, i, rtable);
 	}
 	else if (IsA(arg, WindowClause))
 	{
 		WindowClause *wc = (WindowClause*) arg;
+
 		foreach(l, wc->partitionClause)
 		{
 			Node *arg = (Node *) lfirst(l);
 			LeafNode(arg, size, i, rtable);
 		}
+
 		foreach(l, wc->orderClause)
 		{
 			Node *arg = (Node *) lfirst(l);
@@ -1225,17 +1306,18 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	else if (IsA(arg, SortGroupClause))
 	{
 		SortGroupClause *sgc = (SortGroupClause*) arg;
+
 		APP_JUMB(sgc->tleSortGroupRef);
 		APP_JUMB(sgc->nulls_first);
 	}
 	else if (IsA(arg, Integer) ||
-		  IsA(arg, Float) ||
-		  IsA(arg, String) ||
-		  IsA(arg, BitString) ||
-		  IsA(arg, Null)
-		)
+			 IsA(arg, Float) ||
+			 IsA(arg, String) ||
+			 IsA(arg, BitString) ||
+			 IsA(arg, Null))
 	{
-		/* It is not necessary to serialize Value nodes - they are seen when
+		/*
+		 * It is not necessary to serialize Value nodes - they are seen when
 		 * aliases are used, which is not something that is serialized.
 		 */
 		return;
@@ -1243,18 +1325,22 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	else if (IsA(arg, BooleanTest))
 	{
 		BooleanTest *bt = (BooleanTest *) arg;
+
 		APP_JUMB(bt->booltesttype);
 		LeafNode((Node*) bt->arg, size, i, rtable);
 	}
 	else if (IsA(arg, ArrayRef))
 	{
 		ArrayRef *ar = (ArrayRef*) arg;
+
 		APP_JUMB(ar->refarraytype);
+
 		foreach(l, ar->refupperindexpr)
 		{
 			Node *arg = (Node *) lfirst(l);
 			LeafNode(arg, size, i, rtable);
 		}
+
 		foreach(l, ar->reflowerindexpr)
 		{
 			Node *arg = (Node *) lfirst(l);
@@ -1270,28 +1356,34 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	{
 		RowExpr *re = (RowExpr*) arg;
 		APP_JUMB(re->row_format);
+
 		foreach(l, re->args)
 		{
 			Node *arg = (Node *) lfirst(l);
 			LeafNode(arg, size, i, rtable);
 		}
-
 	}
 	else if (IsA(arg, XmlExpr))
 	{
 		XmlExpr *xml = (XmlExpr*) arg;
+
 		APP_JUMB(xml->op);
+
 		foreach(l, xml->args)
 		{
 			Node *arg = (Node *) lfirst(l);
 			LeafNode(arg, size, i, rtable);
 		}
-		foreach(l, xml->named_args) /* non-XML expressions for xml_attributes */
+
+		/* non-XML expressions for xml_attributes */
+		foreach(l, xml->named_args)
 		{
 			Node *arg = (Node *) lfirst(l);
 			LeafNode(arg, size, i, rtable);
 		}
-		foreach(l, xml->arg_names) /* parallel list of Value strings */
+
+		/* parallel list of Value strings */
+		foreach(l, xml->arg_names)
 		{
 			Node *arg = (Node *) lfirst(l);
 			LeafNode(arg, size, i, rtable);
@@ -1300,11 +1392,13 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	else if (IsA(arg, RowCompareExpr))
 	{
 		RowCompareExpr *rc = (RowCompareExpr*) arg;
+
 		foreach(l, rc->largs)
 		{
 			Node *arg = (Node *) lfirst(l);
 			LeafNode(arg, size, i, rtable);
 		}
+
 		foreach(l, rc->rargs)
 		{
 			Node *arg = (Node *) lfirst(l);
@@ -1314,7 +1408,7 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	else
 	{
 		elog(ERROR, "unrecognized node type for LeafNode node: %d",
-				(int) nodeTag(arg));
+			 (int) nodeTag(arg));
 	}
 }
 
@@ -1325,18 +1419,24 @@ static void
 LimitOffsetNode(const Node *node, size_t size, size_t *i, List *rtable)
 {
 	ListCell *l;
+
 	if (IsA(node, FuncExpr))
 	{
 		foreach(l, ((FuncExpr*) node)->args)
 		{
 			Node *arg = (Node *) lfirst(l);
+
 			LeafNode(arg, size, i, rtable);
 		}
 	}
 	else if (IsA(node, Const))
 	{
-		/* This should be a differentiator, as it results in the addition of a limit node */
-		unsigned char magic = 0xEA;
+		/*
+		 * This should be a differentiator, as it results in the addition of a
+		 * limit node
+		 */
+		const unsigned char magic = 0xEA;
+
 		APP_JUMB(magic);
 	}
 	else
@@ -1373,13 +1473,16 @@ JoinExprNode(JoinExpr *node, size_t size, size_t *i, List *rtable)
 		}
 
 	}
+
 	foreach(l, node->usingClause) /* USING clause, if any (list of String) */
 	{
 		Node *arg = (Node *) lfirst(l);
 		LeafNode(arg, size, i, rtable);
 	}
+
 	if (larg)
 		JoinExprNodeChild(larg, size, i, rtable);
+
 	if (rarg)
 		JoinExprNodeChild(rarg, size, i, rtable);
 }
@@ -1394,7 +1497,7 @@ JoinExprNodeChild(const Node *node, size_t size, size_t *i, List *rtable)
 	{
 		RangeTblRef   *rt = (RangeTblRef*) node;
 		RangeTblEntry *rte = rt_fetch(rt->rtindex, rtable);
-		ListCell      *l;
+		ListCell	  *l;
 
 		APP_JUMB(rte->relid);
 		APP_JUMB(rte->jointype);
@@ -1454,6 +1557,7 @@ static void
 pgss_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, long count)
 {
 	nested_level++;
+
 	PG_TRY();
 	{
 		if (prev_ExecutorRun)
@@ -1477,6 +1581,7 @@ static void
 pgss_ExecutorFinish(QueryDesc *queryDesc)
 {
 	nested_level++;
+
 	PG_TRY();
 	{
 		if (prev_ExecutorFinish)
@@ -1511,7 +1616,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 			pgss_string_key	|| nested_level > 0 ||
 			queryDesc->operation == CMD_UNKNOWN ||
 			queryDesc->operation == CMD_UTILITY ||
-		    queryDesc->operation == CMD_NOTHING)
+			queryDesc->operation == CMD_NOTHING)
 		{
 			/*
 			 * This query was paramaterized or is a utility statement or
@@ -1528,50 +1633,50 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 			 *
 			 * The fact that constants in the prepared query won't be
 			 * canonicalized is clearly a feature rather than a bug, as the
-			 * user evidently considers such constant essential to the query, or
-			 * they'd have paramaterized them.
+			 * user evidently considers such constant essential to the query,
+			 * or they'd have paramaterized them.
 			 */
 
 			pgss_store(queryDesc->sourceText,
-			   NULL,
-			   NULL,
-			   0,
-			   queryDesc->totaltime->total,
-			   queryDesc->estate->es_processed,
-			   &queryDesc->totaltime->bufusage);
+					   NULL,
+					   NULL,
+					   0,
+					   queryDesc->totaltime->total,
+					   queryDesc->estate->es_processed,
+					   &queryDesc->totaltime->bufusage);
 		}
 		else
 		{
 			/*
 			 * Once control gets here, there is an assumption that the last_*
 			 * variables were set by a prior, corresponding call to
-			 * pgss_Planner within this backend. That corresponding call should have
-			 * jumbled the query tree.
+			 * pgss_Planner within this backend. That corresponding call should
+			 * have jumbled the query tree.
 			 *
 			 * That call would only be recorded when the executor stack depth
 			 * (which is monitored) was 0, so nested planner calls don't cause
 			 * this assumption to fall down.
 			 *
-			 * A number of other things can prevent pgss_Planner from jumbling and
-			 * therefore prevent control reaching here, such as utility
+			 * A number of other things can prevent pgss_Planner from jumbling
+			 * and therefore prevent control reaching here, such as utility
 			 * statements and prepared queries.
 			 */
 
 			pgss_store(queryDesc->sourceText,
-			   last_jumble,
-			   last_offsets,
-			   last_offset_num,
-			   queryDesc->totaltime->total,
-			   queryDesc->estate->es_processed,
-			   &queryDesc->totaltime->bufusage);
+					   last_jumble,
+					   last_offsets,
+					   last_offset_num,
+					   queryDesc->totaltime->total,
+					   queryDesc->estate->es_processed,
+					   &queryDesc->totaltime->bufusage);
 		}
 
 		if (last_offset_buf_size > 10)
 		{
 			last_offset_buf_size = 10;
 			last_offsets = repalloc(last_offsets,
-								last_offset_buf_size *
-								sizeof(pgssTokenOffset));
+									last_offset_buf_size *
+									sizeof(pgssTokenOffset));
 		}
 	}
 
@@ -1600,6 +1705,7 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 		INSTR_TIME_SET_CURRENT(start);
 
 		nested_level++;
+
 		PG_TRY();
 		{
 			if (prev_ProcessUtility)
@@ -1644,8 +1750,8 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 			pgBufferUsage.temp_blks_written - bufusage.temp_blks_written;
 
 		/* In the case of utility statements, hash the query string directly */
-		pgss_store(queryString, NULL, NULL, 0, INSTR_TIME_GET_DOUBLE(duration), rows,
-				   &bufusage);
+		pgss_store(queryString, NULL, NULL, 0, INSTR_TIME_GET_DOUBLE(duration),
+				   rows, &bufusage);
 	}
 	else
 	{
@@ -1669,7 +1775,8 @@ pgss_hash_fn(const void *key, Size keysize)
 	/* we don't bother to include encoding in the hash */
 	return hash_uint32((uint32) k->userid) ^
 		hash_uint32((uint32) k->dbid) ^
-		DatumGetUInt32(hash_any((const unsigned char* ) k->jumble, JUMBLE_SIZE) );
+		DatumGetUInt32(hash_any((const unsigned char* ) k->jumble,
+								JUMBLE_SIZE));
 }
 
 /*
@@ -1690,18 +1797,16 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
 		return 1;
 }
 
-/*
- * Store some statistics for a statement.
- */
+/* Store some statistics for a statement. */
 static void
 pgss_store(const char *query, unsigned char jumble[],
-				pgssTokenOffset offs[], int off_n,
-				double total_time, uint64 rows,
-				const BufferUsage *bufusage)
+		   pgssTokenOffset offs[], int off_n,
+		   double total_time, uint64 rows,
+		   const BufferUsage *bufusage)
 {
 	pgssHashKey key;
 	double		usage;
-	int		    new_query_len = strlen(query);
+	int			new_query_len = strlen(query);
 	char	   *norm_query = NULL;
 	pgssEntry  *entry;
 
@@ -1715,6 +1820,7 @@ pgss_store(const char *query, unsigned char jumble[],
 	key.userid = GetUserId();
 	key.dbid = MyDatabaseId;
 	key.encoding = GetDatabaseEncoding();
+
 	/* Did the caller supply a jumble? */
 	if (jumble)
 		memcpy(key.jumble, jumble, JUMBLE_SIZE);
@@ -1727,7 +1833,8 @@ pgss_store(const char *query, unsigned char jumble[],
 	}
 
 	if (new_query_len >= pgss->query_size)
-		/* We don't have to worry about this later, because canonicalization
+		/*
+		 * We don't have to worry about this later, because canonicalization
 		 * cannot possibly result in a longer query string
 		 */
 		new_query_len = pg_encoding_mbcliplen(key.encoding,
@@ -1740,6 +1847,7 @@ pgss_store(const char *query, unsigned char jumble[],
 	LWLockAcquire(pgss->lock, LW_SHARED);
 
 	entry = (pgssEntry *) hash_search(pgss_hash, &key, HASH_FIND, NULL);
+
 	if (!entry)
 	{
 		/*
@@ -1756,13 +1864,13 @@ pgss_store(const char *query, unsigned char jumble[],
 		if (off_n > 0 && jumble)
 		{
 			int i,
-			  off = 0,			/* Offset from start for cur tok */
-			  tok_len = 0,		/* length (in bytes) of that tok */
-			  quer_it = 0,		/* Original query iterator */
-			  n_quer_it = 0,	/* Normalized query iterator */
-			  len_to_wrt = 0,	/* Length (in bytes) to write */
-			  last_off = 0,		/* Offset from start for last iter tok */
-			  last_tok_len = 0;	/* length (in bytes) of that tok */
+				off = 0,			/* Offset from start for cur tok */
+				tok_len = 0,		/* Length (in bytes) of that tok */
+				quer_it = 0,		/* Original query iterator */
+				n_quer_it = 0,		/* Normalized query iterator */
+				len_to_wrt = 0,		/* Length (in bytes) to write */
+				last_off = 0,		/* Offset from start for last iter tok */
+				last_tok_len = 0;	/* Length (in bytes) of that tok */
 
 			norm_query = palloc0(new_query_len + 1);
 			for(i = 0; i < off_n; i++)
@@ -1778,6 +1886,7 @@ pgss_store(const char *query, unsigned char jumble[],
 				 */
 				if (off + tok_len > new_query_len)
 					break;
+
 				memcpy(norm_query + n_quer_it, query + quer_it, len_to_wrt);
 
 				n_quer_it += len_to_wrt;
@@ -1788,8 +1897,8 @@ pgss_store(const char *query, unsigned char jumble[],
 			}
 			/* Copy end of query string (piece past last constant) */
 			memcpy(norm_query + n_quer_it, query + (off + tok_len),
-				Min( strlen(query) - (off + tok_len),
-					new_query_len - n_quer_it ) );
+				   Min( strlen(query) - (off + tok_len),
+						new_query_len - n_quer_it ) );
 			/*
 			 * Must acquire exclusive lock to add a new entry.
 			 * Leave that until as late as possible.
@@ -1828,6 +1937,7 @@ pgss_store(const char *query, unsigned char jumble[],
 		e->counters.usage += usage;
 		SpinLockRelease(&e->mutex);
 	}
+
 	LWLockRelease(pgss->lock);
 	if (norm_query)
 		pfree(norm_query);
@@ -1842,7 +1952,8 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 	if (!pgss || !pgss_hash)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("pg_stat_statements must be loaded via shared_preload_libraries")));
+				 errmsg("pg_stat_statements must be loaded via "
+						"shared_preload_libraries")));
 	entry_reset();
 	PG_RETURN_VOID();
 }
@@ -1868,17 +1979,20 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 	if (!pgss || !pgss_hash)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg("pg_stat_statements must be loaded via shared_preload_libraries")));
+				 errmsg("pg_stat_statements must be loaded via "
+						q"shared_preload_libraries")));
 
 	/* check to see if caller supports us returning a tuplestore */
 	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("set-valued function called in context that cannot accept a set")));
+				 errmsg("set-valued function called in context that cannot "
+						"accept a set")));
+
 	if (!(rsinfo->allowedModes & SFRM_Materialize))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("materialize mode required, but it is not " \
+				 errmsg("materialize mode required, but it is not "
 						"allowed in this context")));
 
 	/* Build a tuple descriptor for our result type */
@@ -1898,6 +2012,7 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 	LWLockAcquire(pgss->lock, LW_SHARED);
 
 	hash_seq_init(&hash_seq, pgss_hash);
+
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
 		Datum		values[PG_STAT_STATEMENTS_COLS];
@@ -1929,6 +2044,7 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 										  entry->query_len,
 										  entry->key.encoding,
 										  GetDatabaseEncoding());
+
 			values[i++] = CStringGetTextDatum(qstr);
 			if (qstr != entry->query)
 				pfree(qstr);
@@ -1961,9 +2077,7 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 	return (Datum) 0;
 }
 
-/*
- * Estimate shared memory space needed.
- */
+/* Estimate shared memory space needed. */
 static Size
 pgss_memsize(void)
 {
@@ -1979,7 +2093,8 @@ pgss_memsize(void)
 
 /*
  * Allocate a new hashtable entry.
- * caller must hold an exclusive lock on pgss->lock
+ *
+ * Caller must hold an exclusive lock on pgss->lock.
  *
  * Note: despite needing exclusive lock, it's not an error for the target
  * entry to already exist.	This is because pgss_store releases and
@@ -2002,18 +2117,21 @@ entry_alloc(pgssHashKey *key, const char* query, int new_query_len)
 	if (!found)
 	{
 		/* New entry, initialize it */
-
 		entry->query_len = new_query_len;
 		Assert(entry->query_len > 0);
+
 		/* reset the statistics */
 		memset(&entry->counters, 0, sizeof(Counters));
 		entry->counters.usage = USAGE_INIT;
+
 		/* re-initialize the mutex each time ... we assume no one using it */
 		SpinLockInit(&entry->mutex);
+
 		/* ... and don't forget the query text */
 		memcpy(entry->query, query, entry->query_len);
 		entry->query[entry->query_len] = '\0';
 	}
+
 	/* Caller must have clipped query properly */
 	Assert(entry->query_len < pgss->query_size);
 
@@ -2039,6 +2157,7 @@ entry_cmp_usage(const void *lhs, const void *rhs)
 
 /*
  * Deallocate least used entries.
+ *
  * Caller must hold an exclusive lock on pgss->lock.
  */
 static void
@@ -2051,7 +2170,6 @@ entry_dealloc(void)
 	int			i;
 
 	/* Sort entries by usage and deallocate USAGE_DEALLOC_PERCENT of them. */
-
 	entries = palloc(hash_get_num_entries(pgss_hash) * sizeof(pgssEntry *));
 
 	i = 0;
@@ -2074,9 +2192,7 @@ entry_dealloc(void)
 	pfree(entries);
 }
 
-/*
- * Release all entries.
- */
+/* Release all entries. */
 static void
 entry_reset(void)
 {
