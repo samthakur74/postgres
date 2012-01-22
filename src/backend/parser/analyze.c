@@ -65,9 +65,25 @@ static Query *transformExplainStmt(ParseState *pstate,
 static void transformLockingClause(ParseState *pstate, Query *qry,
 					   LockingClause *lc, bool pushedDown);
 
+/* Hooks for plugins to get control of parse analysis */
+parse_analyze_hook_type				parse_analyze_hook = NULL;
+parse_analyze_varparams_hook_type	parse_analyze_varparams_hook = NULL;
+
+
+Query *
+parse_analyze(Node *parseTree, const char *sourceText,
+			  Oid *paramTypes, int numParams)
+{
+	if (parse_analyze_hook)
+		return (*parse_analyze_hook) (parseTree, sourceText,
+			  paramTypes, numParams);
+	else
+		return standard_parse_analyze(parseTree, sourceText,
+			  paramTypes, numParams);
+}
 
 /*
- * parse_analyze
+ * standard_parse_analyze
  *		Analyze a raw parse tree and transform it to Query form.
  *
  * Optionally, information about $n parameter types can be supplied.
@@ -78,7 +94,7 @@ static void transformLockingClause(ParseState *pstate, Query *qry,
  * a dummy CMD_UTILITY Query node.
  */
 Query *
-parse_analyze(Node *parseTree, const char *sourceText,
+standard_parse_analyze(Node *parseTree, const char *sourceText,
 			  Oid *paramTypes, int numParams)
 {
 	ParseState *pstate = make_parsestate(NULL);
@@ -98,15 +114,27 @@ parse_analyze(Node *parseTree, const char *sourceText,
 	return query;
 }
 
+Query *
+parse_analyze_varparams(Node *parseTree, const char *sourceText,
+						Oid **paramTypes, int *numParams)
+{
+	if (parse_analyze_varparams_hook)
+		return (*parse_analyze_varparams_hook) (parseTree, sourceText,
+						paramTypes, numParams);
+	else
+		return standard_parse_analyze_varparams(parseTree, sourceText,
+			  paramTypes, numParams);
+}
+
 /*
- * parse_analyze_varparams
+ * standard_parse_analyze_varparams
  *
  * This variant is used when it's okay to deduce information about $n
  * symbol datatypes from context.  The passed-in paramTypes[] array can
  * be modified or enlarged (via repalloc).
  */
 Query *
-parse_analyze_varparams(Node *parseTree, const char *sourceText,
+standard_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 						Oid **paramTypes, int *numParams)
 {
 	ParseState *pstate = make_parsestate(NULL);

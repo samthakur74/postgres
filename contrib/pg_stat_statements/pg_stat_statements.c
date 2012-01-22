@@ -37,7 +37,7 @@
 #include "funcapi.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
-#include "optimizer/planner.h"
+#include "parser/analyze.h"
 #include "parser/parsetree.h"
 #include "pgstat.h"
 #include "storage/fd.h"
@@ -49,6 +49,7 @@
 
 
 PG_MODULE_MAGIC;
+
 
 /* Location of stats file */
 #define PGSS_DUMP_FILE	"global/pg_stat_statements.stat"
@@ -133,7 +134,7 @@ typedef struct pgssTokenOffset
 } pgssTokenOffset;
 
 /*---- Local variables ----*/
-/* Jumble of last query tree seen by pgss_Planner */
+/* Jumble of last query tree seen pgss_Planner */
 static unsigned char *last_jumble = NULL;
 /* Ptr to buffer that represents position of normalized characters */
 static pgssTokenOffset *last_offsets = NULL;
@@ -152,7 +153,8 @@ static ExecutorRun_hook_type prev_ExecutorRun = NULL;
 static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
 static ExecutorEnd_hook_type prev_ExecutorEnd = NULL;
 static ProcessUtility_hook_type prev_ProcessUtility = NULL;
-static planner_hook_type prev_Planner = NULL;
+static parse_analyze_hook_type prev_parse_analyze_hook = NULL;
+static parse_analyze_varparams_hook_type prev_parse_analyze_varparams_hook = NULL;
 
 /* Links to shared memory state */
 static pgssSharedState *pgss = NULL;
@@ -198,9 +200,12 @@ PG_FUNCTION_INFO_V1(pg_stat_statements);
 
 static void pgss_shmem_startup(void);
 static void pgss_shmem_shutdown(int code, Datum arg);
-static PlannedStmt *pgss_Planner(Query *parse, int cursorOptions, ParamListInfo boundParams);
 static int comp_offset(const void *a, const void *b);
-static void JumbleQuery(Query *parse);
+static Query *pgss_parse_analyze(Node *parseTree, const char *sourceText,
+			  Oid *paramTypes, int numParams);
+static Query *pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
+						Oid **paramTypes, int *numParams);
+static uint64 JumbleQuery(Query *post_analysis_tree);
 static void AppendJumb(unsigned char* item, unsigned char jumble[], size_t size, size_t *i);
 static void PerformJumble(const Query *parse, size_t size, size_t *i);
 static void QualsNode(const OpExpr *node, size_t size, size_t *i, List *rtable);
@@ -343,11 +348,10 @@ _PG_init(void)
 	ExecutorEnd_hook = pgss_ExecutorEnd;
 	prev_ProcessUtility = ProcessUtility_hook;
 	ProcessUtility_hook = pgss_ProcessUtility;
-	/*
-	 * Install hooks for query normalization
-	 */
-	prev_Planner = planner_hook;
-	planner_hook = pgss_Planner;
+	prev_parse_analyze_hook = parse_analyze_hook;
+	parse_analyze_hook = pgss_parse_analyze;
+	prev_parse_analyze_varparams_hook = parse_analyze_varparams_hook;
+	parse_analyze_varparams_hook = pgss_parse_analyze_varparams;
 }
 
 /*
@@ -363,7 +367,8 @@ _PG_fini(void)
 	ExecutorFinish_hook = prev_ExecutorFinish;
 	ExecutorEnd_hook = prev_ExecutorEnd;
 	ProcessUtility_hook = prev_ProcessUtility;
-	prev_Planner = planner_hook;
+	parse_analyze_hook = prev_parse_analyze_hook;
+	parse_analyze_varparams_hook = prev_parse_analyze_varparams_hook;
 
 	pfree(last_jumble);
 	pfree(last_offsets);
@@ -375,7 +380,7 @@ _PG_fini(void)
  */
 static void
 pgss_shmem_startup(void)
-{	
+{
 	bool		found;
 	HASHCTL		info;
 	FILE	   *file;
@@ -580,62 +585,11 @@ error:
 }
 
 /*
- * pgss_Planner: Planner plugin. Will selectively serialize the query tree
- * for the purposes of query normalization if that's appropriate.
- *
- * We only do this for unnested queries (i.e. queries executed directly by a
- * client), and not for example with queries executed indirectly by SPI, where
- * plan caching makes that both infeasible and not useful.
- *
- * Even if pg_stat_statements.track is set to 'all', nested queries will still
- * not be jumbled.
- *
- * A notable downside to this implementation is that if a function executes
- * a query dynamically, for example using plpgsql's EXECUTE, that query will
- * not be normalized. This is not the only caveat with that pattern though,
- * so that is considered an acceptable trade-off.
- *
- * Parameterized queries are also not jumbled, nor are utility statements or
- * any statements when in string_key legacy/compatibility mode.
- */
-PlannedStmt *
-pgss_Planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
-{
-	if (nested_level == 0)
-	{
-		if (!pgss_string_key &&
-			!(
-			  parse->commandType == CMD_UNKNOWN ||
-			  parse->commandType == CMD_UTILITY ||
-			  parse->commandType == CMD_NOTHING
-			 ) &&
-			!(boundParams && boundParams->numParams > 0)
-			)
-		{
-			/*
-			 * Only generate a jumble if we have no reason to hash the query string
-			 * directly instead
-			 */
-			JumbleQuery(parse);
-			jumbling_skipped = false;
-		}
-		else
-			jumbling_skipped = true;
-	}
-
-	/* Invoke the planner */
-	if (prev_Planner)
-		return prev_Planner(parse, cursorOptions, boundParams);
-	else
-		return standard_planner(parse, cursorOptions, boundParams);
-}
-
-/*
  * comp_offset: Comparator for qsorting pgssTokenOffset values by their
  * position in the original query string. Often when walking the query tree,
  * Const tokens will be found in the same order as in the original query string,
  * but this is certainly not guaranteed.
- */ 
+ */
 static int
 comp_offset(const void *a, const void *b)
 {
@@ -649,21 +603,59 @@ comp_offset(const void *a, const void *b)
 		return 0;
 }
 
+static Query *
+pgss_parse_analyze(Node *parseTree, const char *sourceText,
+			  Oid *paramTypes, int numParams)
+{
+	Query *post_analysis_tree;
+
+	if (prev_parse_analyze_hook)
+		post_analysis_tree = (*prev_parse_analyze_hook) (parseTree, sourceText,
+			  paramTypes, numParams);
+	else
+		post_analysis_tree = standard_parse_analyze(parseTree, sourceText,
+			  paramTypes, numParams);
+
+	post_analysis_tree->query_id = JumbleQuery(post_analysis_tree);
+
+	return post_analysis_tree;
+
+}
+
+static Query *
+pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
+						Oid **paramTypes, int *numParams)
+{
+	Query *post_analysis_tree;
+
+	if (prev_parse_analyze_hook)
+		post_analysis_tree = (*prev_parse_analyze_varparams_hook) (parseTree, sourceText,
+			  paramTypes, numParams);
+	else
+		post_analysis_tree = standard_parse_analyze_varparams(parseTree, sourceText,
+			  paramTypes, numParams);
+
+	post_analysis_tree->query_id = JumbleQuery(post_analysis_tree);
+
+	return post_analysis_tree;
+}
+
 /*
  * JumbleQuery: Selectively serialize query tree, and store it until
  * needed to hash the query "parse".
  */
-static void
-JumbleQuery(Query *parse)
+static uint64
+JumbleQuery(Query *post_analysis_tree)
 {
 	/* State for this run of PerformJumble */
 	size_t i = 0;
 	last_offset_num = 0;
 	memset(last_jumble, 0, JUMBLE_SIZE);
 	last_jumble[++i] = HASH_BUF;
-	PerformJumble(parse, JUMBLE_SIZE, &i);
+	PerformJumble(post_analysis_tree, JUMBLE_SIZE, &i);
 	/* Sort offsets for query string normalization */
 	qsort(last_offsets, last_offset_num, sizeof(pgssTokenOffset), comp_offset);
+	return hash_any_var_width((const unsigned char* ) last_jumble, JUMBLE_SIZE, false);
 }
 
 /*
@@ -702,7 +694,7 @@ AppendJumb(unsigned char* item, unsigned char jumble[], size_t size, size_t *i)
 /*
  * Wrapper around AppendJumb to encapsulate details of serialization
  * of individual local variable elements.
- */ 
+ */
 #define APP_JUMB(item) \
 AppendJumb((unsigned char*)&item, last_jumble, sizeof(item), i)
 
@@ -775,7 +767,7 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		{
 			APP_JUMB(rel->relpersistence);
 			/* Bypass macro abstraction to supply size directly.
-			 * 
+			 *
 			 * Serialize schemaname, relname themselves - this makes us
 			 * somewhat consistent with the behavior of utility statements like "create
 			 * table", which seems appropriate.
@@ -969,7 +961,7 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 	}
 }
 
-/* 
+/*
  * Perform selective serialization of "Quals" nodes when
  * they're IsA(*, OpExpr)
  */
@@ -1003,17 +995,17 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 		unsigned char magic = 0xC0;
 		Const *c = (Const *) arg;
 		APP_JUMB(magic);
-		/* Datatype of the constant is a 
-		 * differentiator 
+		/* Datatype of the constant is a
+		 * differentiator
 		 */
 		APP_JUMB(c->consttype);
-		/* 
+		/*
 		 * Some Const nodes naturally don't have a location.
-		 * 
+		 *
 		 * Views that have constants in their
 		 * definitions will have a tok_len of 0
 		 */
-		if (c->location > 0 && c->tok_len > 0) 
+		if (c->location > 0 && c->tok_len > 0)
 		{
 			if (last_offset_num >= last_offset_buf_size)
 			{
@@ -1106,7 +1098,7 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	}
 	else if (IsA(arg, BoolExpr))
 	{
-		BoolExpr *be = (BoolExpr *) arg;	
+		BoolExpr *be = (BoolExpr *) arg;
 		APP_JUMB(be->boolop);
 		foreach(l, be->args)
 		{
@@ -1125,7 +1117,7 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	}
 	else if (IsA(arg, ArrayExpr))
 	{
-		ArrayExpr *ae = (ArrayExpr *) arg;		
+		ArrayExpr *ae = (ArrayExpr *) arg;
 		APP_JUMB(ae->array_typeid);	/* type of expression result */
 		APP_JUMB(ae->element_typeid);	/* common type of array elements */
 		foreach(l, ae->elements)
@@ -1136,7 +1128,7 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	}
 	else if (IsA(arg, CaseExpr))
 	{
-		CaseExpr *ce = (CaseExpr*) arg;	
+		CaseExpr *ce = (CaseExpr*) arg;
 		Assert(ce->casetype != InvalidOid);
 		APP_JUMB(ce->casetype);
 		foreach(l, ce->args)
@@ -1144,12 +1136,12 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 			Node *arg = (Node *) lfirst(l);
 			LeafNode(arg, size, i, rtable);
 		}
-		if (ce->arg)	
+		if (ce->arg)
 			LeafNode((Node*) ce->arg, size, i, rtable);
 
 		if (ce->defresult)
 		{
-			/* Default result (ELSE clause) 
+			/* Default result (ELSE clause)
 			 * The ptr may be NULL, because no else clause
 			 * was actually specified, and thus the value is
 			 * equivalent to SQL ELSE NULL
@@ -1318,7 +1310,7 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	}
 }
 
-/* 
+/*
  * Perform selective serialization of limit or offset nodes
  */
 static void
@@ -1372,7 +1364,7 @@ JoinExprNode(JoinExpr *node, size_t size, size_t *i, List *rtable)
 			LeafNode((Node*) node->quals, size, i, rtable);
 		}
 
-	}	
+	}
 	foreach(l, node->usingClause) /* USING clause, if any (list of String) */
 	{
 		Node *arg = (Node *) lfirst(l);
@@ -1401,15 +1393,15 @@ JoinExprNodeChild(const Node *node, size_t size, size_t *i, List *rtable)
 
 		if (rte->subquery)
 			PerformJumble((Query*) rte->subquery, size, i);
-		
+
 		foreach(l, rte->joinaliasvars)
 		{
 			Node *arg = (Node *) lfirst(l);
 			LeafNode(arg, size, i, rtable);
-		}	
+		}
 	}
 	else if (IsA(node, JoinExpr))
-	{	
+	{
 		JoinExprNode((JoinExpr*) node, size, i, rtable);
 	}
 	else
@@ -1506,6 +1498,8 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		 * levels of hook all do this.)
 		 */
 		InstrEndLoop(queryDesc->totaltime);
+
+		elog(DEBUG1, "Query id: %lu", queryDesc->plannedstmt->queryId);
 
 		if (queryDesc->params || jumbling_skipped ||
 			pgss_string_key	|| nested_level > 0 ||
@@ -1748,7 +1742,7 @@ pgss_store(const char *query, unsigned char jumble[],
 		 * the user be presented with a stable representation of the query.
 		 *
 		 * Note that the representation seen by the user will only have
-		 * non-differentiating Const tokens swapped with '?' characters, and 
+		 * non-differentiating Const tokens swapped with '?' characters, and
 		 * this does not for example take account of the fact that alias names
 		 * could vary between successive calls of what is regarded as the same
 		 * query.
@@ -1787,7 +1781,7 @@ pgss_store(const char *query, unsigned char jumble[],
 				last_tok_len = tok_len;
 			}
 			/* Copy end of query string (piece past last constant) */
-			memcpy(norm_query + n_quer_it, query + (off + tok_len), 
+			memcpy(norm_query + n_quer_it, query + (off + tok_len),
 				Min( strlen(query) - (off + tok_len),
 					new_query_len - n_quer_it ) );
 			/*

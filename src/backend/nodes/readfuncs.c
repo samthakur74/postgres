@@ -68,6 +68,12 @@
 	token = pg_strtok(&length);		/* get field value */ \
 	local_node->fldname = atoui(token)
 
+/* Read an unsigned integer field (anything written as ":fldname %lu") */
+#define READ_ULINT_FIELD(fldname) \
+	token = pg_strtok(&length);		/* skip :fldname */ \
+	token = pg_strtok(&length);		/* get field value */ \
+	local_node->fldname = atoul(token)
+
 /* Read an OID field (don't hard-wire assumption that OID is same as uint) */
 #define READ_OID_FIELD(fldname) \
 	token = pg_strtok(&length);		/* skip :fldname */ \
@@ -132,6 +138,8 @@
  * but this will probably change in the future.)
  */
 #define atoui(x)  ((unsigned int) strtoul((x), NULL, 10))
+
+#define atoul(x)  ((unsigned long) strtoul((x), NULL, 10))
 
 #define atooid(x)  ((Oid) strtoul((x), NULL, 10))
 
@@ -206,6 +214,7 @@ _readQuery(void)
 	READ_BOOL_FIELD(hasRecursive);
 	READ_BOOL_FIELD(hasModifyingCTE);
 	READ_BOOL_FIELD(hasForUpdate);
+	READ_UINT_FIELD(query_id);
 	READ_NODE_FIELD(cteList);
 	READ_NODE_FIELD(rtable);
 	READ_NODE_FIELD(jointree);

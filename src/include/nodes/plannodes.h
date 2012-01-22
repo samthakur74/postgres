@@ -67,6 +67,8 @@ typedef struct PlannedStmt
 	List	   *invalItems;		/* other dependencies, as PlanInvalItems */
 
 	int			nParamExec;		/* number of PARAM_EXEC Params used */
+
+	int64		queryId;		/* query identifier carried from query tree */
 } PlannedStmt;
 
 /* macro for fetching the Plan associated with a SubPlan node */

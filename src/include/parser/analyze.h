@@ -16,11 +16,24 @@
 
 #include "parser/parse_node.h"
 
+/* Hook for plugins to get control in parse_analyze() */
+typedef Query* (*parse_analyze_hook_type) (Node *parseTree, const char *sourceText,
+			  Oid *paramTypes, int numParams);
+extern PGDLLIMPORT parse_analyze_hook_type parse_analyze_hook;
+/* Hook for plugins to get control in parse_analyze_varparams() */
+typedef Query* (*parse_analyze_varparams_hook_type) (Node *parseTree, const char *sourceText,
+						Oid **paramTypes, int *numParams);
+extern PGDLLIMPORT parse_analyze_varparams_hook_type parse_analyze_varparams_hook;
 
 extern Query *parse_analyze(Node *parseTree, const char *sourceText,
 			  Oid *paramTypes, int numParams);
+extern Query *standard_parse_analyze(Node *parseTree, const char *sourceText,
+			  Oid *paramTypes, int numParams);
 extern Query *parse_analyze_varparams(Node *parseTree, const char *sourceText,
 						Oid **paramTypes, int *numParams);
+extern Query *standard_parse_analyze_varparams(Node *parseTree, const char *sourceText,
+						Oid **paramTypes, int *numParams);
+
 
 extern Query *parse_sub_analyze(Node *parseTree, ParseState *parentParseState,
 				  CommonTableExpr *parentCTE,
