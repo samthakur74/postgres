@@ -215,6 +215,7 @@ static Query *pgss_parse_analyze(Node *parseTree, const char *sourceText,
 static Query *pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 						Oid **paramTypes, int *numParams);
 static void pgss_store_constants(uint64 query_id);
+static uint32 get_constant_length(const char* query_str_const);
 static uint64 JumbleQuery(Query *post_analysis_tree);
 static void AppendJumb(unsigned char* item, unsigned char jumble[], size_t size, size_t *i);
 static void PerformJumble(const Query *tree, size_t size, size_t *i);
@@ -702,7 +703,18 @@ pgss_store_constants(uint64 query_id)
 
 	if (!found)
 	{
-		/* Store position of constants for later */
+		/*
+		 * Store position of constants for later. Since the same query could be
+		 * parsed many times before it is finally executed, we only avoid
+		 * updated constant positions when there is already a shared hashtable
+		 * entry that already has a canonicalized query string.
+		 *
+		 * Note that since the name of prepared queries influences the hash that
+		 * is produced, there is no need to be concerned about the same query
+		 * being separately prepared with a different amount of whitespace,
+		 * where the earlier query prepared in executed with the constants of
+		 * the later query.
+		 */
 		pgssQueryConEntry *entry;
 
 		entry = (pgssQueryConEntry *) hash_search(pgss_const_pos, &key, HASH_ENTER, NULL);
@@ -711,6 +723,41 @@ pgss_store_constants(uint64 query_id)
 	}
 
 	LWLockRelease(pgss->lock);
+}
+
+/*
+ * XXX: Given query_str_const, which points to the first character of a constant
+ * within a null-terminated SQL query string, determine the total length of the
+ * constant.
+ *
+ * The constant may use any available constant syntax, including but not limited
+ * to numeric literals, single quoted strings and dollar-quoted strings. This is
+ * done by independently parsing the constant from the query string, and
+ * applying the known rules governing the representation of constants within
+ * Postgres query strings, since there is not a better-principled mechanism for
+ * calculating the length of the constant implemented in the core server, and
+ * this situation is not expected to change.
+ *
+ * A number of external factors, such as the current value of
+ * standard_conforming_strings, will potentially affect exactly how this is
+ * performed.
+ *
+ * Here are some examples:
+ *
+ * 'abc'					-	returns 5
+ * $$def$$					-	returns 7
+ * $foo$def$foo$			-	returns 13
+ * $foo$baz's $ money$foo$	-	returns 23
+ *
+ * If the string does not point to the first character of a valid constant, or
+ * does not inclue the constant in its entirety, behavior is undefined. Since
+ * the string and initial position the caller provides must originate within the
+ * authoratative parser, this should not be a problem.
+ */
+static uint32
+get_constant_length(const char* query_str_const)
+{
+	return 0;
 }
 
 /*
@@ -731,7 +778,7 @@ JumbleQuery(Query *post_analysis_tree)
 	PerformJumble(post_analysis_tree, JUMBLE_SIZE, &i);
 	/* Sort offsets for later query string canonicalization */
 	qsort(last_offsets, last_offset_num, sizeof(pgssTokenOffset), comp_offset);
-	return hash_any_var_width((const unsigned char* ) last_jumble, JUMBLE_SIZE, false);
+	return hash_any_var_width((const unsigned char* ) last_jumble, Min(i, JUMBLE_SIZE), false);
 }
 
 /*
@@ -749,22 +796,36 @@ AppendJumb(unsigned char* item, unsigned char jumble[], size_t size, size_t *i)
 	 * Copy the entire item to the buffer, or as much of it as possible to fill
 	 * the buffer to capacity.
 	 */
-	memcpy(jumble + *i, item, Min(*i >= JUMBLE_SIZE? 0:JUMBLE_SIZE - *i, size));
+	memcpy(jumble + *i, item, Min(*i > JUMBLE_SIZE? 0:JUMBLE_SIZE - *i, size));
 
 	/*
-	 * While byte-for-byte, the jumble representation will often be more compact
-	 * than the query string, it's possible JUMBLE_SIZE has been set to a very
-	 * small value. Besides, it's possible to contrive a query where it won't be
-	 * as compact for all values of JUMBLE_SIZE, such as
-	 * "select * from tab_w_many_columns".
+	 * Continually hash the query tree.
 	 *
-	 * It is necessary to walk the query tree in its entirety. Though nothing more
-	 * may be appended to the buffer, we must still find Const nodes to
-	 * canonicalize. Having done all we can with the jumble, we must still concern
-	 * ourselves with the normalized query string.
+	 * Was JUMBLE_SIZE exceeded? If so, hash the jumble and append that to the
+	 * start of the jumble buffer, and then continue to append the fraction of
+	 * "item" that we might not have been able to fit at the end of the buffer
+	 * in the last iteration. Since the value of i has been set to 0, there is
+	 * no need to memset the buffer in advance of this new iteration, but
+	 * effectively we are completely disguarding the prior iteration's jumble
+	 * except for this hashed value.
 	 */
+	if (*i > JUMBLE_SIZE)
+	{
+		int64 start_hash = hash_any_var_width((const unsigned char* ) last_jumble, JUMBLE_SIZE, false);
+		int hash_l = sizeof(start_hash);
+		int part_left_l = size - ((*i - JUMBLE_SIZE) * -1);
 
-	*i += size;
+		Assert(part_left_l >= 0);
+
+		memcpy(jumble, &start_hash, hash_l);
+		memcpy(jumble + hash_l, item + (size - part_left_l), part_left_l);
+		*i = hash_l + part_left_l;
+	}
+	else
+	{
+		*i += size;
+	}
+
 }
 
 /*
@@ -1775,7 +1836,7 @@ pgss_store(const char *query, uint64 query_id,
 	{
 		pgssQueryConEntry *const_entry;
 		pgssTokenOffset *offs;
-		int off_n;
+		int off_n = 0;
 		const_entry	= (pgssQueryConEntry *) hash_search(pgss_const_pos, &key, HASH_FIND, NULL);
 		if (const_entry)
 		{
@@ -1794,7 +1855,7 @@ pgss_store(const char *query, uint64 query_id,
 		 * could vary between successive calls of what is regarded as the same
 		 * query.
 		 */
-		if (off_n > 0 && const_entry)
+		if (off_n > 0)
 		{
 			int i,
 			  off = 0,			/* Offset from start for cur tok */
