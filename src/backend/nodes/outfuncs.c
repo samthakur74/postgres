@@ -46,7 +46,7 @@
 #define WRITE_UINT_FIELD(fldname) \
 	appendStringInfo(str, " :" CppAsString(fldname) " %u", node->fldname)
 
-/* Write an unsigned long integer field (anything written as ":fldname %lu") */
+/* Write a location/query id field (anything written as ":fldname %lu") */
 #define WRITE_ULINT_FIELD(fldname) \
 	appendStringInfo(str, " :" CppAsString(fldname) " %lu", node->fldname)
 
@@ -84,6 +84,10 @@
 /* Write a parse location field (actually same as INT case) */
 #define WRITE_LOCATION_FIELD(fldname) \
 	appendStringInfo(str, " :" CppAsString(fldname) " %d", node->fldname)
+
+/* Write a query id field */
+#define WRITE_QUERYID_FIELD(fldname) \
+	((void) 0)
 
 /* Write a Node field */
 #define WRITE_NODE_FIELD(fldname) \
@@ -259,7 +263,7 @@ _outPlannedStmt(StringInfo str, const PlannedStmt *node)
 	WRITE_NODE_FIELD(relationOids);
 	WRITE_NODE_FIELD(invalItems);
 	WRITE_INT_FIELD(nParamExec);
-	WRITE_ULINT_FIELD(queryId);
+	WRITE_QUERYID_FIELD(queryId);
 }
 
 /*
@@ -2176,6 +2180,7 @@ _outQuery(StringInfo str, const Query *node)
 
 	WRITE_ENUM_FIELD(commandType, CmdType);
 	WRITE_ENUM_FIELD(querySource, QuerySource);
+	WRITE_QUERYID_FIELD(query_id);
 	WRITE_BOOL_FIELD(canSetTag);
 
 	/*
@@ -2212,7 +2217,6 @@ _outQuery(StringInfo str, const Query *node)
 	WRITE_BOOL_FIELD(hasRecursive);
 	WRITE_BOOL_FIELD(hasModifyingCTE);
 	WRITE_BOOL_FIELD(hasForUpdate);
-	WRITE_ULINT_FIELD(query_id);
 	WRITE_NODE_FIELD(cteList);
 	WRITE_NODE_FIELD(rtable);
 	WRITE_NODE_FIELD(jointree);

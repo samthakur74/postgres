@@ -83,6 +83,9 @@
 #define COMPARE_LOCATION_FIELD(fldname) \
 	((void) 0)
 
+/* Compare a query_id field (this is a no-op, per note above) */
+#define COMPARE_QUERYID_FIELD(fldname) \
+	((void) 0)
 
 /*
  *	Stuff from primnodes.h
@@ -897,6 +900,7 @@ _equalQuery(const Query *a, const Query *b)
 {
 	COMPARE_SCALAR_FIELD(commandType);
 	COMPARE_SCALAR_FIELD(querySource);
+	COMPARE_QUERYID_FIELD(query_id);
 	COMPARE_SCALAR_FIELD(canSetTag);
 	COMPARE_NODE_FIELD(utilityStmt);
 	COMPARE_SCALAR_FIELD(resultRelation);
@@ -908,7 +912,6 @@ _equalQuery(const Query *a, const Query *b)
 	COMPARE_SCALAR_FIELD(hasRecursive);
 	COMPARE_SCALAR_FIELD(hasModifyingCTE);
 	COMPARE_SCALAR_FIELD(hasForUpdate);
-	COMPARE_SCALAR_FIELD(query_id);
 	COMPARE_NODE_FIELD(cteList);
 	COMPARE_NODE_FIELD(rtable);
 	COMPARE_NODE_FIELD(jointree);

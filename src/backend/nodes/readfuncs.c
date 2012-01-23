@@ -16,11 +16,11 @@
  *	  claimed to read them, but it was broken as well as unused.)  We
  *	  never read executor state trees, either.
  *
- *	  Parse location fields are written out by outfuncs.c, but only for
- *	  possible debugging use.  When reading a location field, we discard
- *	  the stored value and set the location field to -1 (ie, "unknown").
- *	  This is because nodes coming from a stored rule should not be thought
- *	  to have a known location in the current query's text.
+ *	  Parse location fields and query ids are written out by outfuncs.c, but
+ *	  only for possible debugging use.  When reading a location field, we
+ *	  discard the stored value and set the location field to -1 (ie, "unknown").
+ *	  This is because nodes coming from a stored rule should not be thought to
+ *	  have a known location in the current query's text.
  *
  *-------------------------------------------------------------------------
  */
@@ -116,6 +116,9 @@
 	token = pg_strtok(&length);		/* get field value */ \
 	local_node->fldname = -1	/* set field to "unknown" */
 
+/* NOOP */
+#define READ_QUERYID_FIELD(fldname) \
+	((void) 0)
 /* Read a Node field */
 #define READ_NODE_FIELD(fldname) \
 	token = pg_strtok(&length);		/* skip :fldname */ \
@@ -203,6 +206,7 @@ _readQuery(void)
 
 	READ_ENUM_FIELD(commandType, CmdType);
 	READ_ENUM_FIELD(querySource, QuerySource);
+	READ_QUERYID_FIELD(query_id);
 	READ_BOOL_FIELD(canSetTag);
 	READ_NODE_FIELD(utilityStmt);
 	READ_INT_FIELD(resultRelation);
@@ -214,7 +218,6 @@ _readQuery(void)
 	READ_BOOL_FIELD(hasRecursive);
 	READ_BOOL_FIELD(hasModifyingCTE);
 	READ_BOOL_FIELD(hasForUpdate);
-	READ_UINT_FIELD(query_id);
 	READ_NODE_FIELD(cteList);
 	READ_NODE_FIELD(rtable);
 	READ_NODE_FIELD(jointree);

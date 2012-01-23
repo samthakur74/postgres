@@ -81,7 +81,7 @@ typedef struct pgssHashKey
 	Oid			userid;			/* user OID */
 	Oid			dbid;			/* database OID */
 	int			encoding;		/* query encoding */
-	unsigned char	jumble[JUMBLE_SIZE];	/* selective serialization of query tree */
+	int64		query_id;		/* query identifier */
 } pgssHashKey;
 
 /*
@@ -207,7 +207,7 @@ static Query *pgss_parse_analyze_varparams(Node *parseTree, const char *sourceTe
 						Oid **paramTypes, int *numParams);
 static uint64 JumbleQuery(Query *post_analysis_tree);
 static void AppendJumb(unsigned char* item, unsigned char jumble[], size_t size, size_t *i);
-static void PerformJumble(const Query *parse, size_t size, size_t *i);
+static void PerformJumble(const Query *tree, size_t size, size_t *i);
 static void QualsNode(const OpExpr *node, size_t size, size_t *i, List *rtable);
 static void LeafNode(const Node *arg, size_t size, size_t *i, List *rtable);
 static void LimitOffsetNode(const Node *node, size_t size, size_t *i, List *rtable);
@@ -219,12 +219,12 @@ static void pgss_ExecutorRun(QueryDesc *queryDesc,
 				 long count);
 static void pgss_ExecutorFinish(QueryDesc *queryDesc);
 static void pgss_ExecutorEnd(QueryDesc *queryDesc);
-static void pgss_ProcessUtility(Node *parsetree,
+static void pgss_ProcessUtility(Node *treetree,
 			  const char *queryString, ParamListInfo params, bool isTopLevel,
 					DestReceiver *dest, char *completionTag);
 static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
-static void pgss_store(const char *query, unsigned char jumble[],
+static void pgss_store(const char *query, uint64 query_id,
 				pgssTokenOffset offs[], int off_n,
 				double total_time, uint64 rows,
 				const BufferUsage *bufusage);
@@ -740,23 +740,23 @@ AppendJumb((unsigned char*)&item, last_jumble, sizeof(item), i)
  * calls.
  */
 static void
-PerformJumble(const Query *parse, size_t size, size_t *i)
+PerformJumble(const Query *tree, size_t size, size_t *i)
 {
 	ListCell *l;
 	/* table join tree (FROM and WHERE clauses) */
-	FromExpr *jt = (FromExpr *) parse->jointree;
+	FromExpr *jt = (FromExpr *) tree->jointree;
 	/* # of result tuples to skip (int8 expr) */
-	FuncExpr *off = (FuncExpr *) parse->limitOffset;
+	FuncExpr *off = (FuncExpr *) tree->limitOffset;
 	/* # of result tuples to skip (int8 expr) */
-	FuncExpr *limcount = (FuncExpr *) parse->limitCount;
+	FuncExpr *limcount = (FuncExpr *) tree->limitCount;
 
-	APP_JUMB(parse->resultRelation);
+	APP_JUMB(tree->resultRelation);
 
-	if (parse->intoClause)
+	if (tree->intoClause)
 	{
 		unsigned char OnCommit;
 		unsigned char skipData;
-		IntoClause *ic = parse->intoClause;
+		IntoClause *ic = tree->intoClause;
 		RangeVar   *rel = ic->rel;
 
 		OnCommit = COMPACT_ENUM(ic->onCommit);
@@ -782,7 +782,7 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 	}
 
 	/* WITH list (of CommonTableExpr's) */
-	foreach(l, parse->cteList)
+	foreach(l, tree->cteList)
 	{
 		CommonTableExpr	*cte = (CommonTableExpr *) lfirst(l);
 		Query			*cteq = (Query*) cte->ctequery;
@@ -795,11 +795,11 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		{
 			if (IsA(jt->quals, OpExpr))
 			{
-				QualsNode((OpExpr*) jt->quals, size, i, parse->rtable);
+				QualsNode((OpExpr*) jt->quals, size, i, tree->rtable);
 			}
 			else
 			{
-				LeafNode((Node*) jt->quals, size, i, parse->rtable);
+				LeafNode((Node*) jt->quals, size, i, tree->rtable);
 			}
 		}
 		/* table join tree */
@@ -808,13 +808,13 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 			Node* fr = lfirst(l);
 			if (IsA(fr, JoinExpr))
 			{
-				JoinExprNode((JoinExpr*) fr, size, i, parse->rtable);
+				JoinExprNode((JoinExpr*) fr, size, i, tree->rtable);
 			}
 			else if (IsA(fr, RangeTblRef))
 			{
 				unsigned char rtekind;
 				RangeTblRef   *rtf = (RangeTblRef *) fr;
-				RangeTblEntry *rte = rt_fetch(rtf->rtindex, parse->rtable);
+				RangeTblEntry *rte = rt_fetch(rtf->rtindex, tree->rtable);
 				APP_JUMB(rte->relid);
 				rtekind = COMPACT_ENUM(rte->rtekind);
 				APP_JUMB(rtekind);
@@ -824,7 +824,7 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 
 				/* Function call in where clause */
 				if (rte->funcexpr)
-					LeafNode((Node*) rte->funcexpr, size, i, parse->rtable);
+					LeafNode((Node*) rte->funcexpr, size, i, tree->rtable);
 			}
 			else
 			{
@@ -837,7 +837,7 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 	 * target list (of TargetEntry)
 	 * columns returned by query
 	 */
-	foreach(l, parse->targetList)
+	foreach(l, tree->targetList)
 	{
 		TargetEntry *tg = (TargetEntry *) lfirst(l);
 		Node        *e  = (Node*) tg->expr;
@@ -849,10 +849,10 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		 * Handle the various types of nodes in
 		 * the select list of this query
 		 */
-		LeafNode(e, size, i, parse->rtable);
+		LeafNode(e, size, i, tree->rtable);
 	}
 	/* return-values list (of TargetEntry) */
-	foreach(l, parse->returningList)
+	foreach(l, tree->returningList)
 	{
 		TargetEntry *rt = (TargetEntry *) lfirst(l);
 		Expr        *e  = (Expr*) rt->expr;
@@ -863,7 +863,7 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		if (IsA(e, Var)) /* table column */
 		{
 			Var *v = (Var*) e;
-			RangeTblEntry *rte = rt_fetch(v->varno, parse->rtable);
+			RangeTblEntry *rte = rt_fetch(v->varno, tree->rtable);
 			/* Identify column by XOR'ing relid + col number */
 			Oid col_ident = rte->relid ^ v->varattno;
 			APP_JUMB(col_ident);
@@ -875,27 +875,27 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		}
 	}
 	/* a list of SortGroupClause's */
-	foreach(l, parse->groupClause)
+	foreach(l, tree->groupClause)
 	{
 		SortGroupClause *gc = (SortGroupClause *) lfirst(l);
 		APP_JUMB(gc->tleSortGroupRef);
 		APP_JUMB(gc->nulls_first);
 	}
 
-	if (parse->havingQual)
+	if (tree->havingQual)
 	{
-		if (IsA(parse->havingQual, OpExpr))
+		if (IsA(tree->havingQual, OpExpr))
 		{
-			OpExpr *na = (OpExpr *) parse->havingQual;
-			QualsNode(na, size, i, parse->rtable);
+			OpExpr *na = (OpExpr *) tree->havingQual;
+			QualsNode(na, size, i, tree->rtable);
 		}
 		else
 		{
 			elog(ERROR, "unrecognized node type for havingclause node: %d",
-					(int) nodeTag(parse->havingQual));
+					(int) nodeTag(tree->havingQual));
 		}
 	}
-	foreach(l, parse->windowClause)
+	foreach(l, tree->windowClause)
 	{
 		WindowClause *wc = (WindowClause *) lfirst(l);
 		ListCell     *il;
@@ -903,34 +903,34 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		foreach(il, wc->partitionClause) /* PARTITION BY list */
 		{
 			Node *n = (Node *) lfirst(il);
-			LeafNode(n, size, i, parse->rtable);
+			LeafNode(n, size, i, tree->rtable);
 		}
 		foreach(il, wc->orderClause) /* ORDER BY list */
 		{
 			Node *n = (Node *) lfirst(il);
-			LeafNode(n, size, i, parse->rtable);
+			LeafNode(n, size, i, tree->rtable);
 		}
 	}
 
-	foreach(l, parse->distinctClause)
+	foreach(l, tree->distinctClause)
 	{
 		SortGroupClause *dc = (SortGroupClause *) lfirst(l);
 		APP_JUMB(dc->tleSortGroupRef);
 		APP_JUMB(dc->nulls_first);
 	}
 
-	/* Don't look at parse->sortClause,
+	/* Don't look at tree->sortClause,
 	 * because the value ressortgroupref is already
 	 * serialized when we iterate through targetList
 	 */
 
 	if (off)
-		LimitOffsetNode((Node*) off, size, i, parse->rtable);
+		LimitOffsetNode((Node*) off, size, i, tree->rtable);
 
 	if (limcount)
-		LimitOffsetNode((Node*) limcount, size, i, parse->rtable);
+		LimitOffsetNode((Node*) limcount, size, i, tree->rtable);
 
-	foreach(l, parse->rowMarks)
+	foreach(l, tree->rowMarks)
 	{
 		RowMarkClause *rc = (RowMarkClause *) lfirst(l);
 		APP_JUMB(rc->rti);				/* range table index of target relation */
@@ -939,20 +939,20 @@ PerformJumble(const Query *parse, size_t size, size_t *i)
 		APP_JUMB(rc->pushedDown);			/* pushed down from higher query level? */
 	}
 
-	if (parse->setOperations)
+	if (tree->setOperations)
 	{
 		/*
 		 * set-operation tree if this is top
 		 * level of a UNION/INTERSECT/EXCEPT query
 		 */
 		unsigned char op;
-		SetOperationStmt *topop = (SetOperationStmt *) parse->setOperations;
+		SetOperationStmt *topop = (SetOperationStmt *) tree->setOperations;
 		op = COMPACT_ENUM(topop->op);
 		APP_JUMB(op);
 		APP_JUMB(topop->all);
 
 		/* leaf selects are RTE subselections */
-		foreach(l, parse->rtable)
+		foreach(l, tree->rtable)
 		{
 			RangeTblEntry *r = (RangeTblEntry *) lfirst(l);
 			if (r->subquery)
@@ -1493,13 +1493,15 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 {
 	if (queryDesc->totaltime && pgss_enabled())
 	{
+		int64 query_id = queryDesc->plannedstmt->queryId;
+
 		/*
 		 * Make sure stats accumulation is done.  (Note: it's okay if several
 		 * levels of hook all do this.)
 		 */
 		InstrEndLoop(queryDesc->totaltime);
 
-		elog(DEBUG1, "Query id: %lu", queryDesc->plannedstmt->queryId);
+		elog(DEBUG1, "Query id: %lu", query_id);
 
 		if (queryDesc->params || jumbling_skipped ||
 			pgss_string_key	|| nested_level > 0 ||
@@ -1527,7 +1529,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 			 */
 
 			pgss_store(queryDesc->sourceText,
-			   NULL,
+			   query_id,
 			   NULL,
 			   0,
 			   queryDesc->totaltime->total,
@@ -1552,7 +1554,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 			 */
 
 			pgss_store(queryDesc->sourceText,
-			   last_jumble,
+			   query_id,
 			   last_offsets,
 			   last_offset_num,
 			   queryDesc->totaltime->total,
@@ -1579,7 +1581,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
  * ProcessUtility hook
  */
 static void
-pgss_ProcessUtility(Node *parsetree, const char *queryString,
+pgss_ProcessUtility(Node *tree, const char *queryString,
 					ParamListInfo params, bool isTopLevel,
 					DestReceiver *dest, char *completionTag)
 {
@@ -1588,6 +1590,7 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 		instr_time	start;
 		instr_time	duration;
 		uint64		rows = 0;
+		uint64		query_id = 0;
 		BufferUsage bufusage;
 
 		bufusage = pgBufferUsage;
@@ -1597,10 +1600,10 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 		PG_TRY();
 		{
 			if (prev_ProcessUtility)
-				prev_ProcessUtility(parsetree, queryString, params,
+				prev_ProcessUtility(tree, queryString, params,
 									isTopLevel, dest, completionTag);
 			else
-				standard_ProcessUtility(parsetree, queryString, params,
+				standard_ProcessUtility(tree, queryString, params,
 										isTopLevel, dest, completionTag);
 			nested_level--;
 		}
@@ -1638,16 +1641,16 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 			pgBufferUsage.temp_blks_written - bufusage.temp_blks_written;
 
 		/* In the case of utility statements, hash the query string directly */
-		pgss_store(queryString, NULL, NULL, 0, INSTR_TIME_GET_DOUBLE(duration), rows,
+		pgss_store(queryString, query_id, NULL, 0, INSTR_TIME_GET_DOUBLE(duration), rows,
 				   &bufusage);
 	}
 	else
 	{
 		if (prev_ProcessUtility)
-			prev_ProcessUtility(parsetree, queryString, params,
+			prev_ProcessUtility(tree, queryString, params,
 								isTopLevel, dest, completionTag);
 		else
-			standard_ProcessUtility(parsetree, queryString, params,
+			standard_ProcessUtility(tree, queryString, params,
 									isTopLevel, dest, completionTag);
 	}
 }
@@ -1663,7 +1666,7 @@ pgss_hash_fn(const void *key, Size keysize)
 	/* we don't bother to include encoding in the hash */
 	return hash_uint32((uint32) k->userid) ^
 		hash_uint32((uint32) k->dbid) ^
-		DatumGetUInt32(hash_any((const unsigned char* ) k->jumble, JUMBLE_SIZE) );
+		DatumGetUInt32(hash_any((const unsigned char* ) &k->query_id, sizeof(k->query_id)) );
 }
 
 /*
@@ -1678,7 +1681,7 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
 	if (k1->userid == k2->userid &&
 		k1->dbid == k2->dbid &&
 		k1->encoding == k2->encoding &&
-		memcmp(k1->jumble, k2->jumble, JUMBLE_SIZE) == 0)
+		k1->query_id == k2->query_id)
 		return 0;
 	else
 		return 1;
@@ -1688,7 +1691,7 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
  * Store some statistics for a statement.
  */
 static void
-pgss_store(const char *query, unsigned char jumble[],
+pgss_store(const char *query, uint64 query_id,
 				pgssTokenOffset offs[], int off_n,
 				double total_time, uint64 rows,
 				const BufferUsage *bufusage)
@@ -1709,16 +1712,7 @@ pgss_store(const char *query, unsigned char jumble[],
 	key.userid = GetUserId();
 	key.dbid = MyDatabaseId;
 	key.encoding = GetDatabaseEncoding();
-	/* Did the caller supply a jumble? */
-	if (jumble)
-		memcpy(key.jumble, jumble, JUMBLE_SIZE);
-	else
-	{
-		/* Just hash the query string rather than a jumble */
-		memset(key.jumble, 0, JUMBLE_SIZE);
-		key.jumble[0] = STR_BUF;
-		memcpy(key.jumble + 1, query, Min(strlen(query), JUMBLE_SIZE - 1));
-	}
+	key.query_id = query_id;
 
 	if (new_query_len >= pgss->query_size)
 		/* We don't have to worry about this later, because canonicalization
@@ -1747,7 +1741,7 @@ pgss_store(const char *query, unsigned char jumble[],
 		 * could vary between successive calls of what is regarded as the same
 		 * query.
 		 */
-		if (off_n > 0 && jumble)
+		if (off_n > 0)
 		{
 			int i,
 			  off = 0,			/* Offset from start for cur tok */

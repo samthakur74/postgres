@@ -103,6 +103,9 @@ typedef struct Query
 
 	QuerySource querySource;	/* where did I come from? */
 
+	int64		query_id;		/* Query identifier that can be set by plugins.
+								 * Will be copied to resulting PlannedStmt. */
+
 	bool		canSetTag;		/* do I set the command result tag? */
 
 	Node	   *utilityStmt;	/* non-null if this is DECLARE CURSOR or a
@@ -120,8 +123,6 @@ typedef struct Query
 	bool		hasRecursive;	/* WITH RECURSIVE was specified */
 	bool		hasModifyingCTE;	/* has INSERT/UPDATE/DELETE in WITH */
 	bool		hasForUpdate;	/* FOR UPDATE or FOR SHARE was specified */
-	int64		query_id;		/* Query identifier that can be set by plugins.
-								 * Will be copied to resulting PlannedStmt. */
 
 	List	   *cteList;		/* WITH list (of CommonTableExpr's) */
 
