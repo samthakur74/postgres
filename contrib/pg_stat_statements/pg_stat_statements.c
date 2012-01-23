@@ -1303,6 +1303,12 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 			LeafNode(arg, size, i, rtable);
 		}
 	}
+	else if (IsA(arg, SetToDefault))
+	{
+		SetToDefault *sd = (RowExpr*) arg;
+		APP_JUMB(sd->typeId);
+		APP_JUMB(sd->typeMod);
+	}
 	else
 	{
 		elog(ERROR, "unrecognized node type for LeafNode node: %d",
