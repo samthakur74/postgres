@@ -133,6 +133,14 @@ typedef struct pgssTokenOffset
 	int len;					/* length of token in bytes */
 } pgssTokenOffset;
 
+typedef struct pgssQueryConEntry
+{
+	pgssHashKey		key;			/* hash key of entry - MUST BE FIRST */
+	int				n_elems;		/* length of offsets array */
+	pgssTokenOffset offsets[1];		/* VARIABLE LENGTH ARRAY - MUST BE LAST */
+
+} pgssQueryConEntry;
+
 /*---- Local variables ----*/
 /* Jumble of last query tree seen pgss_Planner */
 static unsigned char *last_jumble = NULL;
@@ -144,8 +152,6 @@ static size_t last_offset_buf_size = 10;
 static size_t last_offset_num = 0;
 /* Current nesting depth of ExecutorRun calls */
 static int	nested_level = 0;
-/* Current query skipped jumbling */
-static bool jumbling_skipped = false;
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static ExecutorStart_hook_type prev_ExecutorStart = NULL;
@@ -159,6 +165,9 @@ static parse_analyze_varparams_hook_type prev_parse_analyze_varparams_hook = NUL
 /* Links to shared memory state */
 static pgssSharedState *pgss = NULL;
 static HTAB *pgss_hash = NULL;
+
+/* Backend-local hash table of info to canonicalize query strings */
+static HTAB *pgss_const_pos = NULL;
 
 /*---- GUC variables ----*/
 
@@ -205,6 +214,7 @@ static Query *pgss_parse_analyze(Node *parseTree, const char *sourceText,
 			  Oid *paramTypes, int numParams);
 static Query *pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 						Oid **paramTypes, int *numParams);
+static void pgss_store_constants(uint64 query_id);
 static uint64 JumbleQuery(Query *post_analysis_tree);
 static void AppendJumb(unsigned char* item, unsigned char jumble[], size_t size, size_t *i);
 static void PerformJumble(const Query *tree, size_t size, size_t *i);
@@ -225,7 +235,6 @@ static void pgss_ProcessUtility(Node *treetree,
 static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
 static void pgss_store(const char *query, uint64 query_id,
-				pgssTokenOffset offs[], int off_n,
 				double total_time, uint64 rows,
 				const BufferUsage *bufusage);
 static Size pgss_memsize(void);
@@ -240,6 +249,8 @@ static void entry_reset(void);
 void
 _PG_init(void)
 {
+	HASHCTL		info;
+	MemoryContext cur_context;
 	/*
 	 * In order to create our shared memory area, we have to be loaded via
 	 * shared_preload_libraries.  If not, fall out without hooking into any of
@@ -329,9 +340,31 @@ _PG_init(void)
 	/* Allocate a buffer to store selective serialization of the query tree
 	 * for the purposes of query normalization.
 	 */
-	last_jumble = MemoryContextAlloc(TopMemoryContext, JUMBLE_SIZE);
+
+	/*
+	 * State that persists for the lifetime of the backend should be allocated
+	 * in TopMemoryContext
+	 */
+	cur_context = MemoryContextSwitchTo(TopMemoryContext);
+
+	last_jumble = palloc(JUMBLE_SIZE);
 	/* Allocate space for bookkeeping information for query str normalization */
-	last_offsets = MemoryContextAlloc(TopMemoryContext, last_offset_buf_size * sizeof(pgssTokenOffset));
+	last_offsets = palloc(last_offset_buf_size * sizeof(pgssTokenOffset));
+
+	memset(&info, 0, sizeof(info));
+	info.keysize = sizeof(pgssHashKey);
+	/* Store offsets in hash table */
+	info.entrysize = offsetof(pgssQueryConEntry, offsets) +
+								1024 * sizeof(pgssQueryConEntry);
+	info.hash = pgss_hash_fn;
+	info.match = pgss_match_fn;
+
+	pgss_const_pos = hash_create("pg_stat_statements constants hash",
+							  10,
+							  &info,
+							  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
+
+	MemoryContextSwitchTo(cur_context);
 
 	/*
 	 * Install hooks.
@@ -372,6 +405,8 @@ _PG_fini(void)
 
 	pfree(last_jumble);
 	pfree(last_offsets);
+
+	hash_destroy(pgss_const_pos);
 }
 
 /*
@@ -618,8 +653,9 @@ pgss_parse_analyze(Node *parseTree, const char *sourceText,
 
 	post_analysis_tree->query_id = JumbleQuery(post_analysis_tree);
 
-	return post_analysis_tree;
+	pgss_store_constants(post_analysis_tree->query_id);
 
+	return post_analysis_tree;
 }
 
 static Query *
@@ -628,7 +664,7 @@ pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 {
 	Query *post_analysis_tree;
 
-	if (prev_parse_analyze_hook)
+	 if (prev_parse_analyze_hook)
 		post_analysis_tree = (*prev_parse_analyze_varparams_hook) (parseTree, sourceText,
 			  paramTypes, numParams);
 	else
@@ -637,12 +673,52 @@ pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 
 	post_analysis_tree->query_id = JumbleQuery(post_analysis_tree);
 
+	pgss_store_constants(post_analysis_tree->query_id);
+
 	return post_analysis_tree;
 }
 
+static void
+pgss_store_constants(uint64 query_id)
+{
+	bool found;
+	pgssHashKey key;
+	Assert(pgss_const_pos != NULL);
+	/*
+	 * Store constants for later canonicalization if this query doesn't already
+	 * known about.
+	 *
+	 * Set up key for hashtable search.
+	 */
+	key.userid = GetUserId();
+	key.dbid = MyDatabaseId;
+	key.encoding = GetDatabaseEncoding();
+	key.query_id = query_id;
+
+	/* Lookup the hash table entry with shared lock. */
+	LWLockAcquire(pgss->lock, LW_SHARED);
+
+	(void) hash_search(pgss_hash, &key, HASH_FIND, &found);
+
+	if (!found)
+	{
+		/* Store position of constants for later */
+		pgssQueryConEntry *entry;
+
+		entry = (pgssQueryConEntry *) hash_search(pgss_const_pos, &key, HASH_ENTER, NULL);
+		memcpy(entry->offsets, last_offsets, sizeof(pgssTokenOffset) * last_offset_num);
+		entry->n_elems = last_offset_num;
+	}
+
+	LWLockRelease(pgss->lock);
+}
+
 /*
- * JumbleQuery: Selectively serialize query tree, and store it until
- * needed to hash the query "parse".
+ * JumbleQuery: Selectively serialize query tree, and return a hash representing
+ * that serialization - it's query id.
+ *
+ * Note that this doesn't necessarily uniquely identify the query across
+ * different databases and encodings.
  */
 static uint64
 JumbleQuery(Query *post_analysis_tree)
@@ -653,7 +729,7 @@ JumbleQuery(Query *post_analysis_tree)
 	memset(last_jumble, 0, JUMBLE_SIZE);
 	last_jumble[++i] = HASH_BUF;
 	PerformJumble(post_analysis_tree, JUMBLE_SIZE, &i);
-	/* Sort offsets for query string normalization */
+	/* Sort offsets for later query string canonicalization */
 	qsort(last_offsets, last_offset_num, sizeof(pgssTokenOffset), comp_offset);
 	return hash_any_var_width((const unsigned char* ) last_jumble, JUMBLE_SIZE, false);
 }
@@ -1305,7 +1381,7 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	}
 	else if (IsA(arg, SetToDefault))
 	{
-		SetToDefault *sd = (RowExpr*) arg;
+		SetToDefault *sd = (SetToDefault*) arg;
 		APP_JUMB(sd->typeId);
 		APP_JUMB(sd->typeMod);
 	}
@@ -1509,64 +1585,26 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 
 		elog(DEBUG1, "Query id: %lu", query_id);
 
-		if (queryDesc->params || jumbling_skipped ||
-			pgss_string_key	|| nested_level > 0 ||
-			queryDesc->operation == CMD_UNKNOWN ||
-			queryDesc->operation == CMD_UTILITY ||
-		    queryDesc->operation == CMD_NOTHING)
-		{
-			/*
-			 * This query was paramaterized or is a utility statement or
-			 * similar, or pg_stat_statements is in legacy pgss_string_key
-			 * mode - hash the query string, because the last call to
-			 * pgss_Planner won't have hashed the tree of this particular
-			 * query. It may have skipped hashing, or there may not have even
-			 * been a call corresponding to this call of pgss_ExecutorEnd, such
-			 * as when plan caching occurs.
-			 *
-			 * When dealing with a parameterized query, the query string is the
-			 * original query string anyway, so there is no need to worry about
-			 * its stability.
-			 *
-			 * The fact that constants in the prepared query won't be
-			 * canonicalized is clearly a feature rather than a bug, as the
-			 * user evidently considers such constant essential to the query, or
-			 * they'd have paramaterized them.
-			 */
+		/*
+		 * Once control gets here, there is an assumption that the last_*
+		 * variables were set by a prior, corresponding call to
+		 * pgss_Planner within this backend. That corresponding call should have
+		 * jumbled the query tree.
+		 *
+		 * That call would only be recorded when the executor stack depth
+		 * (which is monitored) was 0, so nested planner calls don't cause
+		 * this assumption to fall down.
+		 *
+		 * A number of other things can prevent pgss_Planner from jumbling and
+		 * therefore prevent control reaching here, such as utility
+		 * statements and prepared queries.
+		 */
 
-			pgss_store(queryDesc->sourceText,
-			   query_id,
-			   NULL,
-			   0,
-			   queryDesc->totaltime->total,
-			   queryDesc->estate->es_processed,
-			   &queryDesc->totaltime->bufusage);
-		}
-		else
-		{
-			/*
-			 * Once control gets here, there is an assumption that the last_*
-			 * variables were set by a prior, corresponding call to
-			 * pgss_Planner within this backend. That corresponding call should have
-			 * jumbled the query tree.
-			 *
-			 * That call would only be recorded when the executor stack depth
-			 * (which is monitored) was 0, so nested planner calls don't cause
-			 * this assumption to fall down.
-			 *
-			 * A number of other things can prevent pgss_Planner from jumbling and
-			 * therefore prevent control reaching here, such as utility
-			 * statements and prepared queries.
-			 */
-
-			pgss_store(queryDesc->sourceText,
-			   query_id,
-			   last_offsets,
-			   last_offset_num,
-			   queryDesc->totaltime->total,
-			   queryDesc->estate->es_processed,
-			   &queryDesc->totaltime->bufusage);
-		}
+		pgss_store(queryDesc->sourceText,
+		   query_id,
+		   queryDesc->totaltime->total,
+		   queryDesc->estate->es_processed,
+		   &queryDesc->totaltime->bufusage);
 
 		if (last_offset_buf_size > 10)
 		{
@@ -1647,7 +1685,7 @@ pgss_ProcessUtility(Node *tree, const char *queryString,
 			pgBufferUsage.temp_blks_written - bufusage.temp_blks_written;
 
 		/* In the case of utility statements, hash the query string directly */
-		pgss_store(queryString, query_id, NULL, 0, INSTR_TIME_GET_DOUBLE(duration), rows,
+		pgss_store(queryString, query_id, INSTR_TIME_GET_DOUBLE(duration), rows,
 				   &bufusage);
 	}
 	else
@@ -1698,7 +1736,6 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
  */
 static void
 pgss_store(const char *query, uint64 query_id,
-				pgssTokenOffset offs[], int off_n,
 				double total_time, uint64 rows,
 				const BufferUsage *bufusage)
 {
@@ -1736,6 +1773,16 @@ pgss_store(const char *query, uint64 query_id,
 	entry = (pgssEntry *) hash_search(pgss_hash, &key, HASH_FIND, NULL);
 	if (!entry)
 	{
+		pgssQueryConEntry *const_entry;
+		pgssTokenOffset *offs;
+		int off_n;
+		const_entry	= (pgssQueryConEntry *) hash_search(pgss_const_pos, &key, HASH_FIND, NULL);
+		if (const_entry)
+		{
+			offs = const_entry->offsets;
+			off_n = const_entry->n_elems;
+		}
+
 		/*
 		 * It is necessary to generate a normalized version of the query
 		 * string that will be used to represent it. It's important that
@@ -1747,7 +1794,7 @@ pgss_store(const char *query, uint64 query_id,
 		 * could vary between successive calls of what is regarded as the same
 		 * query.
 		 */
-		if (off_n > 0)
+		if (off_n > 0 && const_entry)
 		{
 			int i,
 			  off = 0,			/* Offset from start for cur tok */
@@ -1792,6 +1839,7 @@ pgss_store(const char *query, uint64 query_id,
 			LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
 
 			entry = entry_alloc(&key, norm_query, strlen(norm_query));
+
 		}
 		else
 		{
@@ -1801,6 +1849,13 @@ pgss_store(const char *query, uint64 query_id,
 
 			entry = entry_alloc(&key, query, new_query_len);
 		}
+		/*
+		 * Free local memory that stores constant positions - we won't need
+		 * it again until the entry is evicted from shared memory, after
+		 * which we'll have to calculate new constant locations for a new,
+		 * potentially non-substantively different query string
+		 */
+		hash_search(pgss_const_pos, &key, HASH_REMOVE, NULL);
 	}
 
 	/* Grab the spinlock while updating the counters. */
@@ -2086,4 +2141,6 @@ entry_reset(void)
 	}
 
 	LWLockRelease(pgss->lock);
+
+
 }
