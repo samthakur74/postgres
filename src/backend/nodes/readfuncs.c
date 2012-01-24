@@ -16,11 +16,11 @@
  *	  claimed to read them, but it was broken as well as unused.)  We
  *	  never read executor state trees, either.
  *
- *	  Parse location fields and query ids are written out by outfuncs.c, but
- *	  only for possible debugging use.  When reading a location field, we
- *	  discard the stored value and set the location field to -1 (ie, "unknown").
- *	  This is because nodes coming from a stored rule should not be thought to
- *	  have a known location in the current query's text.
+ *	  Parse location fields are written out by outfuncs.c, but only for
+ *	  possible debugging use.  When reading a location field, we discard
+ *	  the stored value and set the location field to -1 (ie, "unknown").
+ *	  This is because nodes coming from a stored rule should not be thought
+ *	  to have a known location in the current query's text.
  *
  *-------------------------------------------------------------------------
  */

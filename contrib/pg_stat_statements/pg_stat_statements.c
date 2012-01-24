@@ -742,35 +742,24 @@ pgss_store_constants(uint64 query_id)
  * constant.
  *
  * The constant may use any available constant syntax, including but not limited
- * to numeric literals, single quoted strings and dollar-quoted strings. This is
- * done by independently parsing the constant from the query string, and
- * applying the known rules governing the representation of constants within
- * Postgres query strings, since there is not a better-principled mechanism for
- * calculating the length of the constant implemented in the core server, and
- * this situation is not expected to change.
- *
- * A number of external factors, such as the current value of
- * standard_conforming_strings, will potentially affect exactly how this is
- * performed.
- *
- * Here are some examples:
- *
- * 'abc'					-	returns 5
- * $$def$$					-	returns 7
- * $foo$def$foo$			-	returns 13
- * $foo$baz's $ money$foo$	-	returns 23
+ * to float literals, bit-strings, single quoted strings and dollar-quoted
+ * strings. This is accomplished by using the public API for the core scanner,
+ * with a few workarounds for quirks of their representation, such as the fact
+ * that constants preceded by a minus symbol have a position at the minus
+ * symbol, and yet are separately tokenized.
  *
  * If the string does not point to the first character of a valid constant, or
- * does not inclue the constant in its entirety, behavior is undefined. Since
- * the string and initial position the caller provides must originate within the
- * authoratative parser, this should not be a problem.
+ * does not include the constant in its entirety, behavior is undefined. Since
+ * the string has already been validated, and the initial position that the
+ * caller provides must originate within the authoritative parser, this should
+ * not be a problem.
  */
 static uint32
 get_constant_length(const char* query_str_const)
 {
-	core_yyscan_t  init_scan;
-	core_yy_extra_type ext_type;
-	core_YYSTYPE type;
+	core_yyscan_t  init_scan = {0};
+	core_yy_extra_type ext_type = {0};
+	core_YYSTYPE type = {0};
 	uint32 len = 0;
 	YYLTYPE pos;
 	int token;
@@ -782,8 +771,6 @@ get_constant_length(const char* query_str_const)
 	token = core_yylex(&type, &pos,
 			   init_scan);
 
-	elog(DEBUG1, "(initial, qry: \"%s\") token id: %d", query_str_const, token);
-	elog(DEBUG1, "ext_type->scanbuf: %s", ext_type.scanbuf);
 	switch(token)
 	{
 		case SCONST:
@@ -796,14 +783,14 @@ get_constant_length(const char* query_str_const)
 			len = strlen(ext_type.scanbuf);
 			break;
 		default:
-			while (token != 0)
-			{
-				token = core_yylex(&type, &pos,
-							   init_scan);
-
-			}
-			len = strlen(ext_type.scanbuf);
-			//elog(ERROR, "unrecognized constant literal in pg_stat_statements: %d", token);
+			/*
+			 * Probably a negative constant - position still starts with minus
+			 * symbol
+			 */
+			if (query_str_const[0] == '-')
+				len = 1 + get_constant_length(&query_str_const[1]);
+			else
+				elog(ERROR, "unrecognized constant literal in pg_stat_statements: %d", token);
 	}
 
 	scanner_finish(init_scan);
@@ -829,7 +816,7 @@ JumbleQuery(Query *post_analysis_tree)
 	PerformJumble(post_analysis_tree, JUMBLE_SIZE, &i);
 	/* Sort offsets for later query string canonicalization */
 	qsort(last_offsets, last_offset_num, sizeof(pgssTokenOffset), comp_offset);
-	return hash_any_var_width((const unsigned char* ) last_jumble, Min(i, JUMBLE_SIZE), false);
+	return hash_any64((const unsigned char* ) last_jumble, Min(i, JUMBLE_SIZE));
 }
 
 /*
@@ -857,12 +844,12 @@ AppendJumb(unsigned char* item, unsigned char jumble[], size_t size, size_t *i)
 	 * "item" that we might not have been able to fit at the end of the buffer
 	 * in the last iteration. Since the value of i has been set to 0, there is
 	 * no need to memset the buffer in advance of this new iteration, but
-	 * effectively we are completely disguarding the prior iteration's jumble
+	 * effectively we are completely discarding the prior iteration's jumble
 	 * except for this hashed value.
 	 */
 	if (*i > JUMBLE_SIZE)
 	{
-		int64 start_hash = hash_any_var_width((const unsigned char* ) last_jumble, JUMBLE_SIZE, false);
+		int64 start_hash = hash_any64((const unsigned char* ) last_jumble, JUMBLE_SIZE);
 		int hash_l = sizeof(start_hash);
 		int part_left_l = Max(0, ((int) size - ((int) *i - JUMBLE_SIZE)));
 
@@ -1693,8 +1680,6 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		 */
 		InstrEndLoop(queryDesc->totaltime);
 
-		elog(DEBUG1, "Query id: %lu", query_id);
-
 		/*
 		 * Once control gets here, there is an assumption that the last_*
 		 * variables were set by a prior, corresponding call to
@@ -1962,7 +1947,7 @@ pgss_store(const char *query, uint64 query_id,
 		 * Free local memory that stores constant positions - we won't need
 		 * it again until the entry is evicted from shared memory, after
 		 * which we'll have to calculate new constant locations for a new,
-		 * potentially non-substantively different query string
+		 * potentially non-substantively different query string.
 		 */
 		hash_search(pgss_const_pos, &key, HASH_REMOVE, NULL);
 	}

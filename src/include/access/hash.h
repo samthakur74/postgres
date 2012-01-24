@@ -241,6 +241,7 @@ typedef HashMetaPageData *HashMetaPage;
 
 
 #define hash_any(k, keylen) (hash_any_var_width(k, keylen, true))
+#define hash_any64(k, keylen) (hash_any_var_width(k, keylen, false))
 
 /* public routines */
 
