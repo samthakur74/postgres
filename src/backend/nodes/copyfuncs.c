@@ -2135,7 +2135,6 @@ _copyAConst(const A_Const *from)
 	}
 
 	COPY_LOCATION_FIELD(location);
-	COPY_LOCATION_FIELD(tok_len);
 
 	return newnode;
 }
@@ -2290,7 +2289,6 @@ _copyTypeCast(const TypeCast *from)
 	COPY_NODE_FIELD(arg);
 	COPY_NODE_FIELD(typeName);
 	COPY_LOCATION_FIELD(location);
-	COPY_LOCATION_FIELD(tok_len);
 
 	return newnode;
 }

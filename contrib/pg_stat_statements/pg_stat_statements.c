@@ -1192,7 +1192,7 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 		 * Views that have constants in their
 		 * definitions will have a tok_len of 0
 		 */
-		if (c->location > 0 && c->tok_len > 0)
+		if (c->location > 0)
 		{
 			if (last_offset_num >= last_offset_buf_size)
 			{

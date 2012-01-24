@@ -148,6 +148,6 @@ extern ArrayRef *transformArraySubscripts(ParseState *pstate,
 						 int32 arrayTypMod,
 						 List *indirection,
 						 Node *assignFrom);
-extern Const *make_const(ParseState *pstate, Value *value, int location, int tok_len);
+extern Const *make_const(ParseState *pstate, Value *value, int location);
 
 #endif   /* PARSE_NODE_H */

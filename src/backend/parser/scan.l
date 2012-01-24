@@ -73,14 +73,12 @@ bool			standard_conforming_strings = true;
  * this should be done in the first such rule, else yylloc will point
  * into the middle of the token.
  */
-#define SET_YYLLOC_BEGINS()	yylloc->length = 0; yylloc->begins = yytext - yyextra->scanbuf;
-#define SET_YYLLOC_LEN()	yylloc->length += strlen(yytext);
-
+#define SET_YYLLOC()  (*(yylloc) = yytext - yyextra->scanbuf)
 
 /*
  * Advance yylloc by the given number of bytes.
  */
-#define ADVANCE_YYLLOC(delta)  ( yylloc->begins += (delta) )
+#define ADVANCE_YYLLOC(delta)  ( *(yylloc) += (delta) )
 
 #define startlit()  ( yyextra->literallen = 0 )
 static void addlit(char *ytext, int yleng, core_yyscan_t yyscanner);
@@ -96,7 +94,7 @@ static void addunicode(pg_wchar c, yyscan_t yyscanner);
 
 #define yyerror(msg)  scanner_yyerror(msg, yyscanner)
 
-#define lexer_errposition()  scanner_errposition(yylloc->begins, yyscanner)
+#define lexer_errposition()  scanner_errposition(*(yylloc), yyscanner)
 
 static void check_string_escape_warning(unsigned char ychar, core_yyscan_t yyscanner);
 static void check_escape_warning(core_yyscan_t yyscanner);
@@ -379,19 +377,17 @@ other			.
 
 {xcstart}		{
 					/* Set location in case of syntax error in comment */
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					yyextra->xcdepth = 0;
 					BEGIN(xc);
 					/* Put back any characters past slash-star; see above */
 					yyless(2);
-					SET_YYLLOC_LEN();
 				}
 
 <xc>{xcstart}	{
 					(yyextra->xcdepth)++;
 					/* Put back any characters past slash-star; see above */
 					yyless(2);
-					SET_YYLLOC_LEN();
 				}
 
 <xc>{xcstop}	{
@@ -399,7 +395,6 @@ other			.
 						BEGIN(INITIAL);
 					else
 						(yyextra->xcdepth)--;
-					SET_YYLLOC_LEN();
 				}
 
 <xc>{xcinside}	{
@@ -423,23 +418,20 @@ other			.
 					 * In the meantime, place a leading "b" on the string
 					 * to mark it for the input routine as a binary string.
 					 */
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					BEGIN(xb);
 					startlit();
 					addlitchar('b', yyscanner);
-					SET_YYLLOC_LEN();
 				}
 <xb>{quotestop}	|
 <xb>{quotefail} {
 					yyless(1);
 					BEGIN(INITIAL);
 					yylval->str = litbufdup(yyscanner);
-					SET_YYLLOC_LEN();
 					return BCONST;
 				}
 <xh>{xhinside}	|
 <xb>{xbinside}	{
-					SET_YYLLOC_LEN();
 					addlit(yytext, yyleng, yyscanner);
 				}
 <xh>{quotecontinue}	|
@@ -455,18 +447,16 @@ other			.
 					 * In the meantime, place a leading "x" on the string
 					 * to mark it for the input routine as a hex string.
 					 */
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					BEGIN(xh);
 					startlit();
 					addlitchar('x', yyscanner);
-					SET_YYLLOC_LEN();
 				}
 <xh>{quotestop}	|
 <xh>{quotefail} {
 					yyless(1);
 					BEGIN(INITIAL);
 					yylval->str = litbufdup(yyscanner);
-					SET_YYLLOC_LEN();
 					return XCONST;
 				}
 <xh><<EOF>>		{ yyerror("unterminated hexadecimal string literal"); }
@@ -478,8 +468,7 @@ other			.
 					 */
 					const ScanKeyword *keyword;
 
-					SET_YYLLOC_BEGINS();
-					SET_YYLLOC_LEN();
+					SET_YYLLOC();
 					yyless(1);				/* eat only 'n' this time */
 
 					keyword = ScanKeywordLookup("nchar",
@@ -501,25 +490,22 @@ other			.
 {xqstart}		{
 					yyextra->warn_on_first_escape = true;
 					yyextra->saw_non_ascii = false;
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					if (standard_conforming_strings)
 						BEGIN(xq);
 					else
 						BEGIN(xe);
 					startlit();
-					yylloc->length = 0;
-					SET_YYLLOC_LEN();
 				}
 {xestart}		{
 					yyextra->warn_on_first_escape = false;
 					yyextra->saw_non_ascii = false;
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					BEGIN(xe);
 					startlit();
-					SET_YYLLOC_LEN();
 				}
 {xusstart}		{
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					if (!standard_conforming_strings)
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
@@ -527,7 +513,6 @@ other			.
 								 errdetail("String constants with Unicode escapes cannot be used when standard_conforming_strings is off."),
 								 lexer_errposition()));
 					BEGIN(xus);
-					SET_YYLLOC_LEN();
 					startlit();
 				}
 <xq,xe>{quotestop}	|
@@ -543,7 +528,6 @@ other			.
 									   yyextra->literallen,
 									   false);
 					yylval->str = litbufdup(yyscanner);
-					SET_YYLLOC_LEN();
 					return SCONST;
 				}
 <xus>{xusstop1} {
@@ -551,26 +535,21 @@ other			.
 					yyless(1);
 					BEGIN(INITIAL);
 					yylval->str = litbuf_udeescape('\\', yyscanner);
-					SET_YYLLOC_LEN();
 					return SCONST;
 				}
 <xus>{xusstop2} {
 					BEGIN(INITIAL);
 					yylval->str = litbuf_udeescape(yytext[yyleng-2], yyscanner);
-					SET_YYLLOC_LEN();
 					return SCONST;
 				}
 <xq,xe,xus>{xqdouble} {
 					addlitchar('\'', yyscanner);
-					SET_YYLLOC_LEN();
 				}
 <xq,xus>{xqinside}  {
 					addlit(yytext, yyleng, yyscanner);
-					SET_YYLLOC_LEN();
 				}
 <xe>{xeinside}  {
 					addlit(yytext, yyleng, yyscanner);
-					SET_YYLLOC_LEN();
 				}
 <xe>{xeunicode} {
 					pg_wchar c = strtoul(yytext+2, NULL, 16);
@@ -586,7 +565,6 @@ other			.
 						yyerror("invalid Unicode surrogate pair");
 					else
 						addunicode(c, yyscanner);
-					SET_YYLLOC_LEN();
 				}
 <xeu>{xeunicode} {
 					pg_wchar c = strtoul(yytext+2, NULL, 16);
@@ -599,7 +577,6 @@ other			.
 					addunicode(c, yyscanner);
 
 					BEGIN(xe);
-					SET_YYLLOC_LEN();
 				}
 <xeu>.			{ yyerror("invalid Unicode surrogate pair"); }
 <xeu>\n			{ yyerror("invalid Unicode surrogate pair"); }
@@ -626,7 +603,6 @@ other			.
 					check_string_escape_warning(yytext[1], yyscanner);
 					addlitchar(unescape_single_char(yytext[1], yyscanner),
 							   yyscanner);
-					SET_YYLLOC_LEN();
 				}
 <xe>{xeoctesc}  {
 					unsigned char c = strtoul(yytext+1, NULL, 8);
@@ -635,7 +611,6 @@ other			.
 					addlitchar(c, yyscanner);
 					if (c == '\0' || IS_HIGHBIT_SET(c))
 						yyextra->saw_non_ascii = true;
-					SET_YYLLOC_LEN();
 				}
 <xe>{xehexesc}  {
 					unsigned char c = strtoul(yytext+2, NULL, 16);
@@ -644,7 +619,6 @@ other			.
 					addlitchar(c, yyscanner);
 					if (c == '\0' || IS_HIGHBIT_SET(c))
 						yyextra->saw_non_ascii = true;
-					SET_YYLLOC_LEN();
 				}
 <xq,xe,xus>{quotecontinue} {
 					/* ignore */
@@ -652,23 +626,19 @@ other			.
 <xe>.			{
 					/* This is only needed for \ just before EOF */
 					addlitchar(yytext[0], yyscanner);
-					SET_YYLLOC_LEN();
 				}
 <xq,xe,xus><<EOF>>		{ yyerror("unterminated quoted string"); }
 
 {dolqdelim}		{
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					yyextra->dolqstart = pstrdup(yytext);
 					BEGIN(xdolq);
 					startlit();
-					yylloc->length = 0;
-					SET_YYLLOC_LEN();
 				}
 {dolqfailed}	{
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					/* throw back all but the initial "$" */
 					yyless(1);
-					SET_YYLLOC_LEN();
 					/* and treat it as {other} */
 					return yytext[0];
 				}
@@ -679,7 +649,6 @@ other			.
 						yyextra->dolqstart = NULL;
 						BEGIN(INITIAL);
 						yylval->str = litbufdup(yyscanner);
-						SET_YYLLOC_LEN();
 						return SCONST;
 					}
 					else
@@ -691,35 +660,29 @@ other			.
 						 */
 						addlit(yytext, yyleng-1, yyscanner);
 						yyless(yyleng-1);
-						SET_YYLLOC_LEN();
 					}
 				}
 <xdolq>{dolqinside} {
 					addlit(yytext, yyleng, yyscanner);
-					SET_YYLLOC_LEN();
 				}
 <xdolq>{dolqfailed} {
 					addlit(yytext, yyleng, yyscanner);
-					SET_YYLLOC_LEN();
 				}
 <xdolq>.		{
 					/* This is only needed for $ inside the quoted text */
 					addlitchar(yytext[0], yyscanner);
-					SET_YYLLOC_LEN();
 				}
 <xdolq><<EOF>>	{ yyerror("unterminated dollar-quoted string"); }
 
 {xdstart}		{
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					BEGIN(xd);
 					startlit();
-					SET_YYLLOC_LEN();
 				}
 {xuistart}		{
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					BEGIN(xui);
 					startlit();
-					SET_YYLLOC_LEN();
 				}
 <xd>{xdstop}	{
 					char		   *ident;
@@ -731,7 +694,6 @@ other			.
 					if (yyextra->literallen >= NAMEDATALEN)
 						truncate_identifier(ident, yyextra->literallen, true);
 					yylval->str = ident;
-					SET_YYLLOC_LEN();
 					return IDENT;
 				}
 <xui>{xuistop1}	{
@@ -746,7 +708,6 @@ other			.
 					yylval->str = ident;
 					/* throw back all but the quote */
 					yyless(1);
-					SET_YYLLOC_LEN();
 					return IDENT;
 				}
 <xui>{xuistop2}	{
@@ -759,53 +720,45 @@ other			.
 					if (yyextra->literallen >= NAMEDATALEN)
 						truncate_identifier(ident, yyextra->literallen, true);
 					yylval->str = ident;
-					SET_YYLLOC_LEN();
 					return IDENT;
 				}
 <xd,xui>{xddouble}	{
 					addlitchar('"', yyscanner);
-					SET_YYLLOC_LEN();
 				}
 <xd,xui>{xdinside}	{
 					addlit(yytext, yyleng, yyscanner);
-					SET_YYLLOC_LEN();
 				}
 <xd,xui><<EOF>>		{ yyerror("unterminated quoted identifier"); }
 
 {xufailed}	{
 					char		   *ident;
 
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					/* throw back all but the initial u/U */
 					yyless(1);
 					/* and treat it as {identifier} */
 					ident = downcase_truncate_identifier(yytext, yyleng, true);
 					yylval->str = ident;
-					SET_YYLLOC_LEN();
 					return IDENT;
 				}
 
 {typecast}		{
-					SET_YYLLOC_BEGINS();
-					SET_YYLLOC_LEN();
+					SET_YYLLOC();
 					return TYPECAST;
 				}
 
 {dot_dot}		{
-					SET_YYLLOC_BEGINS();
-					SET_YYLLOC_LEN();
+					SET_YYLLOC();
 					return DOT_DOT;
 				}
 
 {colon_equals}	{
-					SET_YYLLOC_BEGINS();
-					SET_YYLLOC_LEN();
+					SET_YYLLOC();
 					return COLON_EQUALS;
 				}
 
 {self}			{
-					SET_YYLLOC_BEGINS();
-					SET_YYLLOC_LEN();
+					SET_YYLLOC();
 					return yytext[0];
 				}
 
@@ -855,7 +808,7 @@ other			.
 						nchars--; /* else remove the +/-, and check again */
 					}
 
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 
 					if (nchars < yyleng)
 					{
@@ -886,39 +839,33 @@ other			.
 						yylval->str = pstrdup("<>");
 					else
 						yylval->str = pstrdup(yytext);
-					SET_YYLLOC_LEN();
 					return Op;
 				}
 
 {param}			{
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					yylval->ival = atol(yytext + 1);
-					SET_YYLLOC_LEN();
 					return PARAM;
 				}
 
 {integer}		{
-					SET_YYLLOC_BEGINS();
-					SET_YYLLOC_LEN();
+					SET_YYLLOC();
 					return process_integer_literal(yytext, yylval);
 				}
 {decimal}		{
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					yylval->str = pstrdup(yytext);
-					SET_YYLLOC_LEN();
 					return FCONST;
 				}
 {decimalfail}	{
 					/* throw back the .., and treat as integer */
 					yyless(yyleng-2);
-					SET_YYLLOC_BEGINS();
-					SET_YYLLOC_LEN();
+					SET_YYLLOC();
 					return process_integer_literal(yytext, yylval);
 				}
 {real}			{
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					yylval->str = pstrdup(yytext);
-					SET_YYLLOC_LEN();
 					return FCONST;
 				}
 {realfail1}		{
@@ -929,17 +876,15 @@ other			.
 					 * syntax error anyway, we don't bother to distinguish.
 					 */
 					yyless(yyleng-1);
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					yylval->str = pstrdup(yytext);
-					SET_YYLLOC_LEN();
 					return FCONST;
 				}
 {realfail2}		{
 					/* throw back the [Ee][+-], and proceed as above */
 					yyless(yyleng-2);
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 					yylval->str = pstrdup(yytext);
-					SET_YYLLOC_LEN();
 					return FCONST;
 				}
 
@@ -948,14 +893,12 @@ other			.
 					const ScanKeyword *keyword;
 					char		   *ident;
 
-					SET_YYLLOC_BEGINS();
+					SET_YYLLOC();
 
-					yylloc->length = 0;
 					/* Is it a keyword? */
 					keyword = ScanKeywordLookup(yytext,
 												yyextra->keywords,
 												yyextra->num_keywords);
-					SET_YYLLOC_LEN();
 					if (keyword != NULL)
 					{
 						yylval->keyword = keyword->name;
@@ -972,14 +915,12 @@ other			.
 				}
 
 {other}			{
-					SET_YYLLOC_BEGINS();
-					SET_YYLLOC_LEN();
+					SET_YYLLOC();
 					return yytext[0];
 				}
 
 <<EOF>>			{
-					SET_YYLLOC_BEGINS();
-					SET_YYLLOC_LEN();
+					SET_YYLLOC();
 					yyterminate();
 				}
 
@@ -1041,7 +982,7 @@ scanner_errposition(int location, core_yyscan_t yyscanner)
 void
 scanner_yyerror(const char *message, core_yyscan_t yyscanner)
 {
-	const char *loc = yyextra->scanbuf + yylloc->begins;
+	const char *loc = yyextra->scanbuf + *yylloc;
 
 	if (*loc == YY_END_OF_BUFFER_CHAR)
 	{

@@ -125,7 +125,7 @@ transformExpr(ParseState *pstate, Node *expr)
 				A_Const    *con = (A_Const *) expr;
 				Value	   *val = &con->val;
 
-				result = (Node *) make_const(pstate, val, con->location, con->tok_len);
+				result = (Node *) make_const(pstate, val, con->location);
 				break;
 			}
 
@@ -1347,7 +1347,6 @@ transformCaseExpr(ParseState *pstate, CaseExpr *c)
 
 		n->val.type = T_Null;
 		n->location = -1;
-		n->tok_len = -1;
 		defresult = (Node *) n;
 	}
 	newc->defresult = (Expr *) transformExpr(pstate, defresult);
@@ -1664,7 +1663,7 @@ transformArrayExpr(ParseState *pstate, A_ArrayExpr *a,
 										 typmod,
 										 COERCION_EXPLICIT,
 										 COERCE_EXPLICIT_CAST,
-										 -1, -1);
+										 -1);
 			if (newe == NULL)
 				ereport(ERROR,
 						(errcode(ERRCODE_CANNOT_COERCE),
@@ -1943,7 +1942,7 @@ transformXmlSerialize(ParseState *pstate, XmlSerialize *xs)
 								   TEXTOID, targetType, targetTypmod,
 								   COERCION_IMPLICIT,
 								   COERCE_IMPLICIT_CAST,
-								   -1, -1);
+								   -1);
 	if (result == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_CANNOT_COERCE),
@@ -2093,7 +2092,7 @@ transformTypeCast(ParseState *pstate, TypeCast *tc)
 	Oid			inputType = exprType(expr);
 	Oid			targetType;
 	int32		targetTypmod;
-	int			location, tok_len;
+	int			location;
 
 	typenameTypeIdAndMod(pstate, tc->typeName, &targetType, &targetTypmod);
 
@@ -2106,7 +2105,6 @@ transformTypeCast(ParseState *pstate, TypeCast *tc)
 	 * name (this can happen in TypeName 'string' syntax, for instance).
 	 */
 	location = tc->location;
-	tok_len = tc->tok_len;
 	if (location < 0)
 		location = tc->typeName->location;
 
@@ -2114,7 +2112,7 @@ transformTypeCast(ParseState *pstate, TypeCast *tc)
 								   targetType, targetTypmod,
 								   COERCION_EXPLICIT,
 								   COERCE_EXPLICIT_CAST,
-								   location, tok_len);
+								   location);
 	if (result == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_CANNOT_COERCE),

@@ -65,6 +65,7 @@
 #include "utils/numeric.h"
 #include "utils/xml.h"
 
+
 /* Location tracking support --- simpler than bison's default */
 #define YYLLOC_DEFAULT(Current, Rhs, N) \
 	do { \
@@ -108,15 +109,15 @@ static void base_yyerror(YYLTYPE *yylloc, core_yyscan_t yyscanner,
 						 const char *msg);
 static Node *makeColumnRef(char *colname, List *indirection,
 						   int location, core_yyscan_t yyscanner);
-static Node *makeTypeCast(Node *arg, TypeName *typename, int location, int length);
-static Node *makeStringConst(char *str, int location, int length);
-static Node *makeStringConstCast(char *str, int location, int length, TypeName *typename);
-static Node *makeIntConst(int val, int location, int length);
-static Node *makeFloatConst(char *str, int location, int length);
-static Node *makeBitStringConst(char *str, int location, int length);
-static Node *makeNullAConst(int location, int length);
-static Node *makeAConst(Value *v, int location, int length);
-static Node *makeBoolAConst(bool state, int location, int length);
+static Node *makeTypeCast(Node *arg, TypeName *typename, int location);
+static Node *makeStringConst(char *str, int location);
+static Node *makeStringConstCast(char *str, int location, TypeName *typename);
+static Node *makeIntConst(int val, int location);
+static Node *makeFloatConst(char *str, int location);
+static Node *makeBitStringConst(char *str, int location);
+static Node *makeNullAConst(int location);
+static Node *makeAConst(Value *v, int location);
+static Node *makeBoolAConst(bool state, int location);
 static FuncCall *makeOverlaps(List *largs, List *rargs,
 							  int location, core_yyscan_t yyscanner);
 static void check_qualified_name(List *names, core_yyscan_t yyscanner);
@@ -911,7 +912,7 @@ AlterOptRoleElem:
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
 								 errmsg("unrecognized role option \"%s\"", $1),
-									 parser_errposition(@1.begins)));
+									 parser_errposition(@1)));
 				}
 		;
 
@@ -1297,7 +1298,7 @@ set_rest:	/* Generic SET syntaxes: */
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("current database cannot be changed"),
-							 parser_errposition(@2.begins)));
+							 parser_errposition(@2)));
 					$$ = NULL; /*not reached*/
 				}
 			| SCHEMA Sconst
@@ -1305,7 +1306,7 @@ set_rest:	/* Generic SET syntaxes: */
 					VariableSetStmt *n = makeNode(VariableSetStmt);
 					n->kind = VAR_SET_VALUE;
 					n->name = "search_path";
-					n->args = list_make1(makeStringConst($2, @2.begins, @2.length));
+					n->args = list_make1(makeStringConst($2, @2));
 					$$ = n;
 				}
 			| NAMES opt_encoding
@@ -1314,7 +1315,7 @@ set_rest:	/* Generic SET syntaxes: */
 					n->kind = VAR_SET_VALUE;
 					n->name = "client_encoding";
 					if ($2 != NULL)
-						n->args = list_make1(makeStringConst($2, @2.begins, @2.length));
+						n->args = list_make1(makeStringConst($2, @2));
 					else
 						n->kind = VAR_SET_DEFAULT;
 					$$ = n;
@@ -1324,7 +1325,7 @@ set_rest:	/* Generic SET syntaxes: */
 					VariableSetStmt *n = makeNode(VariableSetStmt);
 					n->kind = VAR_SET_VALUE;
 					n->name = "role";
-					n->args = list_make1(makeStringConst($2, @2.begins, @2.length));
+					n->args = list_make1(makeStringConst($2, @2));
 					$$ = n;
 				}
 			| SESSION AUTHORIZATION ColId_or_Sconst
@@ -1332,7 +1333,7 @@ set_rest:	/* Generic SET syntaxes: */
 					VariableSetStmt *n = makeNode(VariableSetStmt);
 					n->kind = VAR_SET_VALUE;
 					n->name = "session_authorization";
-					n->args = list_make1(makeStringConst($3, @3.begins, @3.length));
+					n->args = list_make1(makeStringConst($3, @3));
 					$$ = n;
 				}
 			| SESSION AUTHORIZATION DEFAULT
@@ -1347,7 +1348,7 @@ set_rest:	/* Generic SET syntaxes: */
 					VariableSetStmt *n = makeNode(VariableSetStmt);
 					n->kind = VAR_SET_VALUE;
 					n->name = "xmloption";
-					n->args = list_make1(makeStringConst($3 == XMLOPTION_DOCUMENT ? "DOCUMENT" : "CONTENT", @3.begins, @3.length));
+					n->args = list_make1(makeStringConst($3 == XMLOPTION_DOCUMENT ? "DOCUMENT" : "CONTENT", @3));
 					$$ = n;
 				}
 			/* Special syntaxes invented by PostgreSQL: */
@@ -1356,7 +1357,7 @@ set_rest:	/* Generic SET syntaxes: */
 					VariableSetStmt *n = makeNode(VariableSetStmt);
 					n->kind = VAR_SET_MULTI;
 					n->name = "TRANSACTION SNAPSHOT";
-					n->args = list_make1(makeStringConst($3, @3.begins, @3.length));
+					n->args = list_make1(makeStringConst($3, @3));
 					$$ = n;
 				}
 		;
@@ -1374,9 +1375,9 @@ var_list:	var_value								{ $$ = list_make1($1); }
 		;
 
 var_value:	opt_boolean_or_string
-				{ $$ = makeStringConst($1, @1.begins, @1.length); }
+				{ $$ = makeStringConst($1, @1); }
 			| NumericOnly
-				{ $$ = makeAConst($1, @1.begins, @1.length); }
+				{ $$ = makeAConst($1, @1); }
 		;
 
 iso_level:	READ UNCOMMITTED						{ $$ = "read uncommitted"; }
@@ -1408,11 +1409,11 @@ opt_boolean_or_string:
 zone_value:
 			Sconst
 				{
-					$$ = makeStringConst($1, @1.begins, @1.length);
+					$$ = makeStringConst($1, @1);
 				}
 			| IDENT
 				{
-					$$ = makeStringConst($1, @1.begins, @1.length);
+					$$ = makeStringConst($1, @1);
 				}
 			| ConstInterval Sconst opt_interval
 				{
@@ -1424,10 +1425,10 @@ zone_value:
 							ereport(ERROR,
 									(errcode(ERRCODE_SYNTAX_ERROR),
 									 errmsg("time zone interval must be HOUR or HOUR TO MINUTE"),
-									 parser_errposition(@3.begins)));
+									 parser_errposition(@3)));
 					}
 					t->typmods = $3;
-					$$ = makeStringConstCast($2, @2.begins, @2.length, t);
+					$$ = makeStringConstCast($2, @2, t);
 				}
 			| ConstInterval '(' Iconst ')' Sconst opt_interval
 				{
@@ -1439,20 +1440,20 @@ zone_value:
 							ereport(ERROR,
 									(errcode(ERRCODE_SYNTAX_ERROR),
 									 errmsg("time zone interval must be HOUR or HOUR TO MINUTE"),
-									 parser_errposition(@6.begins)));
+									 parser_errposition(@6)));
 						if (list_length($6) != 1)
 							ereport(ERROR,
 									(errcode(ERRCODE_SYNTAX_ERROR),
 									 errmsg("interval precision specified twice"),
-									 parser_errposition(@1.begins)));
-						t->typmods = lappend($6, makeIntConst($3, @3.begins, @3.length));
+									 parser_errposition(@1)));
+						t->typmods = lappend($6, makeIntConst($3, @3));
 					}
 					else
-						t->typmods = list_make2(makeIntConst(INTERVAL_FULL_RANGE, -1, -1),
-												makeIntConst($3, @3.begins, @3.length));
-					$$ = makeStringConstCast($5, @5.begins, @5.length, t);
+						t->typmods = list_make2(makeIntConst(INTERVAL_FULL_RANGE, -1),
+												makeIntConst($3, @3));
+					$$ = makeStringConstCast($5, @5, t);
 				}
-			| NumericOnly							{ $$ = makeAConst($1, @1.begins, @1.length); }
+			| NumericOnly							{ $$ = makeAConst($1, @1); }
 			| DEFAULT								{ $$ = NULL; }
 			| LOCAL									{ $$ = NULL; }
 		;
@@ -2004,7 +2005,7 @@ alter_table_cmd:
 				{
 					AlterTableCmd *n = makeNode(AlterTableCmd);
 					TypeName *def = makeTypeNameFromNameList($2);
-					def->location = @2.begins;
+					def->location = @2;
 					n->subtype = AT_AddOf;
 					n->def = (Node *) def;
 					$$ = (Node *)n;
@@ -2074,7 +2075,7 @@ opt_collate_clause:
 					CollateClause *n = makeNode(CollateClause);
 					n->arg = NULL;
 					n->collname = $2;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *) n;
 				}
 			| /* EMPTY */				{ $$ = NULL; }
@@ -2133,7 +2134,7 @@ AlterCompositeTypeStmt:
 					AlterTableStmt *n = makeNode(AlterTableStmt);
 
 					/* can't use qualified_name, sigh */
-					n->relation = makeRangeVarFromAnyName($3, @3.begins, yyscanner);
+					n->relation = makeRangeVarFromAnyName($3, @3, yyscanner);
 					n->cmds = $4;
 					n->relkind = OBJECT_TYPE;
 					$$ = (Node *)n;
@@ -2467,7 +2468,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->relation = $4;
 					n->tableElts = $7;
 					n->ofTypename = makeTypeNameFromNameList($6);
-					n->ofTypename->location = @6.begins;
+					n->ofTypename->location = @6;
 					n->constraints = NIL;
 					n->options = $8;
 					n->oncommit = $9;
@@ -2483,7 +2484,7 @@ CreateStmt:	CREATE OptTemp TABLE qualified_name '(' OptTableElementList ')'
 					n->relation = $7;
 					n->tableElts = $10;
 					n->ofTypename = makeTypeNameFromNameList($9);
-					n->ofTypename->location = @9.begins;
+					n->ofTypename->location = @9;
 					n->constraints = NIL;
 					n->options = $11;
 					n->oncommit = $12;
@@ -2603,7 +2604,7 @@ ColConstraint:
 					Constraint *n = (Constraint *) $3;
 					Assert(IsA(n, Constraint));
 					n->conname = $2;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *) n;
 				}
 			| ColConstraintElem						{ $$ = $1; }
@@ -2618,7 +2619,7 @@ ColConstraint:
 					CollateClause *n = makeNode(CollateClause);
 					n->arg = NULL;
 					n->collname = $2;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *) n;
 				}
 		;
@@ -2643,21 +2644,21 @@ ColConstraintElem:
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_NOTNULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| NULL_P
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| UNIQUE opt_definition OptConsTableSpace
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_UNIQUE;
-					n->location = @1.begins;
+					n->location = @1;
 					n->keys = NULL;
 					n->options = $2;
 					n->indexname = NULL;
@@ -2668,7 +2669,7 @@ ColConstraintElem:
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_PRIMARY;
-					n->location = @1.begins;
+					n->location = @1;
 					n->keys = NULL;
 					n->options = $3;
 					n->indexname = NULL;
@@ -2679,7 +2680,7 @@ ColConstraintElem:
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_CHECK;
-					n->location = @1.begins;
+					n->location = @1;
 					n->raw_expr = $3;
 					n->cooked_expr = NULL;
 					$$ = (Node *)n;
@@ -2688,7 +2689,7 @@ ColConstraintElem:
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_DEFAULT;
-					n->location = @1.begins;
+					n->location = @1;
 					n->raw_expr = $2;
 					n->cooked_expr = NULL;
 					$$ = (Node *)n;
@@ -2697,7 +2698,7 @@ ColConstraintElem:
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_FOREIGN;
-					n->location = @1.begins;
+					n->location = @1;
 					n->pktable			= $2;
 					n->fk_attrs			= NIL;
 					n->pk_attrs			= $3;
@@ -2730,28 +2731,28 @@ ConstraintAttr:
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_ATTR_DEFERRABLE;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| NOT DEFERRABLE
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_ATTR_NOT_DEFERRABLE;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| INITIALLY DEFERRED
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_ATTR_DEFERRED;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| INITIALLY IMMEDIATE
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_ATTR_IMMEDIATE;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 		;
@@ -2793,7 +2794,7 @@ TableConstraint:
 					Constraint *n = (Constraint *) $3;
 					Assert(IsA(n, Constraint));
 					n->conname = $2;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *) n;
 				}
 			| ConstraintElem						{ $$ = $1; }
@@ -2804,10 +2805,10 @@ ConstraintElem:
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_CHECK;
-					n->location = @1.begins;
+					n->location = @1;
 					n->raw_expr = $3;
 					n->cooked_expr = NULL;
-					processCASbits($5, @5.begins, "CHECK",
+					processCASbits($5, @5, "CHECK",
 								   NULL, NULL, &n->skip_validation,
 								   yyscanner);
 					n->initially_valid = !n->skip_validation;
@@ -2818,12 +2819,12 @@ ConstraintElem:
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_UNIQUE;
-					n->location = @1.begins;
+					n->location = @1;
 					n->keys = $3;
 					n->options = $5;
 					n->indexname = NULL;
 					n->indexspace = $6;
-					processCASbits($7, @7.begins, "UNIQUE",
+					processCASbits($7, @7, "UNIQUE",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   yyscanner);
 					$$ = (Node *)n;
@@ -2832,12 +2833,12 @@ ConstraintElem:
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_UNIQUE;
-					n->location = @1.begins;
+					n->location = @1;
 					n->keys = NIL;
 					n->options = NIL;
 					n->indexname = $2;
 					n->indexspace = NULL;
-					processCASbits($3, @3.begins, "UNIQUE",
+					processCASbits($3, @3, "UNIQUE",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   yyscanner);
 					$$ = (Node *)n;
@@ -2847,12 +2848,12 @@ ConstraintElem:
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_PRIMARY;
-					n->location = @1.begins;
+					n->location = @1;
 					n->keys = $4;
 					n->options = $6;
 					n->indexname = NULL;
 					n->indexspace = $7;
-					processCASbits($8, @8.begins, "PRIMARY KEY",
+					processCASbits($8, @8, "PRIMARY KEY",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   yyscanner);
 					$$ = (Node *)n;
@@ -2861,12 +2862,12 @@ ConstraintElem:
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_PRIMARY;
-					n->location = @1.begins;
+					n->location = @1;
 					n->keys = NIL;
 					n->options = NIL;
 					n->indexname = $3;
 					n->indexspace = NULL;
-					processCASbits($4, @4.begins, "PRIMARY KEY",
+					processCASbits($4, @4, "PRIMARY KEY",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   yyscanner);
 					$$ = (Node *)n;
@@ -2877,14 +2878,14 @@ ConstraintElem:
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_EXCLUSION;
-					n->location = @1.begins;
+					n->location = @1;
 					n->access_method	= $2;
 					n->exclusions		= $4;
 					n->options			= $6;
 					n->indexname		= NULL;
 					n->indexspace		= $7;
 					n->where_clause		= $8;
-					processCASbits($9, @9.begins, "EXCLUDE",
+					processCASbits($9, @9, "EXCLUDE",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   yyscanner);
 					$$ = (Node *)n;
@@ -2894,14 +2895,14 @@ ConstraintElem:
 				{
 					Constraint *n = makeNode(Constraint);
 					n->contype = CONSTR_FOREIGN;
-					n->location = @1.begins;
+					n->location = @1;
 					n->pktable			= $7;
 					n->fk_attrs			= $4;
 					n->pk_attrs			= $8;
 					n->fk_matchtype		= $9;
 					n->fk_upd_action	= (char) ($10 >> 8);
 					n->fk_del_action	= (char) ($10 & 0xFF);
-					processCASbits($11, @11.begins, "FOREIGN KEY",
+					processCASbits($11, @11, "FOREIGN KEY",
 								   &n->deferrable, &n->initdeferred,
 								   &n->skip_validation,
 								   yyscanner);
@@ -2935,7 +2936,7 @@ key_match:  MATCH FULL
 				ereport(ERROR,
 						(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 						 errmsg("MATCH PARTIAL not yet implemented"),
-						 parser_errposition(@1.begins)));
+						 parser_errposition(@1)));
 				$$ = FKCONSTR_MATCH_PARTIAL;
 			}
 		| MATCH SIMPLE
@@ -4080,7 +4081,7 @@ CreateTrigStmt:
 					n->columns = (List *) lsecond($6);
 					n->whenClause = $14;
 					n->isconstraint  = TRUE;
-					processCASbits($10, @10.begins, "TRIGGER",
+					processCASbits($10, @10, "TRIGGER",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   yyscanner);
 					n->constrrel = $9;
@@ -4201,14 +4202,14 @@ ConstraintAttributeSpec:
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
 								 errmsg("constraint declared INITIALLY DEFERRED must be DEFERRABLE"),
-								 parser_errposition(@2.begins)));
+								 parser_errposition(@2)));
 					/* generic message for other conflicts */
 					if ((newspec & (CAS_NOT_DEFERRABLE | CAS_DEFERRABLE)) == (CAS_NOT_DEFERRABLE | CAS_DEFERRABLE) ||
 						(newspec & (CAS_INITIALLY_IMMEDIATE | CAS_INITIALLY_DEFERRED)) == (CAS_INITIALLY_IMMEDIATE | CAS_INITIALLY_DEFERRED))
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
 								 errmsg("conflicting constraint properties"),
-								 parser_errposition(@2.begins)));
+								 parser_errposition(@2)));
 					$$ = newspec;
 				}
 		;
@@ -4262,7 +4263,7 @@ CreateAssertStmt:
 					n->trigname = $3;
 					n->args = list_make1($6);
 					n->isconstraint  = TRUE;
-					processCASbits($8, @8.begins, "ASSERTION",
+					processCASbits($8, @8, "ASSERTION",
 								   &n->deferrable, &n->initdeferred, NULL,
 								   yyscanner);
 
@@ -4355,7 +4356,7 @@ DefineStmt:
 					CompositeTypeStmt *n = makeNode(CompositeTypeStmt);
 
 					/* can't use qualified_name, sigh */
-					n->typevar = makeRangeVarFromAnyName($3, @3.begins, yyscanner);
+					n->typevar = makeRangeVarFromAnyName($3, @3, yyscanner);
 					n->coldeflist = $6;
 					$$ = (Node *)n;
 				}
@@ -4629,7 +4630,7 @@ opt_recheck:	RECHECK
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("RECHECK is no longer required"),
 							 errhint("Update your data type."),
-							 parser_errposition(@1.begins)));
+							 parser_errposition(@1)));
 					$$ = TRUE;
 				}
 			| /*EMPTY*/						{ $$ = FALSE; }
@@ -5894,7 +5895,7 @@ CreateFunctionStmt:
 					n->funcname = $4;
 					n->parameters = mergeTableFuncParameters($5, $9);
 					n->returnType = TableFuncTypeName($9);
-					n->returnType->location = @7.begins;
+					n->returnType->location = @7;
 					n->options = $11;
 					n->withClause = $12;
 					$$ = (Node *)n;
@@ -6035,14 +6036,14 @@ func_type:	Typename								{ $$ = $1; }
 				{
 					$$ = makeTypeNameFromNameList(lcons(makeString($1), $2));
 					$$->pct_type = true;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| SETOF type_function_name attrs '%' TYPE_P
 				{
 					$$ = makeTypeNameFromNameList(lcons(makeString($2), $3));
 					$$->pct_type = true;
 					$$->setof = TRUE;
-					$$->location = @2.begins;
+					$$->location = @2;
 				}
 		;
 
@@ -6299,7 +6300,7 @@ oper_argtypes:
 						   (errcode(ERRCODE_SYNTAX_ERROR),
 							errmsg("missing argument"),
 							errhint("Use NONE to denote the missing argument of a unary operator."),
-							parser_errposition(@3.begins)));
+							parser_errposition(@3)));
 				}
 			| '(' Typename ',' Typename ')'
 					{ $$ = list_make2($2, $4); }
@@ -6839,7 +6840,7 @@ RenameStmt: ALTER AGGREGATE func_name aggr_args RENAME TO name
 					RenameStmt *n = makeNode(RenameStmt);
 					n->renameType = OBJECT_ATTRIBUTE;
 					n->relationType = OBJECT_TYPE;
-					n->relation = makeRangeVarFromAnyName($3, @3.begins, yyscanner);
+					n->relation = makeRangeVarFromAnyName($3, @3, yyscanner);
 					n->subname = $6;
 					n->newname = $8;
 					n->behavior = $9;
@@ -7489,19 +7490,19 @@ opt_transaction:	WORK							{}
 transaction_mode_item:
 			ISOLATION LEVEL iso_level
 					{ $$ = makeDefElem("transaction_isolation",
-									   makeStringConst($3, @3.begins, @3.length)); }
+									   makeStringConst($3, @3)); }
 			| READ ONLY
 					{ $$ = makeDefElem("transaction_read_only",
-									   makeIntConst(TRUE, @1.begins, @1.length)); }
+									   makeIntConst(TRUE, @1)); }
 			| READ WRITE
 					{ $$ = makeDefElem("transaction_read_only",
-									   makeIntConst(FALSE, @1.begins, @1.length)); }
+									   makeIntConst(FALSE, @1)); }
 			| DEFERRABLE
 					{ $$ = makeDefElem("transaction_deferrable",
-									   makeIntConst(TRUE, @1.begins, @1.length)); }
+									   makeIntConst(TRUE, @1)); }
 			| NOT DEFERRABLE
 					{ $$ = makeDefElem("transaction_deferrable",
-									   makeIntConst(FALSE, @1.begins, @1.length)); }
+									   makeIntConst(FALSE, @1)); }
 		;
 
 /* Syntax with commas is SQL-spec, without commas is Postgres historical */
@@ -8362,7 +8363,7 @@ insert_column_item:
 					$$->name = $1;
 					$$->indirection = check_indirection($2, yyscanner);
 					$$->val = NULL;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 		;
 
@@ -8492,7 +8493,7 @@ multiple_set_clause:
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
 								 errmsg("number of columns does not match number of values"),
-								 parser_errposition(@1.begins)));
+								 parser_errposition(@1)));
 					forboth(col_cell, $2, val_cell, $5)
 					{
 						ResTarget *res_col = (ResTarget *) lfirst(col_cell);
@@ -8512,7 +8513,7 @@ set_target:
 					$$->name = $1;
 					$$->indirection = check_indirection($2, yyscanner);
 					$$->val = NULL;	/* upper production sets this */
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 		;
 
@@ -8769,14 +8770,14 @@ with_clause:
 				$$ = makeNode(WithClause);
 				$$->ctes = $2;
 				$$->recursive = false;
-				$$->location = @1.begins;
+				$$->location = @1;
 			}
 		| WITH RECURSIVE cte_list
 			{
 				$$ = makeNode(WithClause);
 				$$->ctes = $3;
 				$$->recursive = true;
-				$$->location = @1.begins;
+				$$->location = @1;
 			}
 		;
 
@@ -8791,7 +8792,7 @@ common_table_expr:  name opt_name_list AS '(' PreparableStmt ')'
 				n->ctename = $1;
 				n->aliascolnames = $2;
 				n->ctequery = $5;
-				n->location = @1.begins;
+				n->location = @1;
 				$$ = (Node *) n;
 			}
 		;
@@ -8908,7 +8909,7 @@ sortby:		a_expr USING qual_all_Op opt_nulls_order
 					$$->sortby_dir = SORTBY_USING;
 					$$->sortby_nulls = $4;
 					$$->useOp = $3;
-					$$->location = @3.begins;
+					$$->location = @3;
 				}
 			| a_expr opt_asc_desc opt_nulls_order
 				{
@@ -8944,7 +8945,7 @@ limit_clause:
 							(errcode(ERRCODE_SYNTAX_ERROR),
 							 errmsg("LIMIT #,# syntax is not supported"),
 							 errhint("Use separate LIMIT and OFFSET clauses."),
-							 parser_errposition(@1.begins)));
+							 parser_errposition(@1)));
 				}
 			/* SQL:2008 syntax */
 			| FETCH first_or_next opt_select_fetch_first_value row_or_rows ONLY
@@ -8964,7 +8965,7 @@ select_limit_value:
 			| ALL
 				{
 					/* LIMIT ALL is represented as a NULL constant */
-					$$ = makeNullAConst(@1.begins, @1.length);
+					$$ = makeNullAConst(@1);
 				}
 		;
 
@@ -8979,9 +8980,9 @@ select_offset_value:
  * default to 1.
  */
 opt_select_fetch_first_value:
-			SignedIconst						{ $$ = makeIntConst($1, @1.begins, @1.length); }
+			SignedIconst						{ $$ = makeIntConst($1, @1); }
 			| '(' a_expr ')'					{ $$ = $2; }
-			| /*EMPTY*/							{ $$ = makeIntConst(1, -1, -1); }
+			| /*EMPTY*/							{ $$ = makeIntConst(1, -1); }
 		;
 
 /*
@@ -9163,13 +9164,13 @@ table_ref:	relation_expr
 								(errcode(ERRCODE_SYNTAX_ERROR),
 								 errmsg("VALUES in FROM must have an alias"),
 								 errhint("For example, FROM (VALUES ...) [AS] foo."),
-								 parser_errposition(@1.begins)));
+								 parser_errposition(@1)));
 					else
 						ereport(ERROR,
 								(errcode(ERRCODE_SYNTAX_ERROR),
 								 errmsg("subquery in FROM must have an alias"),
 								 errhint("For example, FROM (SELECT ...) [AS] foo."),
-								 parser_errposition(@1.begins)));
+								 parser_errposition(@1)));
 					$$ = NULL;
 				}
 			| select_with_parens alias_clause
@@ -9529,12 +9530,12 @@ SimpleTypename:
 							ereport(ERROR,
 									(errcode(ERRCODE_SYNTAX_ERROR),
 									 errmsg("interval precision specified twice"),
-									 parser_errposition(@1.begins)));
-						$$->typmods = lappend($5, makeIntConst($3, @3.begins, @3.length));
+									 parser_errposition(@1)));
+						$$->typmods = lappend($5, makeIntConst($3, @3));
 					}
 					else
-						$$->typmods = list_make2(makeIntConst(INTERVAL_FULL_RANGE, -1, -1),
-												 makeIntConst($3, @3.begins, @3.length));
+						$$->typmods = list_make2(makeIntConst(INTERVAL_FULL_RANGE, -1),
+												 makeIntConst($3, @3));
 				}
 		;
 
@@ -9568,13 +9569,13 @@ GenericType:
 				{
 					$$ = makeTypeName($1);
 					$$->typmods = $2;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| type_function_name attrs opt_type_modifiers
 				{
 					$$ = makeTypeNameFromNameList(lcons(makeString($1), $2));
 					$$->typmods = $3;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 		;
 
@@ -9588,60 +9589,60 @@ opt_type_modifiers: '(' expr_list ')'				{ $$ = $2; }
 Numeric:	INT_P
 				{
 					$$ = SystemTypeName("int4");
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| INTEGER
 				{
 					$$ = SystemTypeName("int4");
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| SMALLINT
 				{
 					$$ = SystemTypeName("int2");
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| BIGINT
 				{
 					$$ = SystemTypeName("int8");
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| REAL
 				{
 					$$ = SystemTypeName("float4");
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| FLOAT_P opt_float
 				{
 					$$ = $2;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| DOUBLE_P PRECISION
 				{
 					$$ = SystemTypeName("float8");
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| DECIMAL_P opt_type_modifiers
 				{
 					$$ = SystemTypeName("numeric");
 					$$->typmods = $2;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| DEC opt_type_modifiers
 				{
 					$$ = SystemTypeName("numeric");
 					$$->typmods = $2;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| NUMERIC opt_type_modifiers
 				{
 					$$ = SystemTypeName("numeric");
 					$$->typmods = $2;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| BOOLEAN_P
 				{
 					$$ = SystemTypeName("bool");
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 		;
 
@@ -9655,7 +9656,7 @@ opt_float:	'(' Iconst ')'
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 								 errmsg("precision for type float must be at least 1 bit"),
-								 parser_errposition(@2.begins)));
+								 parser_errposition(@2)));
 					else if ($2 <= 24)
 						$$ = SystemTypeName("float4");
 					else if ($2 <= 53)
@@ -9664,7 +9665,7 @@ opt_float:	'(' Iconst ')'
 						ereport(ERROR,
 								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 								 errmsg("precision for type float must be less than 54 bits"),
-								 parser_errposition(@2.begins)));
+								 parser_errposition(@2)));
 				}
 			| /*EMPTY*/
 				{
@@ -9707,7 +9708,7 @@ BitWithLength:
 					typname = $2 ? "varbit" : "bit";
 					$$ = SystemTypeName(typname);
 					$$->typmods = $4;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 		;
 
@@ -9722,9 +9723,9 @@ BitWithoutLength:
 					else
 					{
 						$$ = SystemTypeName("bit");
-						$$->typmods = list_make1(makeIntConst(1, -1, -1));
+						$$->typmods = list_make1(makeIntConst(1, -1));
 					}
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 		;
 
@@ -9774,8 +9775,8 @@ CharacterWithLength:  character '(' Iconst ')' opt_charset
 					}
 
 					$$ = SystemTypeName($1);
-					$$->typmods = list_make1(makeIntConst($3, @3.begins, @3.length));
-					$$->location = @1.begins;
+					$$->typmods = list_make1(makeIntConst($3, @3));
+					$$->location = @1;
 				}
 		;
 
@@ -9796,9 +9797,9 @@ CharacterWithoutLength:	 character opt_charset
 
 					/* char defaults to char(1), varchar to no limit */
 					if (strcmp($1, "bpchar") == 0)
-						$$->typmods = list_make1(makeIntConst(1, -1, -1));
+						$$->typmods = list_make1(makeIntConst(1, -1));
 
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 		;
 
@@ -9836,8 +9837,8 @@ ConstDatetime:
 						$$ = SystemTypeName("timestamptz");
 					else
 						$$ = SystemTypeName("timestamp");
-					$$->typmods = list_make1(makeIntConst($3, @3.begins, @3.length));
-					$$->location = @1.begins;
+					$$->typmods = list_make1(makeIntConst($3, @3));
+					$$->location = @1;
 				}
 			| TIMESTAMP opt_timezone
 				{
@@ -9845,7 +9846,7 @@ ConstDatetime:
 						$$ = SystemTypeName("timestamptz");
 					else
 						$$ = SystemTypeName("timestamp");
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| TIME '(' Iconst ')' opt_timezone
 				{
@@ -9853,8 +9854,8 @@ ConstDatetime:
 						$$ = SystemTypeName("timetz");
 					else
 						$$ = SystemTypeName("time");
-					$$->typmods = list_make1(makeIntConst($3, @3.begins, @3.length));
-					$$->location = @1.begins;
+					$$->typmods = list_make1(makeIntConst($3, @3));
+					$$->location = @1;
 				}
 			| TIME opt_timezone
 				{
@@ -9862,7 +9863,7 @@ ConstDatetime:
 						$$ = SystemTypeName("timetz");
 					else
 						$$ = SystemTypeName("time");
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 		;
 
@@ -9870,7 +9871,7 @@ ConstInterval:
 			INTERVAL
 				{
 					$$ = SystemTypeName("interval");
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 		;
 
@@ -9882,32 +9883,32 @@ opt_timezone:
 
 opt_interval:
 			YEAR_P
-				{ $$ = list_make1(makeIntConst(INTERVAL_MASK(YEAR), @1.begins, @1.length)); }
+				{ $$ = list_make1(makeIntConst(INTERVAL_MASK(YEAR), @1)); }
 			| MONTH_P
-				{ $$ = list_make1(makeIntConst(INTERVAL_MASK(MONTH), @1.begins, @1.length)); }
+				{ $$ = list_make1(makeIntConst(INTERVAL_MASK(MONTH), @1)); }
 			| DAY_P
-				{ $$ = list_make1(makeIntConst(INTERVAL_MASK(DAY), @1.begins, @1.length)); }
+				{ $$ = list_make1(makeIntConst(INTERVAL_MASK(DAY), @1)); }
 			| HOUR_P
-				{ $$ = list_make1(makeIntConst(INTERVAL_MASK(HOUR), @1.begins, @1.length)); }
+				{ $$ = list_make1(makeIntConst(INTERVAL_MASK(HOUR), @1)); }
 			| MINUTE_P
-				{ $$ = list_make1(makeIntConst(INTERVAL_MASK(MINUTE), @1.begins, @1.length)); }
+				{ $$ = list_make1(makeIntConst(INTERVAL_MASK(MINUTE), @1)); }
 			| interval_second
 				{ $$ = $1; }
 			| YEAR_P TO MONTH_P
 				{
 					$$ = list_make1(makeIntConst(INTERVAL_MASK(YEAR) |
-												 INTERVAL_MASK(MONTH), @1.begins, @1.length));
+												 INTERVAL_MASK(MONTH), @1));
 				}
 			| DAY_P TO HOUR_P
 				{
 					$$ = list_make1(makeIntConst(INTERVAL_MASK(DAY) |
-												 INTERVAL_MASK(HOUR), @1.begins, @1.length));
+												 INTERVAL_MASK(HOUR), @1));
 				}
 			| DAY_P TO MINUTE_P
 				{
 					$$ = list_make1(makeIntConst(INTERVAL_MASK(DAY) |
 												 INTERVAL_MASK(HOUR) |
-												 INTERVAL_MASK(MINUTE), @1.begins, @1.length));
+												 INTERVAL_MASK(MINUTE), @1));
 				}
 			| DAY_P TO interval_second
 				{
@@ -9915,25 +9916,25 @@ opt_interval:
 					linitial($$) = makeIntConst(INTERVAL_MASK(DAY) |
 												INTERVAL_MASK(HOUR) |
 												INTERVAL_MASK(MINUTE) |
-												INTERVAL_MASK(SECOND), @1.begins, @1.length);
+												INTERVAL_MASK(SECOND), @1);
 				}
 			| HOUR_P TO MINUTE_P
 				{
 					$$ = list_make1(makeIntConst(INTERVAL_MASK(HOUR) |
-												 INTERVAL_MASK(MINUTE), @1.begins, @1.length));
+												 INTERVAL_MASK(MINUTE), @1));
 				}
 			| HOUR_P TO interval_second
 				{
 					$$ = $3;
 					linitial($$) = makeIntConst(INTERVAL_MASK(HOUR) |
 												INTERVAL_MASK(MINUTE) |
-												INTERVAL_MASK(SECOND), @1.begins, @1.length);
+												INTERVAL_MASK(SECOND), @1);
 				}
 			| MINUTE_P TO interval_second
 				{
 					$$ = $3;
 					linitial($$) = makeIntConst(INTERVAL_MASK(MINUTE) |
-												INTERVAL_MASK(SECOND), @1.begins, @1.length);
+												INTERVAL_MASK(SECOND), @1);
 				}
 			| /*EMPTY*/
 				{ $$ = NIL; }
@@ -9942,12 +9943,12 @@ opt_interval:
 interval_second:
 			SECOND_P
 				{
-					$$ = list_make1(makeIntConst(INTERVAL_MASK(SECOND), @1.begins, @1.length));
+					$$ = list_make1(makeIntConst(INTERVAL_MASK(SECOND), @1));
 				}
 			| SECOND_P '(' Iconst ')'
 				{
-					$$ = list_make2(makeIntConst(INTERVAL_MASK(SECOND), @1.begins, @1.length),
-									makeIntConst($3, @3.begins, @3.length));
+					$$ = list_make2(makeIntConst(INTERVAL_MASK(SECOND), @1),
+									makeIntConst($3, @3));
 				}
 		;
 
@@ -9976,13 +9977,13 @@ interval_second:
  */
 a_expr:		c_expr									{ $$ = $1; }
 			| a_expr TYPECAST Typename
-					{ $$ = makeTypeCast($1, $3, @2.begins, @2.length); }
+					{ $$ = makeTypeCast($1, $3, @2); }
 			| a_expr COLLATE any_name
 				{
 					CollateClause *n = makeNode(CollateClause);
 					n->arg = $1;
 					n->collname = $3;
-					n->location = @2.begins;
+					n->location = @2;
 					$$ = (Node *) n;
 				}
 			| a_expr AT TIME ZONE a_expr			%prec AT
@@ -9995,7 +9996,7 @@ a_expr:		c_expr									{ $$ = $1; }
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @2.begins;
+					n->location = @2;
 					$$ = (Node *) n;
 				}
 		/*
@@ -10008,44 +10009,44 @@ a_expr:		c_expr									{ $$ = $1; }
 		 * also to b_expr and to the MathOp list above.
 		 */
 			| '+' a_expr					%prec UMINUS
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "+", NULL, $2, @1.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "+", NULL, $2, @1); }
 			| '-' a_expr					%prec UMINUS
-				{ $$ = doNegate($2, @1.begins); }
+				{ $$ = doNegate($2, @1); }
 			| a_expr '+' a_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "+", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "+", $1, $3, @2); }
 			| a_expr '-' a_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "-", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "-", $1, $3, @2); }
 			| a_expr '*' a_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "*", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "*", $1, $3, @2); }
 			| a_expr '/' a_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "/", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "/", $1, $3, @2); }
 			| a_expr '%' a_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "%", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "%", $1, $3, @2); }
 			| a_expr '^' a_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "^", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "^", $1, $3, @2); }
 			| a_expr '<' a_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "<", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "<", $1, $3, @2); }
 			| a_expr '>' a_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, ">", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, ">", $1, $3, @2); }
 			| a_expr '=' a_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "=", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "=", $1, $3, @2); }
 
 			| a_expr qual_Op a_expr				%prec Op
-				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $2, $1, $3, @2.begins); }
+				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $2, $1, $3, @2); }
 			| qual_Op a_expr					%prec Op
-				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $1, NULL, $2, @1.begins); }
+				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $1, NULL, $2, @1); }
 			| a_expr qual_Op					%prec POSTFIXOP
-				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $2, $1, NULL, @2.begins); }
+				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $2, $1, NULL, @2); }
 
 			| a_expr AND a_expr
-				{ $$ = (Node *) makeA_Expr(AEXPR_AND, NIL, $1, $3, @2.begins); }
+				{ $$ = (Node *) makeA_Expr(AEXPR_AND, NIL, $1, $3, @2); }
 			| a_expr OR a_expr
-				{ $$ = (Node *) makeA_Expr(AEXPR_OR, NIL, $1, $3, @2.begins); }
+				{ $$ = (Node *) makeA_Expr(AEXPR_OR, NIL, $1, $3, @2); }
 			| NOT a_expr
-				{ $$ = (Node *) makeA_Expr(AEXPR_NOT, NIL, NULL, $2, @1.begins); }
+				{ $$ = (Node *) makeA_Expr(AEXPR_NOT, NIL, NULL, $2, @1); }
 
 			| a_expr LIKE a_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "~~", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "~~", $1, $3, @2); }
 			| a_expr LIKE a_expr ESCAPE a_expr
 				{
 					FuncCall *n = makeNode(FuncCall);
@@ -10056,11 +10057,11 @@ a_expr:		c_expr									{ $$ = $1; }
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @2.begins;
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "~~", $1, (Node *) n, @2.begins);
+					n->location = @2;
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "~~", $1, (Node *) n, @2);
 				}
 			| a_expr NOT LIKE a_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "!~~", $1, $4, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "!~~", $1, $4, @2); }
 			| a_expr NOT LIKE a_expr ESCAPE a_expr
 				{
 					FuncCall *n = makeNode(FuncCall);
@@ -10071,11 +10072,11 @@ a_expr:		c_expr									{ $$ = $1; }
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @2.begins;
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "!~~", $1, (Node *) n, @2.begins);
+					n->location = @2;
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "!~~", $1, (Node *) n, @2);
 				}
 			| a_expr ILIKE a_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "~~*", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "~~*", $1, $3, @2); }
 			| a_expr ILIKE a_expr ESCAPE a_expr
 				{
 					FuncCall *n = makeNode(FuncCall);
@@ -10086,11 +10087,11 @@ a_expr:		c_expr									{ $$ = $1; }
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @2.begins;
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "~~*", $1, (Node *) n, @2.begins);
+					n->location = @2;
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "~~*", $1, (Node *) n, @2);
 				}
 			| a_expr NOT ILIKE a_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "!~~*", $1, $4, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "!~~*", $1, $4, @2); }
 			| a_expr NOT ILIKE a_expr ESCAPE a_expr
 				{
 					FuncCall *n = makeNode(FuncCall);
@@ -10101,22 +10102,22 @@ a_expr:		c_expr									{ $$ = $1; }
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @2.begins;
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "!~~*", $1, (Node *) n, @2.begins);
+					n->location = @2;
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "!~~*", $1, (Node *) n, @2);
 				}
 
 			| a_expr SIMILAR TO a_expr				%prec SIMILAR
 				{
 					FuncCall *n = makeNode(FuncCall);
 					n->funcname = SystemFuncName("similar_escape");
-					n->args = list_make2($4, makeNullAConst(-1, -1));
+					n->args = list_make2($4, makeNullAConst(-1));
 					n->agg_order = NIL;
 					n->agg_star = FALSE;
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @2.begins;
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "~", $1, (Node *) n, @2.begins);
+					n->location = @2;
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "~", $1, (Node *) n, @2);
 				}
 			| a_expr SIMILAR TO a_expr ESCAPE a_expr
 				{
@@ -10128,21 +10129,21 @@ a_expr:		c_expr									{ $$ = $1; }
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @2.begins;
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "~", $1, (Node *) n, @2.begins);
+					n->location = @2;
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "~", $1, (Node *) n, @2);
 				}
 			| a_expr NOT SIMILAR TO a_expr			%prec SIMILAR
 				{
 					FuncCall *n = makeNode(FuncCall);
 					n->funcname = SystemFuncName("similar_escape");
-					n->args = list_make2($5, makeNullAConst(-1, -1));
+					n->args = list_make2($5, makeNullAConst(-1));
 					n->agg_order = NIL;
 					n->agg_star = FALSE;
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @2.begins;
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "!~", $1, (Node *) n, @2.begins);
+					n->location = @2;
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "!~", $1, (Node *) n, @2);
 				}
 			| a_expr NOT SIMILAR TO a_expr ESCAPE a_expr
 				{
@@ -10154,8 +10155,8 @@ a_expr:		c_expr									{ $$ = $1; }
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @2.begins;
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "!~", $1, (Node *) n, @2.begins);
+					n->location = @2;
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "!~", $1, (Node *) n, @2);
 				}
 
 			/* NullTest clause
@@ -10197,7 +10198,7 @@ a_expr:		c_expr									{ $$ = $1; }
 				}
 			| row OVERLAPS row
 				{
-					$$ = (Node *)makeOverlaps($1, $3, @2.begins, yyscanner);
+					$$ = (Node *)makeOverlaps($1, $3, @2, yyscanner);
 				}
 			| a_expr IS TRUE_P							%prec IS
 				{
@@ -10243,23 +10244,23 @@ a_expr:		c_expr									{ $$ = $1; }
 				}
 			| a_expr IS DISTINCT FROM a_expr			%prec IS
 				{
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_DISTINCT, "=", $1, $5, @2.begins);
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_DISTINCT, "=", $1, $5, @2);
 				}
 			| a_expr IS NOT DISTINCT FROM a_expr		%prec IS
 				{
 					$$ = (Node *) makeA_Expr(AEXPR_NOT, NIL, NULL,
 									(Node *) makeSimpleA_Expr(AEXPR_DISTINCT,
-															  "=", $1, $6, @2.begins),
-											 @2.begins);
+															  "=", $1, $6, @2),
+											 @2);
 
 				}
 			| a_expr IS OF '(' type_list ')'			%prec IS
 				{
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_OF, "=", $1, (Node *) $5, @2.begins);
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_OF, "=", $1, (Node *) $5, @2);
 				}
 			| a_expr IS NOT OF '(' type_list ')'		%prec IS
 				{
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_OF, "<>", $1, (Node *) $6, @2.begins);
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_OF, "<>", $1, (Node *) $6, @2);
 				}
 			/*
 			 *	Ideally we would not use hard-wired operators below but
@@ -10270,43 +10271,42 @@ a_expr:		c_expr									{ $$ = $1; }
 			| a_expr BETWEEN opt_asymmetric b_expr AND b_expr		%prec BETWEEN
 				{
 					$$ = (Node *) makeA_Expr(AEXPR_AND, NIL,
-						(Node *) makeSimpleA_Expr(AEXPR_OP, ">=", $1, $4, @2.begins),
-						(Node *) makeSimpleA_Expr(AEXPR_OP, "<=", $1, $6, @2.begins),
-											 @2.begins);
+						(Node *) makeSimpleA_Expr(AEXPR_OP, ">=", $1, $4, @2),
+						(Node *) makeSimpleA_Expr(AEXPR_OP, "<=", $1, $6, @2),
+											 @2);
 				}
 			| a_expr NOT BETWEEN opt_asymmetric b_expr AND b_expr	%prec BETWEEN
 				{
 					$$ = (Node *) makeA_Expr(AEXPR_OR, NIL,
-						(Node *) makeSimpleA_Expr(AEXPR_OP, "<", $1, $5, @2.begins),
-						(Node *) makeSimpleA_Expr(AEXPR_OP, ">", $1, $7, @2.begins),
-											 @2.begins);
+						(Node *) makeSimpleA_Expr(AEXPR_OP, "<", $1, $5, @2),
+						(Node *) makeSimpleA_Expr(AEXPR_OP, ">", $1, $7, @2),
+											 @2);
 				}
 			| a_expr BETWEEN SYMMETRIC b_expr AND b_expr			%prec BETWEEN
 				{
 					$$ = (Node *) makeA_Expr(AEXPR_OR, NIL,
 						(Node *) makeA_Expr(AEXPR_AND, NIL,
-
-						    (Node *) makeSimpleA_Expr(AEXPR_OP, ">=", $1, $4, @2.begins),
-						    (Node *) makeSimpleA_Expr(AEXPR_OP, "<=", $1, $6, @2.begins),
-											@2.begins),
+							(Node *) makeSimpleA_Expr(AEXPR_OP, ">=", $1, $4, @2),
+							(Node *) makeSimpleA_Expr(AEXPR_OP, "<=", $1, $6, @2),
+											@2),
 						(Node *) makeA_Expr(AEXPR_AND, NIL,
-						    (Node *) makeSimpleA_Expr(AEXPR_OP, ">=", $1, $6, @2.begins),
-						    (Node *) makeSimpleA_Expr(AEXPR_OP, "<=", $1, $4, @2.begins),
-											@2.begins),
-											 @2.begins);
+							(Node *) makeSimpleA_Expr(AEXPR_OP, ">=", $1, $6, @2),
+							(Node *) makeSimpleA_Expr(AEXPR_OP, "<=", $1, $4, @2),
+											@2),
+											 @2);
 				}
 			| a_expr NOT BETWEEN SYMMETRIC b_expr AND b_expr		%prec BETWEEN
 				{
 					$$ = (Node *) makeA_Expr(AEXPR_AND, NIL,
 						(Node *) makeA_Expr(AEXPR_OR, NIL,
-						    (Node *) makeSimpleA_Expr(AEXPR_OP, "<", $1, $5, @2.begins),
-						    (Node *) makeSimpleA_Expr(AEXPR_OP, ">", $1, $7, @2.begins),
-											@2.begins),
+							(Node *) makeSimpleA_Expr(AEXPR_OP, "<", $1, $5, @2),
+							(Node *) makeSimpleA_Expr(AEXPR_OP, ">", $1, $7, @2),
+											@2),
 						(Node *) makeA_Expr(AEXPR_OR, NIL,
-						    (Node *) makeSimpleA_Expr(AEXPR_OP, "<", $1, $7, @2.begins),
-						    (Node *) makeSimpleA_Expr(AEXPR_OP, ">", $1, $5, @2.begins),
-											@2.begins),
-											 @2.begins);
+							(Node *) makeSimpleA_Expr(AEXPR_OP, "<", $1, $7, @2),
+							(Node *) makeSimpleA_Expr(AEXPR_OP, ">", $1, $5, @2),
+											@2),
+											 @2);
 				}
 			| a_expr IN_P in_expr
 				{
@@ -10318,13 +10318,13 @@ a_expr:		c_expr									{ $$ = $1; }
 						n->subLinkType = ANY_SUBLINK;
 						n->testexpr = $1;
 						n->operName = list_make1(makeString("="));
-						n->location = @2.begins;
+						n->location = @2;
 						$$ = (Node *)n;
 					}
 					else
 					{
 						/* generate scalar IN expression */
-						$$ = (Node *) makeSimpleA_Expr(AEXPR_IN, "=", $1, $3, @2.begins);
+						$$ = (Node *) makeSimpleA_Expr(AEXPR_IN, "=", $1, $3, @2);
 					}
 				}
 			| a_expr NOT IN_P in_expr
@@ -10338,14 +10338,14 @@ a_expr:		c_expr									{ $$ = $1; }
 						n->subLinkType = ANY_SUBLINK;
 						n->testexpr = $1;
 						n->operName = list_make1(makeString("="));
-						n->location = @3.begins;
+						n->location = @3;
 						/* Stick a NOT on top */
-						$$ = (Node *) makeA_Expr(AEXPR_NOT, NIL, NULL, (Node *) n, @2.begins);
+						$$ = (Node *) makeA_Expr(AEXPR_NOT, NIL, NULL, (Node *) n, @2);
 					}
 					else
 					{
 						/* generate scalar NOT IN expression */
-						$$ = (Node *) makeSimpleA_Expr(AEXPR_IN, "<>", $1, $4, @2.begins);
+						$$ = (Node *) makeSimpleA_Expr(AEXPR_IN, "<>", $1, $4, @2);
 					}
 				}
 			| a_expr subquery_Op sub_type select_with_parens	%prec Op
@@ -10355,15 +10355,15 @@ a_expr:		c_expr									{ $$ = $1; }
 					n->testexpr = $1;
 					n->operName = $2;
 					n->subselect = $4;
-					n->location = @2.begins;
+					n->location = @2;
 					$$ = (Node *)n;
 				}
 			| a_expr subquery_Op sub_type '(' a_expr ')'		%prec Op
 				{
 					if ($3 == ANY_SUBLINK)
-						$$ = (Node *) makeA_Expr(AEXPR_OP_ANY, $2, $1, $5, @2.begins);
+						$$ = (Node *) makeA_Expr(AEXPR_OP_ANY, $2, $1, $5, @2);
 					else
-						$$ = (Node *) makeA_Expr(AEXPR_OP_ALL, $2, $1, $5, @2.begins);
+						$$ = (Node *) makeA_Expr(AEXPR_OP_ALL, $2, $1, $5, @2);
 				}
 			| UNIQUE select_with_parens
 				{
@@ -10379,19 +10379,19 @@ a_expr:		c_expr									{ $$ = $1; }
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("UNIQUE predicate is not yet implemented"),
-							 parser_errposition(@1.begins)));
+							 parser_errposition(@1)));
 				}
 			| a_expr IS DOCUMENT_P					%prec IS
 				{
 					$$ = makeXmlExpr(IS_DOCUMENT, NULL, NIL,
-									 list_make1($1), @2.begins);
+									 list_make1($1), @2);
 				}
 			| a_expr IS NOT DOCUMENT_P				%prec IS
 				{
 					$$ = (Node *) makeA_Expr(AEXPR_NOT, NIL, NULL,
 											 makeXmlExpr(IS_DOCUMENT, NULL, NIL,
-														 list_make1($1), @2.begins),
-											 @2.begins);
+														 list_make1($1), @2),
+											 @2);
 				}
 		;
 
@@ -10407,63 +10407,63 @@ a_expr:		c_expr									{ $$ = $1; }
 b_expr:		c_expr
 				{ $$ = $1; }
 			| b_expr TYPECAST Typename
-				{ $$ = makeTypeCast($1, $3, @2.begins, @2.length); }
+				{ $$ = makeTypeCast($1, $3, @2); }
 			| '+' b_expr					%prec UMINUS
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "+", NULL, $2, @1.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "+", NULL, $2, @1); }
 			| '-' b_expr					%prec UMINUS
-				{ $$ = doNegate($2, @1.begins); }
+				{ $$ = doNegate($2, @1); }
 			| b_expr '+' b_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "+", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "+", $1, $3, @2); }
 			| b_expr '-' b_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "-", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "-", $1, $3, @2); }
 			| b_expr '*' b_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "*", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "*", $1, $3, @2); }
 			| b_expr '/' b_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "/", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "/", $1, $3, @2); }
 			| b_expr '%' b_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "%", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "%", $1, $3, @2); }
 			| b_expr '^' b_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "^", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "^", $1, $3, @2); }
 			| b_expr '<' b_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "<", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "<", $1, $3, @2); }
 			| b_expr '>' b_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, ">", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, ">", $1, $3, @2); }
 			| b_expr '=' b_expr
-				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "=", $1, $3, @2.begins); }
+				{ $$ = (Node *) makeSimpleA_Expr(AEXPR_OP, "=", $1, $3, @2); }
 			| b_expr qual_Op b_expr				%prec Op
-				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $2, $1, $3, @2.begins); }
+				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $2, $1, $3, @2); }
 			| qual_Op b_expr					%prec Op
-				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $1, NULL, $2, @1.begins); }
+				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $1, NULL, $2, @1); }
 			| b_expr qual_Op					%prec POSTFIXOP
-				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $2, $1, NULL, @2.begins); }
+				{ $$ = (Node *) makeA_Expr(AEXPR_OP, $2, $1, NULL, @2); }
 			| b_expr IS DISTINCT FROM b_expr		%prec IS
 				{
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_DISTINCT, "=", $1, $5, @2.begins);
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_DISTINCT, "=", $1, $5, @2);
 				}
 			| b_expr IS NOT DISTINCT FROM b_expr	%prec IS
 				{
 					$$ = (Node *) makeA_Expr(AEXPR_NOT, NIL,
-						NULL, (Node *) makeSimpleA_Expr(AEXPR_DISTINCT, "=", $1, $6, @2.begins), @2.begins);
+						NULL, (Node *) makeSimpleA_Expr(AEXPR_DISTINCT, "=", $1, $6, @2), @2);
 				}
 			| b_expr IS OF '(' type_list ')'		%prec IS
 				{
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_OF, "=", $1, (Node *) $5, @2.begins);
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_OF, "=", $1, (Node *) $5, @2);
 				}
 			| b_expr IS NOT OF '(' type_list ')'	%prec IS
 				{
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_OF, "<>", $1, (Node *) $6, @2.begins);
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_OF, "<>", $1, (Node *) $6, @2);
 				}
 			| b_expr IS DOCUMENT_P					%prec IS
 				{
 					$$ = makeXmlExpr(IS_DOCUMENT, NULL, NIL,
-									 list_make1($1), @2.begins);
+									 list_make1($1), @2);
 				}
 			| b_expr IS NOT DOCUMENT_P				%prec IS
 				{
 					$$ = (Node *) makeA_Expr(AEXPR_NOT, NIL, NULL,
 											 makeXmlExpr(IS_DOCUMENT, NULL, NIL,
-														 list_make1($1), @2.begins),
-											 @2.begins);
+														 list_make1($1), @2),
+											 @2);
 				}
 		;
 
@@ -10481,7 +10481,7 @@ c_expr:		columnref								{ $$ = $1; }
 				{
 					ParamRef *p = makeNode(ParamRef);
 					p->number = $1;
-					p->location = @1.begins;
+					p->location = @1;
 					if ($2)
 					{
 						A_Indirection *n = makeNode(A_Indirection);
@@ -10515,7 +10515,7 @@ c_expr:		columnref								{ $$ = $1; }
 					n->testexpr = NULL;
 					n->operName = NIL;
 					n->subselect = $1;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| EXISTS select_with_parens
@@ -10525,7 +10525,7 @@ c_expr:		columnref								{ $$ = $1; }
 					n->testexpr = NULL;
 					n->operName = NIL;
 					n->subselect = $2;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| ARRAY select_with_parens
@@ -10535,7 +10535,7 @@ c_expr:		columnref								{ $$ = $1; }
 					n->testexpr = NULL;
 					n->operName = NIL;
 					n->subselect = $2;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| ARRAY array_expr
@@ -10543,7 +10543,7 @@ c_expr:		columnref								{ $$ = $1; }
 					A_ArrayExpr *n = (A_ArrayExpr *) $2;
 					Assert(IsA(n, A_ArrayExpr));
 					/* point outermost A_ArrayExpr to the ARRAY keyword */
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| row
@@ -10551,7 +10551,7 @@ c_expr:		columnref								{ $$ = $1; }
 					RowExpr *r = makeNode(RowExpr);
 					r->args = $1;
 					r->row_typeid = InvalidOid;	/* not analyzed yet */
-					r->location = @1.begins;
+					r->location = @1;
 					$$ = (Node *)r;
 				}
 		;
@@ -10574,7 +10574,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = $4;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| func_name '(' func_arg_list ')' over_clause
@@ -10587,7 +10587,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = $5;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| func_name '(' VARIADIC func_arg_expr ')' over_clause
@@ -10600,7 +10600,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = TRUE;
 					n->over = $6;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| func_name '(' func_arg_list ',' VARIADIC func_arg_expr ')' over_clause
@@ -10613,7 +10613,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = TRUE;
 					n->over = $8;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| func_name '(' func_arg_list sort_clause ')' over_clause
@@ -10626,7 +10626,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = $6;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| func_name '(' ALL func_arg_list opt_sort_clause ')' over_clause
@@ -10643,7 +10643,7 @@ func_expr:	func_name '(' ')' over_clause
 					 */
 					n->func_variadic = FALSE;
 					n->over = $7;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| func_name '(' DISTINCT func_arg_list opt_sort_clause ')' over_clause
@@ -10656,7 +10656,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = TRUE;
 					n->func_variadic = FALSE;
 					n->over = $7;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| func_name '(' '*' ')' over_clause
@@ -10679,7 +10679,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = $5;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| CURRENT_DATE
@@ -10700,8 +10700,8 @@ func_expr:	func_name '(' ')' over_clause
 					 * to rely on it.)
 					 */
 					Node *n;
-					n = makeStringConstCast("now", @1.begins, @1.length, SystemTypeName("text"));
-					$$ = makeTypeCast(n, SystemTypeName("date"), -1, -1);
+					n = makeStringConstCast("now", @1, SystemTypeName("text"));
+					$$ = makeTypeCast(n, SystemTypeName("date"), -1);
 				}
 			| CURRENT_TIME
 				{
@@ -10710,8 +10710,8 @@ func_expr:	func_name '(' ')' over_clause
 					 * See comments for CURRENT_DATE.
 					 */
 					Node *n;
-					n = makeStringConstCast("now", @1.begins, @1.length, SystemTypeName("text"));
-					$$ = makeTypeCast(n, SystemTypeName("timetz"), -1, -1);
+					n = makeStringConstCast("now", @1, SystemTypeName("text"));
+					$$ = makeTypeCast(n, SystemTypeName("timetz"), -1);
 				}
 			| CURRENT_TIME '(' Iconst ')'
 				{
@@ -10721,10 +10721,10 @@ func_expr:	func_name '(' ')' over_clause
 					 */
 					Node *n;
 					TypeName *d;
-					n = makeStringConstCast("now", @1.begins, @1.length, SystemTypeName("text"));
+					n = makeStringConstCast("now", @1, SystemTypeName("text"));
 					d = SystemTypeName("timetz");
-					d->typmods = list_make1(makeIntConst($3, @3.begins, @3.length));
-					$$ = makeTypeCast(n, d, -1, -1);
+					d->typmods = list_make1(makeIntConst($3, @3));
+					$$ = makeTypeCast(n, d, -1);
 				}
 			| CURRENT_TIMESTAMP
 				{
@@ -10740,7 +10740,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| CURRENT_TIMESTAMP '(' Iconst ')'
@@ -10751,10 +10751,10 @@ func_expr:	func_name '(' ')' over_clause
 					 */
 					Node *n;
 					TypeName *d;
-					n = makeStringConstCast("now", @1.begins, @1.length, SystemTypeName("text"));
+					n = makeStringConstCast("now", @1, SystemTypeName("text"));
 					d = SystemTypeName("timestamptz");
-					d->typmods = list_make1(makeIntConst($3, @3.begins, @3.length));
-					$$ = makeTypeCast(n, d, -1, -1);
+					d->typmods = list_make1(makeIntConst($3, @3));
+					$$ = makeTypeCast(n, d, -1);
 				}
 			| LOCALTIME
 				{
@@ -10763,8 +10763,8 @@ func_expr:	func_name '(' ')' over_clause
 					 * See comments for CURRENT_DATE.
 					 */
 					Node *n;
-					n = makeStringConstCast("now", @1.begins, @1.length, SystemTypeName("text"));
-					$$ = makeTypeCast((Node *)n, SystemTypeName("time"), -1, -1);
+					n = makeStringConstCast("now", @1, SystemTypeName("text"));
+					$$ = makeTypeCast((Node *)n, SystemTypeName("time"), -1);
 				}
 			| LOCALTIME '(' Iconst ')'
 				{
@@ -10774,10 +10774,10 @@ func_expr:	func_name '(' ')' over_clause
 					 */
 					Node *n;
 					TypeName *d;
-					n = makeStringConstCast("now", @1.begins, @1.length, SystemTypeName("text"));
+					n = makeStringConstCast("now", @1, SystemTypeName("text"));
 					d = SystemTypeName("time");
-					d->typmods = list_make1(makeIntConst($3, @3.begins, @3.length));
-					$$ = makeTypeCast((Node *)n, d, -1, -1);
+					d->typmods = list_make1(makeIntConst($3, @3));
+					$$ = makeTypeCast((Node *)n, d, -1);
 				}
 			| LOCALTIMESTAMP
 				{
@@ -10786,8 +10786,8 @@ func_expr:	func_name '(' ')' over_clause
 					 * See comments for CURRENT_DATE.
 					 */
 					Node *n;
-					n = makeStringConstCast("now", @1.begins, @1.length, SystemTypeName("text"));
-					$$ = makeTypeCast(n, SystemTypeName("timestamp"), -1, -1);
+					n = makeStringConstCast("now", @1, SystemTypeName("text"));
+					$$ = makeTypeCast(n, SystemTypeName("timestamp"), -1);
 				}
 			| LOCALTIMESTAMP '(' Iconst ')'
 				{
@@ -10797,10 +10797,10 @@ func_expr:	func_name '(' ')' over_clause
 					 */
 					Node *n;
 					TypeName *d;
-					n = makeStringConstCast("now", @1.begins, @1.length, SystemTypeName("text"));
+					n = makeStringConstCast("now", @1, SystemTypeName("text"));
 					d = SystemTypeName("timestamp");
-					d->typmods = list_make1(makeIntConst($3, @3.begins, @3.length));
-					$$ = makeTypeCast(n, d, -1, -1);
+					d->typmods = list_make1(makeIntConst($3, @3));
+					$$ = makeTypeCast(n, d, -1);
 				}
 			| CURRENT_ROLE
 				{
@@ -10812,7 +10812,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| CURRENT_USER
@@ -10825,7 +10825,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| SESSION_USER
@@ -10838,7 +10838,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| USER
@@ -10851,7 +10851,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| CURRENT_CATALOG
@@ -10864,7 +10864,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| CURRENT_SCHEMA
@@ -10877,11 +10877,11 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| CAST '(' a_expr AS Typename ')'
-				{ $$ = makeTypeCast($3, $5, @1.begins, @1.length); }
+				{ $$ = makeTypeCast($3, $5, @1); }
 			| EXTRACT '(' extract_list ')'
 				{
 					FuncCall *n = makeNode(FuncCall);
@@ -10892,7 +10892,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| OVERLAY '(' overlay_list ')'
@@ -10910,7 +10910,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| POSITION '(' position_list ')'
@@ -10924,7 +10924,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| SUBSTRING '(' substr_list ')'
@@ -10940,7 +10940,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| TREAT '(' a_expr AS Typename ')'
@@ -10962,7 +10962,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| TRIM '(' BOTH trim_list ')'
@@ -10978,7 +10978,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| TRIM '(' LEADING trim_list ')'
@@ -10991,7 +10991,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| TRIM '(' TRAILING trim_list ')'
@@ -11004,7 +11004,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| TRIM '(' trim_list ')'
@@ -11017,18 +11017,18 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| NULLIF '(' a_expr ',' a_expr ')'
 				{
-					$$ = (Node *) makeSimpleA_Expr(AEXPR_NULLIF, "=", $3, $5, @1.begins);
+					$$ = (Node *) makeSimpleA_Expr(AEXPR_NULLIF, "=", $3, $5, @1);
 				}
 			| COALESCE '(' expr_list ')'
 				{
 					CoalesceExpr *c = makeNode(CoalesceExpr);
 					c->args = $3;
-					c->location = @1.begins;
+					c->location = @1;
 					$$ = (Node *)c;
 				}
 			| GREATEST '(' expr_list ')'
@@ -11036,7 +11036,7 @@ func_expr:	func_name '(' ')' over_clause
 					MinMaxExpr *v = makeNode(MinMaxExpr);
 					v->args = $3;
 					v->op = IS_GREATEST;
-					v->location = @1.begins;
+					v->location = @1;
 					$$ = (Node *)v;
 				}
 			| LEAST '(' expr_list ')'
@@ -11044,28 +11044,28 @@ func_expr:	func_name '(' ')' over_clause
 					MinMaxExpr *v = makeNode(MinMaxExpr);
 					v->args = $3;
 					v->op = IS_LEAST;
-					v->location = @1.begins;
+					v->location = @1;
 					$$ = (Node *)v;
 				}
 			| XMLCONCAT '(' expr_list ')'
 				{
-					$$ = makeXmlExpr(IS_XMLCONCAT, NULL, NIL, $3, @1.begins);
+					$$ = makeXmlExpr(IS_XMLCONCAT, NULL, NIL, $3, @1);
 				}
 			| XMLELEMENT '(' NAME_P ColLabel ')'
 				{
-					$$ = makeXmlExpr(IS_XMLELEMENT, $4, NIL, NIL, @1.begins);
+					$$ = makeXmlExpr(IS_XMLELEMENT, $4, NIL, NIL, @1);
 				}
 			| XMLELEMENT '(' NAME_P ColLabel ',' xml_attributes ')'
 				{
-					$$ = makeXmlExpr(IS_XMLELEMENT, $4, $6, NIL, @1.begins);
+					$$ = makeXmlExpr(IS_XMLELEMENT, $4, $6, NIL, @1);
 				}
 			| XMLELEMENT '(' NAME_P ColLabel ',' expr_list ')'
 				{
-					$$ = makeXmlExpr(IS_XMLELEMENT, $4, NIL, $6, @1.begins);
+					$$ = makeXmlExpr(IS_XMLELEMENT, $4, NIL, $6, @1);
 				}
 			| XMLELEMENT '(' NAME_P ColLabel ',' xml_attributes ',' expr_list ')'
 				{
-					$$ = makeXmlExpr(IS_XMLELEMENT, $4, $6, $8, @1.begins);
+					$$ = makeXmlExpr(IS_XMLELEMENT, $4, $6, $8, @1);
 				}
 			| XMLEXISTS '(' c_expr xmlexists_argument ')'
 				{
@@ -11079,34 +11079,34 @@ func_expr:	func_name '(' ')' over_clause
 					n->agg_distinct = FALSE;
 					n->func_variadic = FALSE;
 					n->over = NULL;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 			| XMLFOREST '(' xml_attribute_list ')'
 				{
-					$$ = makeXmlExpr(IS_XMLFOREST, NULL, $3, NIL, @1.begins);
+					$$ = makeXmlExpr(IS_XMLFOREST, NULL, $3, NIL, @1);
 				}
 			| XMLPARSE '(' document_or_content a_expr xml_whitespace_option ')'
 				{
 					XmlExpr *x = (XmlExpr *)
 						makeXmlExpr(IS_XMLPARSE, NULL, NIL,
-									list_make2($4, makeBoolAConst($5, -1, -1)),
-									@1.begins);
+									list_make2($4, makeBoolAConst($5, -1)),
+									@1);
 					x->xmloption = $3;
 					$$ = (Node *)x;
 				}
 			| XMLPI '(' NAME_P ColLabel ')'
 				{
-					$$ = makeXmlExpr(IS_XMLPI, $4, NULL, NIL, @1.begins);
+					$$ = makeXmlExpr(IS_XMLPI, $4, NULL, NIL, @1);
 				}
 			| XMLPI '(' NAME_P ColLabel ',' a_expr ')'
 				{
-					$$ = makeXmlExpr(IS_XMLPI, $4, NULL, list_make1($6), @1.begins);
+					$$ = makeXmlExpr(IS_XMLPI, $4, NULL, list_make1($6), @1);
 				}
 			| XMLROOT '(' a_expr ',' xml_root_version opt_xml_root_standalone ')'
 				{
 					$$ = makeXmlExpr(IS_XMLROOT, NULL, NIL,
-									 list_make3($3, $5, $6), @1.begins);
+									 list_make3($3, $5, $6), @1);
 				}
 			| XMLSERIALIZE '(' document_or_content a_expr AS SimpleTypename ')'
 				{
@@ -11114,7 +11114,7 @@ func_expr:	func_name '(' ')' over_clause
 					n->xmloption = $3;
 					n->expr = $4;
 					n->typeName = $6;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *)n;
 				}
 		;
@@ -11125,17 +11125,17 @@ func_expr:	func_name '(' ')' over_clause
 xml_root_version: VERSION_P a_expr
 				{ $$ = $2; }
 			| VERSION_P NO VALUE_P
-				{ $$ = makeNullAConst(-1, -1); }
+				{ $$ = makeNullAConst(-1); }
 		;
 
 opt_xml_root_standalone: ',' STANDALONE_P YES_P
-				{ $$ = makeIntConst(XML_STANDALONE_YES, -1, -1); }
+				{ $$ = makeIntConst(XML_STANDALONE_YES, -1); }
 			| ',' STANDALONE_P NO
-				{ $$ = makeIntConst(XML_STANDALONE_NO, -1, -1); }
+				{ $$ = makeIntConst(XML_STANDALONE_NO, -1); }
 			| ',' STANDALONE_P NO VALUE_P
-				{ $$ = makeIntConst(XML_STANDALONE_NO_VALUE, -1, -1); }
+				{ $$ = makeIntConst(XML_STANDALONE_NO_VALUE, -1); }
 			| /*EMPTY*/
-				{ $$ = makeIntConst(XML_STANDALONE_OMITTED, -1, -1); }
+				{ $$ = makeIntConst(XML_STANDALONE_OMITTED, -1); }
 		;
 
 xml_attributes: XMLATTRIBUTES '(' xml_attribute_list ')'	{ $$ = $3; }
@@ -11151,7 +11151,7 @@ xml_attribute_el: a_expr AS ColLabel
 					$$->name = $3;
 					$$->indirection = NIL;
 					$$->val = (Node *) $1;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| a_expr
 				{
@@ -11159,7 +11159,7 @@ xml_attribute_el: a_expr AS ColLabel
 					$$->name = NULL;
 					$$->indirection = NIL;
 					$$->val = (Node *) $1;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 		;
 
@@ -11228,7 +11228,7 @@ over_clause: OVER window_specification
 					n->frameOptions = FRAMEOPTION_DEFAULTS;
 					n->startOffset = NULL;
 					n->endOffset = NULL;
-					n->location = @2.begins;
+					n->location = @2;
 					$$ = n;
 				}
 			| /*EMPTY*/
@@ -11247,7 +11247,7 @@ window_specification: '(' opt_existing_window_name opt_partition_clause
 					n->frameOptions = $5->frameOptions;
 					n->startOffset = $5->startOffset;
 					n->endOffset = $5->endOffset;
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = n;
 				}
 		;
@@ -11287,13 +11287,13 @@ opt_frame_clause:
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("RANGE PRECEDING is only supported with UNBOUNDED"),
-								 parser_errposition(@1.begins)));
+								 parser_errposition(@1)));
 					if (n->frameOptions & (FRAMEOPTION_START_VALUE_FOLLOWING |
 										   FRAMEOPTION_END_VALUE_FOLLOWING))
 						ereport(ERROR,
 								(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 								 errmsg("RANGE FOLLOWING is only supported with UNBOUNDED"),
-								 parser_errposition(@1.begins)));
+								 parser_errposition(@1)));
 					$$ = n;
 				}
 			| ROWS frame_extent
@@ -11320,12 +11320,12 @@ frame_extent: frame_bound
 						ereport(ERROR,
 								(errcode(ERRCODE_WINDOWING_ERROR),
 								 errmsg("frame start cannot be UNBOUNDED FOLLOWING"),
-								 parser_errposition(@1.begins)));
+								 parser_errposition(@1)));
 					if (n->frameOptions & FRAMEOPTION_START_VALUE_FOLLOWING)
 						ereport(ERROR,
 								(errcode(ERRCODE_WINDOWING_ERROR),
 								 errmsg("frame starting from following row cannot end with current row"),
-								 parser_errposition(@1.begins)));
+								 parser_errposition(@1)));
 					n->frameOptions |= FRAMEOPTION_END_CURRENT_ROW;
 					$$ = n;
 				}
@@ -11343,25 +11343,25 @@ frame_extent: frame_bound
 						ereport(ERROR,
 								(errcode(ERRCODE_WINDOWING_ERROR),
 								 errmsg("frame start cannot be UNBOUNDED FOLLOWING"),
-								 parser_errposition(@2.begins)));
+								 parser_errposition(@2)));
 					if (frameOptions & FRAMEOPTION_END_UNBOUNDED_PRECEDING)
 						ereport(ERROR,
 								(errcode(ERRCODE_WINDOWING_ERROR),
 								 errmsg("frame end cannot be UNBOUNDED PRECEDING"),
-								 parser_errposition(@4.begins)));
+								 parser_errposition(@4)));
 					if ((frameOptions & FRAMEOPTION_START_CURRENT_ROW) &&
 						(frameOptions & FRAMEOPTION_END_VALUE_PRECEDING))
 						ereport(ERROR,
 								(errcode(ERRCODE_WINDOWING_ERROR),
 								 errmsg("frame starting from current row cannot have preceding rows"),
-								 parser_errposition(@4.begins)));
+								 parser_errposition(@4)));
 					if ((frameOptions & FRAMEOPTION_START_VALUE_FOLLOWING) &&
 						(frameOptions & (FRAMEOPTION_END_VALUE_PRECEDING |
 										 FRAMEOPTION_END_CURRENT_ROW)))
 						ereport(ERROR,
 								(errcode(ERRCODE_WINDOWING_ERROR),
 								 errmsg("frame starting from following row cannot have preceding rows"),
-								 parser_errposition(@4.begins)));
+								 parser_errposition(@4)));
 					n1->frameOptions = frameOptions;
 					n1->endOffset = n2->startOffset;
 					$$ = n1;
@@ -11519,7 +11519,7 @@ func_arg_expr:  a_expr
 					na->name = $1;
 					na->arg = (Expr *) $3;
 					na->argnumber = -1;		/* until determined */
-					na->location = @1.begins;
+					na->location = @1;
 					$$ = (Node *) na;
 				}
 		;
@@ -11530,15 +11530,15 @@ type_list:	Typename								{ $$ = list_make1($1); }
 
 array_expr: '[' expr_list ']'
 				{
-					$$ = makeAArrayExpr($2, @1.begins);
+					$$ = makeAArrayExpr($2, @1);
 				}
 			| '[' array_expr_list ']'
 				{
-					$$ = makeAArrayExpr($2, @1.begins);
+					$$ = makeAArrayExpr($2, @1);
 				}
 			| '[' ']'
 				{
-					$$ = makeAArrayExpr(NIL, @1.begins);
+					$$ = makeAArrayExpr(NIL, @1);
 				}
 		;
 
@@ -11550,7 +11550,7 @@ array_expr_list: array_expr							{ $$ = list_make1($1); }
 extract_list:
 			extract_arg FROM a_expr
 				{
-					$$ = list_make2(makeStringConst($1, @1.begins, @1.length), $3);
+					$$ = list_make2(makeStringConst($1, @1), $3);
 				}
 			| /*EMPTY*/								{ $$ = NIL; }
 		;
@@ -11635,9 +11635,9 @@ substr_list:
 					 * which it is likely to do if the second argument
 					 * is unknown or doesn't have an implicit cast to int4.
 					 */
-					$$ = list_make3($1, makeIntConst(1, -1, -1),
+					$$ = list_make3($1, makeIntConst(1, -1),
 									makeTypeCast($2,
-												 SystemTypeName("int4"), -1, -1));
+												 SystemTypeName("int4"), -1));
 				}
 			| expr_list
 				{
@@ -11683,7 +11683,7 @@ case_expr:	CASE case_arg when_clause_list case_default END_P
 					c->arg = (Expr *) $2;
 					c->args = $3;
 					c->defresult = (Expr *) $4;
-					c->location = @1.begins;
+					c->location = @1;
 					$$ = (Node *)c;
 				}
 		;
@@ -11700,7 +11700,7 @@ when_clause:
 					CaseWhen *w = makeNode(CaseWhen);
 					w->expr = (Expr *) $2;
 					w->result = (Expr *) $4;
-					w->location = @1.begins;
+					w->location = @1;
 					$$ = (Node *)w;
 				}
 		;
@@ -11716,11 +11716,11 @@ case_arg:	a_expr									{ $$ = $1; }
 
 columnref:	ColId
 				{
-					$$ = makeColumnRef($1, NIL, @1.begins, yyscanner);
+					$$ = makeColumnRef($1, NIL, @1, yyscanner);
 				}
 			| ColId indirection
 				{
-					$$ = makeColumnRef($1, $2, @1.begins, yyscanner);
+					$$ = makeColumnRef($1, $2, @1, yyscanner);
 				}
 		;
 
@@ -11775,7 +11775,7 @@ ctext_expr:
 			| DEFAULT
 				{
 					SetToDefault *n = makeNode(SetToDefault);
-					n->location = @1.begins;
+					n->location = @1;
 					$$ = (Node *) n;
 				}
 		;
@@ -11811,7 +11811,7 @@ target_el:	a_expr AS ColLabel
 					$$->name = $3;
 					$$->indirection = NIL;
 					$$->val = (Node *)$1;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			/*
 			 * We support omitting AS only for column labels that aren't
@@ -11827,7 +11827,7 @@ target_el:	a_expr AS ColLabel
 					$$->name = $2;
 					$$->indirection = NIL;
 					$$->val = (Node *)$1;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| a_expr
 				{
@@ -11835,19 +11835,19 @@ target_el:	a_expr AS ColLabel
 					$$->name = NULL;
 					$$->indirection = NIL;
 					$$->val = (Node *)$1;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 			| '*'
 				{
 					ColumnRef *n = makeNode(ColumnRef);
 					n->fields = list_make1(makeNode(A_Star));
-					n->location = @1.begins;
+					n->location = @1;
 
 					$$ = makeNode(ResTarget);
 					$$->name = NULL;
 					$$->indirection = NIL;
 					$$->val = (Node *)n;
-					$$->location = @1.begins;
+					$$->location = @1;
 				}
 		;
 
@@ -11873,12 +11873,12 @@ qualified_name_list:
 qualified_name:
 			ColId
 				{
-					$$ = makeRangeVar(NULL, $1, @1.begins);
+					$$ = makeRangeVar(NULL, $1, @1);
 				}
 			| ColId indirection
 				{
 					check_qualified_name($2, yyscanner);
-					$$ = makeRangeVar(NULL, NULL, @1.begins);
+					$$ = makeRangeVar(NULL, NULL, @1);
 					switch (list_length($2))
 					{
 						case 1:
@@ -11896,7 +11896,7 @@ qualified_name:
 									(errcode(ERRCODE_SYNTAX_ERROR),
 									 errmsg("improper qualified name (too many dotted names): %s",
 											NameListToString(lcons(makeString($1), $2))),
-									 parser_errposition(@1.begins)));
+									 parser_errposition(@1)));
 							break;
 					}
 				}
@@ -11946,19 +11946,19 @@ func_name:	type_function_name
  */
 AexprConst: Iconst
 				{
-					$$ = makeIntConst($1, @1.begins, @1.length);
+					$$ = makeIntConst($1, @1);
 				}
 			| FCONST
 				{
-					$$ = makeFloatConst($1, @1.begins, @1.length);
+					$$ = makeFloatConst($1, @1);
 				}
 			| Sconst
 				{
-					$$ = makeStringConst($1, @1.begins, @1.length);
+					$$ = makeStringConst($1, @1);
 				}
 			| BCONST
 				{
-					$$ = makeBitStringConst($1, @1.begins, @1.length);
+					$$ = makeBitStringConst($1, @1);
 				}
 			| XCONST
 				{
@@ -11967,14 +11967,14 @@ AexprConst: Iconst
 					 * a <general literal> shall not be a
 					 * <bit string literal> or a <hex string literal>.
 					 */
-					$$ = makeBitStringConst($1, @1.begins, @1.length);
+					$$ = makeBitStringConst($1, @1);
 				}
 			| func_name Sconst
 				{
 					/* generic type 'literal' syntax */
 					TypeName *t = makeTypeNameFromNameList($1);
-					t->location = @1.begins;
-					$$ = makeStringConstCast($2, @2.begins, @2.length, t);
+					t->location = @1;
+					$$ = makeStringConstCast($2, @2, t);
 				}
 			| func_name '(' func_arg_list ')' Sconst
 				{
@@ -11998,18 +11998,18 @@ AexprConst: Iconst
 									 parser_errposition(arg->location)));
 					}
 					t->typmods = $3;
-					t->location = @1.begins;
-					$$ = makeStringConstCast($5, @5.begins, @5.length, t);
+					t->location = @1;
+					$$ = makeStringConstCast($5, @5, t);
 				}
 			| ConstTypename Sconst
 				{
-					$$ = makeStringConstCast($2, @2.begins, @2.length, $1);
+					$$ = makeStringConstCast($2, @2, $1);
 				}
 			| ConstInterval Sconst opt_interval
 				{
 					TypeName *t = $1;
 					t->typmods = $3;
-					$$ = makeStringConstCast($2, @2.begins, @2.length, t);
+					$$ = makeStringConstCast($2, @2, t);
 				}
 			| ConstInterval '(' Iconst ')' Sconst opt_interval
 				{
@@ -12020,25 +12020,25 @@ AexprConst: Iconst
 							ereport(ERROR,
 									(errcode(ERRCODE_SYNTAX_ERROR),
 									 errmsg("interval precision specified twice"),
-									 parser_errposition(@1.begins)));
-						t->typmods = lappend($6, makeIntConst($3, @3.begins, @3.length));
+									 parser_errposition(@1)));
+						t->typmods = lappend($6, makeIntConst($3, @3));
 					}
 					else
-						t->typmods = list_make2(makeIntConst(INTERVAL_FULL_RANGE, -1, -1),
-												makeIntConst($3, @3.begins, @3.length));
-					$$ = makeStringConstCast($5, @5.begins, @5.length, t);
+						t->typmods = list_make2(makeIntConst(INTERVAL_FULL_RANGE, -1),
+												makeIntConst($3, @3));
+					$$ = makeStringConstCast($5, @5, t);
 				}
 			| TRUE_P
 				{
-					$$ = makeBoolAConst(TRUE, @1.begins, @1.length);
+					$$ = makeBoolAConst(TRUE, @1);
 				}
 			| FALSE_P
 				{
-					$$ = makeBoolAConst(FALSE, @1.begins, @1.length);
+					$$ = makeBoolAConst(FALSE, @1);
 				}
 			| NULL_P
 				{
-					$$ = makeNullAConst(@1.begins, @1.length);
+					$$ = makeNullAConst(@1);
 				}
 		;
 
@@ -12599,106 +12599,100 @@ makeColumnRef(char *colname, List *indirection,
 }
 
 static Node *
-makeTypeCast(Node *arg, TypeName *typename, int location, int length)
+makeTypeCast(Node *arg, TypeName *typename, int location)
 {
 	TypeCast *n = makeNode(TypeCast);
 	n->arg = arg;
 	n->typeName = typename;
 	n->location = location;
-	n->tok_len = length;
 	return (Node *) n;
 }
 
 static Node *
-makeStringConst(char *str, int location, int length)
+makeStringConst(char *str, int location)
 {
 	A_Const *n = makeNode(A_Const);
 
 	n->val.type = T_String;
 	n->val.val.str = str;
 	n->location = location;
-	n->tok_len = length;
 
 	return (Node *)n;
 }
 
 static Node *
-makeStringConstCast(char *str, int location, int length, TypeName *typename)
+makeStringConstCast(char *str, int location, TypeName *typename)
 {
-	Node *s = makeStringConst(str, location, length);
+	Node *s = makeStringConst(str, location);
 
-	return makeTypeCast(s, typename, location, length);
+	return makeTypeCast(s, typename, -1);
 }
 
 static Node *
-makeIntConst(int val, int location, int length)
+makeIntConst(int val, int location)
 {
 	A_Const *n = makeNode(A_Const);
 
 	n->val.type = T_Integer;
 	n->val.val.ival = val;
 	n->location = location;
-	n->tok_len = length;
 
 	return (Node *)n;
 }
 
 static Node *
-makeFloatConst(char *str, int location, int length)
+makeFloatConst(char *str, int location)
 {
 	A_Const *n = makeNode(A_Const);
 
 	n->val.type = T_Float;
 	n->val.val.str = str;
 	n->location = location;
-	n->tok_len = length;
 
 	return (Node *)n;
 }
 
 static Node *
-makeBitStringConst(char *str, int location, int length)
+makeBitStringConst(char *str, int location)
 {
 	A_Const *n = makeNode(A_Const);
 
 	n->val.type = T_BitString;
 	n->val.val.str = str;
 	n->location = location;
-	n->tok_len = length;
 
 	return (Node *)n;
 }
 
 static Node *
-makeNullAConst(int location, int length)
+makeNullAConst(int location)
 {
 	A_Const *n = makeNode(A_Const);
 
 	n->val.type = T_Null;
 	n->location = location;
-	n->tok_len = length;
 
 	return (Node *)n;
 }
 
 static Node *
-makeAConst(Value *v, int location, int length)
+makeAConst(Value *v, int location)
 {
 	Node *n;
 
 	switch (v->type)
 	{
 		case T_Float:
-			n = makeFloatConst(v->val.str, location, length);
+			n = makeFloatConst(v->val.str, location);
 			break;
 
 		case T_Integer:
-			n = makeIntConst(v->val.ival, location, length);
+			n = makeIntConst(v->val.ival, location);
 			break;
 
 		case T_String:
 		default:
-			n = makeStringConst(v->val.str, location, length);
+			n = makeStringConst(v->val.str, location);
 			break;
 	}
 
@@ -12709,16 +12703,15 @@ makeAConst(Value *v, int location, int length)
  * Create an A_Const string node and put it inside a boolean cast.
  */
 static Node *
-makeBoolAConst(bool state, int location, int length)
+makeBoolAConst(bool state, int location)
 {
 	A_Const *n = makeNode(A_Const);
 
 	n->val.type = T_String;
 	n->val.val.str = (state ? "t" : "f");
 	n->location = location;
-	n->tok_len = length;
 
-	return makeTypeCast((Node *)n, SystemTypeName("bool"), -1, -1);
+	return makeTypeCast((Node *)n, SystemTypeName("bool"), -1);
 }
 
 /* makeOverlaps()
@@ -12962,13 +12955,11 @@ doNegate(Node *n, int location)
 		if (con->val.type == T_Integer)
 		{
 			con->val.val.ival = -con->val.val.ival;
-			con->tok_len = snprintf(NULL, 0, "%ld", con->val.val.ival);
 			return n;
 		}
 		if (con->val.type == T_Float)
 		{
 			doNegateFloat(&con->val);
-			con->tok_len = strlen(con->val.val.str);
 			return n;
 		}
 	}

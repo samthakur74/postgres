@@ -222,7 +222,7 @@ ParseFuncOrColumn(ParseState *pstate, List *funcname, List *fargs,
 		 */
 		return coerce_type(pstate, linitial(fargs),
 						   actual_arg_types[0], rettype, -1,
-						   COERCION_EXPLICIT, COERCE_EXPLICIT_CALL, location, -1);
+						   COERCION_EXPLICIT, COERCE_EXPLICIT_CALL, location);
 	}
 	else if (fdresult == FUNCDETAIL_NORMAL)
 	{
@@ -1356,7 +1356,7 @@ make_fn_arguments(ParseState *pstate,
 								   declared_arg_types[i], -1,
 								   COERCION_IMPLICIT,
 								   COERCE_IMPLICIT_CAST,
-								   -1, -1);
+								   -1);
 				na->arg = (Expr *) node;
 			}
 			else
@@ -1367,7 +1367,7 @@ make_fn_arguments(ParseState *pstate,
 								   declared_arg_types[i], -1,
 								   COERCION_IMPLICIT,
 								   COERCE_IMPLICIT_CAST,
-								   -1, -1);
+								   -1);
 				lfirst(current_fargs) = node;
 			}
 		}

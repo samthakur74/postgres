@@ -283,7 +283,7 @@ plpgsql_yylex(void)
 				push_back_token(tok3, &aux3);
 				push_back_token(tok2, &aux2);
 				if (plpgsql_parse_word(aux1.lval.str,
-									   core_yy.scanbuf + aux1.lloc.begins,
+									   core_yy.scanbuf + aux1.lloc,
 									   &aux1.lval.wdatum,
 									   &aux1.lval.word))
 					tok1 = T_DATUM;
@@ -304,7 +304,7 @@ plpgsql_yylex(void)
 			/* not A.B, so just process A */
 			push_back_token(tok2, &aux2);
 			if (plpgsql_parse_word(aux1.lval.str,
-								   core_yy.scanbuf + aux1.lloc.begins,
+								   core_yy.scanbuf + aux1.lloc,
 								   &aux1.lval.wdatum,
 								   &aux1.lval.word))
 				tok1 = T_DATUM;
@@ -356,7 +356,7 @@ internal_yylex(TokenAuxData *auxdata)
 						   yyscanner);
 
 		/* remember the length of yytext before it gets changed */
-		yytext = core_yy.scanbuf + auxdata->lloc.beginss;
+		yytext = core_yy.scanbuf + auxdata->lloc;
 		auxdata->leng = strlen(yytext);
 
 		/* Check for << >> and #, which the core considers operators */
@@ -494,7 +494,7 @@ plpgsql_scanner_errposition(int location)
 void
 plpgsql_yyerror(const char *message)
 {
-	char	   *yytext = core_yy.scanbuf + plpgsql_yylloc.begins;
+	char	   *yytext = core_yy.scanbuf + plpgsql_yylloc;
 
 	if (*yytext == '\0')
 	{
@@ -502,7 +502,7 @@ plpgsql_yyerror(const char *message)
 				(errcode(ERRCODE_SYNTAX_ERROR),
 		/* translator: %s is typically the translation of "syntax error" */
 				 errmsg("%s at end of input", _(message)),
-				 plpgsql_scanner_errposition(plpgsql_yylloc.begins)));
+				 plpgsql_scanner_errposition(plpgsql_yylloc)));
 	}
 	else
 	{
@@ -518,7 +518,7 @@ plpgsql_yyerror(const char *message)
 				(errcode(ERRCODE_SYNTAX_ERROR),
 		/* translator: first %s is typically the translation of "syntax error" */
 				 errmsg("%s at or near \"%s\"", _(message), yytext),
-				 plpgsql_scanner_errposition(plpgsql_yylloc.begins)));
+				 plpgsql_scanner_errposition(plpgsql_yylloc)));
 	}
 }
 

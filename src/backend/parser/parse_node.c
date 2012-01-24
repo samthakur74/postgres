@@ -335,7 +335,7 @@ transformArraySubscripts(ParseState *pstate,
 												INT4OID, -1,
 												COERCION_ASSIGNMENT,
 												COERCE_IMPLICIT_CAST,
-												-1, -1);
+												-1);
 				if (subexpr == NULL)
 					ereport(ERROR,
 							(errcode(ERRCODE_DATATYPE_MISMATCH),
@@ -362,7 +362,7 @@ transformArraySubscripts(ParseState *pstate,
 										INT4OID, -1,
 										COERCION_ASSIGNMENT,
 										COERCE_IMPLICIT_CAST,
-										-1, -1);
+										-1);
 		if (subexpr == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATATYPE_MISMATCH),
@@ -386,7 +386,7 @@ transformArraySubscripts(ParseState *pstate,
 										typeneeded, arrayTypMod,
 										COERCION_ASSIGNMENT,
 										COERCE_IMPLICIT_CAST,
-										-1, -1);
+										-1);
 		if (newFrom == NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATATYPE_MISMATCH),
@@ -434,7 +434,7 @@ transformArraySubscripts(ParseState *pstate,
  *	too many examples that fail if we try.
  */
 Const *
-make_const(ParseState *pstate, Value *value, int location, int tok_len)
+make_const(ParseState *pstate, Value *value, int location)
 {
 	Const	   *con;
 	Datum		val;
@@ -533,7 +533,6 @@ make_const(ParseState *pstate, Value *value, int location, int tok_len)
 							true,
 							false);
 			con->location = location;
-			con->tok_len = tok_len;
 			return con;
 
 		default:
@@ -549,7 +548,6 @@ make_const(ParseState *pstate, Value *value, int location, int tok_len)
 					false,
 					typebyval);
 	con->location = location;
-	con->tok_len = tok_len;
 
 	return con;
 }
