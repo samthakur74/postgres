@@ -746,7 +746,9 @@ pgss_store_constants(uint64 query_id)
  * strings. This is accomplished by using the public API for the core scanner,
  * with a few workarounds for quirks of their representation, such as the fact
  * that constants preceded by a minus symbol have a position at the minus
- * symbol, and yet are separately tokenized.
+ * symbol, and yet are separately tokenized. This is effectively the inverse of
+ * what the later parsing step would have done to the position Const token at
+ * the minus symbol and not immediately afterwards.
  *
  * If the string does not point to the first character of a valid constant, or
  * does not include the constant in its entirety, behavior is undefined. Since
@@ -891,23 +893,6 @@ AppendJumb((unsigned char*)&item, last_jumble, sizeof(item), i)
  * constants, while simply skipping over others that are not essential to the
  * query, such that it is usefully normalized, excluding things from the tree
  * that are not essential to the query itself.
- *
- * A guiding principal as to whether two queries should be considered
- * equivalent is whether whatever difference exists between the two queries
- * could be expected to result in two different plans, assuming that all
- * constants have the same selectivity estimate and excluding factors that are
- * not essential to the query and the relations on which it operates. A
- * non-obvious example of such a differentiator is a change in the definition
- * of a view referenced by a query. We pointedly serialize the query tree
- * *after* the rewriting stage, so entries in pg_stat_statements accurately
- * represent discrete operations, while not having artifacts from external
- * factors that are not essential to what the query actually does. Directly
- * hashing plans would have the undesirable side-effect of potentially having
- * totally external factors like planner cost constants differentiate a query,
- * so that particular implementation was not chosen. Directly hashing the raw
- * parse tree would prevent us from benefiting from the parser's own
- * normalization of queries in later stages, such as removing differences
- * between equivalent syntax, so that implementation was avoided too.
  *
  * The last_jumble buffer, which this function writes to, can be hashed to
  * uniquely identify a query that may use different constants in successive
@@ -1680,20 +1665,6 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		 */
 		InstrEndLoop(queryDesc->totaltime);
 
-		/*
-		 * Once control gets here, there is an assumption that the last_*
-		 * variables were set by a prior, corresponding call to
-		 * pgss_Planner within this backend. That corresponding call should have
-		 * jumbled the query tree.
-		 *
-		 * That call would only be recorded when the executor stack depth
-		 * (which is monitored) was 0, so nested planner calls don't cause
-		 * this assumption to fall down.
-		 *
-		 * A number of other things can prevent pgss_Planner from jumbling and
-		 * therefore prevent control reaching here, such as utility
-		 * statements and prepared queries.
-		 */
 		pgss_store(queryDesc->sourceText,
 		   query_id,
 		   queryDesc->totaltime->total,
@@ -1943,6 +1914,7 @@ pgss_store(const char *query, uint64 query_id,
 
 			entry = entry_alloc(&key, query, new_query_len);
 		}
+
 		/*
 		 * Free local memory that stores constant positions - we won't need
 		 * it again until the entry is evicted from shared memory, after
@@ -2236,6 +2208,4 @@ entry_reset(void)
 	}
 
 	LWLockRelease(pgss->lock);
-
-
 }
