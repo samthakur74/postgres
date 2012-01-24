@@ -32,13 +32,21 @@
 
 #include <unistd.h>
 
+/*
+ * XXX: ugly hack to prevent gram.h from complaining about lack of a core-parser
+ * type definition that we're not interested in anyway.
+ */
+#define YYSTYPE_IS_DECLARED
+
 #include "access/hash.h"
 #include "executor/instrument.h"
 #include "funcapi.h"
 #include "mb/pg_wchar.h"
 #include "miscadmin.h"
 #include "parser/analyze.h"
+#include "parser/gram.h"
 #include "parser/parsetree.h"
+#include "parser/scanner.h"
 #include "pgstat.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
@@ -47,9 +55,7 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 
-
 PG_MODULE_MAGIC;
-
 
 /* Location of stats file */
 #define PGSS_DUMP_FILE	"global/pg_stat_statements.stat"
@@ -127,12 +133,17 @@ typedef struct pgssSharedState
 	int			query_size;		/* max query length in bytes */
 } pgssSharedState;
 
+/*
+ * Const token positions (for canonicalization)
+ */
 typedef struct pgssTokenOffset
 {
 	int offset;					/* token offset in query string in bytes */
-	int len;					/* length of token in bytes */
 } pgssTokenOffset;
 
+/*
+ * Last seen constant positions per statement
+ */
 typedef struct pgssQueryConEntry
 {
 	pgssHashKey		key;			/* hash key of entry - MUST BE FIRST */
@@ -356,7 +367,7 @@ _PG_init(void)
 	info.keysize = sizeof(pgssHashKey);
 	/* Store offsets in hash table */
 	info.entrysize = offsetof(pgssQueryConEntry, offsets) +
-								1024 * sizeof(pgssQueryConEntry);
+								pgstat_track_activity_query_size * sizeof(pgssQueryConEntry);
 	info.hash = pgss_hash_fn;
 	info.match = pgss_match_fn;
 
@@ -757,7 +768,47 @@ pgss_store_constants(uint64 query_id)
 static uint32
 get_constant_length(const char* query_str_const)
 {
-	return 0;
+	core_yyscan_t  init_scan;
+	core_yy_extra_type ext_type;
+	core_YYSTYPE type;
+	uint32 len = 0;
+	YYLTYPE pos;
+	int token;
+	init_scan = scanner_init(query_str_const,
+							 &ext_type,
+							 ScanKeywords,
+							 NumScanKeywords);
+
+	token = core_yylex(&type, &pos,
+			   init_scan);
+
+	elog(DEBUG1, "(initial, qry: \"%s\") token id: %d", query_str_const, token);
+	elog(DEBUG1, "ext_type->scanbuf: %s", ext_type.scanbuf);
+	switch(token)
+	{
+		case SCONST:
+		case NULL_P:
+		case BCONST:
+		case TRUE_P:
+		case FALSE_P:
+		case FCONST:
+		case ICONST:
+			len = strlen(ext_type.scanbuf);
+			break;
+		default:
+			while (token != 0)
+			{
+				token = core_yylex(&type, &pos,
+							   init_scan);
+
+			}
+			len = strlen(ext_type.scanbuf);
+			//elog(ERROR, "unrecognized constant literal in pg_stat_statements: %d", token);
+	}
+
+	scanner_finish(init_scan);
+
+	return len;
 }
 
 /*
@@ -813,9 +864,9 @@ AppendJumb(unsigned char* item, unsigned char jumble[], size_t size, size_t *i)
 	{
 		int64 start_hash = hash_any_var_width((const unsigned char* ) last_jumble, JUMBLE_SIZE, false);
 		int hash_l = sizeof(start_hash);
-		int part_left_l = size - ((*i - JUMBLE_SIZE) * -1);
+		int part_left_l = Max(0, ((int) size - ((int) *i - JUMBLE_SIZE)));
 
-		Assert(part_left_l >= 0);
+		Assert(part_left_l >= 0 && part_left_l <= size);
 
 		memcpy(jumble, &start_hash, hash_l);
 		memcpy(jumble + hash_l, item + (size - part_left_l), part_left_l);
@@ -825,7 +876,6 @@ AppendJumb(unsigned char* item, unsigned char jumble[], size_t size, size_t *i)
 	{
 		*i += size;
 	}
-
 }
 
 /*
@@ -1153,7 +1203,6 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 
 			}
 			last_offsets[last_offset_num].offset = c->location;
-			last_offsets[last_offset_num].len = c->tok_len;
 			last_offset_num++;
 		}
 	}
@@ -1660,7 +1709,6 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		 * therefore prevent control reaching here, such as utility
 		 * statements and prepared queries.
 		 */
-
 		pgss_store(queryDesc->sourceText,
 		   query_id,
 		   queryDesc->totaltime->total,
@@ -1870,7 +1918,7 @@ pgss_store(const char *query, uint64 query_id,
 			for(i = 0; i < off_n; i++)
 			{
 				off = offs[i].offset;
-				tok_len = offs[i].len;
+				tok_len = get_constant_length(&query[off]);
 				len_to_wrt = off - last_off;
 				len_to_wrt -= last_tok_len;
 				/*
@@ -2122,6 +2170,7 @@ entry_alloc(pgssHashKey *key, const char* query, int new_query_len)
 		SpinLockInit(&entry->mutex);
 		/* ... and don't forget the query text */
 		memcpy(entry->query, query, entry->query_len);
+		Assert(new_query_len <= pgss->query_size);
 		entry->query[entry->query_len] = '\0';
 	}
 	/* Caller must have clipped query properly */

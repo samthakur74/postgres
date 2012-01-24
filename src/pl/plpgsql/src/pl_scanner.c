@@ -356,7 +356,7 @@ internal_yylex(TokenAuxData *auxdata)
 						   yyscanner);
 
 		/* remember the length of yytext before it gets changed */
-		yytext = core_yy.scanbuf + auxdata->lloc.begins;
+		yytext = core_yy.scanbuf + auxdata->lloc.beginss;
 		auxdata->leng = strlen(yytext);
 
 		/* Check for << >> and #, which the core considers operators */
