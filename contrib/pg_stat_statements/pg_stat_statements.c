@@ -707,9 +707,6 @@ pgss_store_constants(uint64 query_id)
 	key.encoding = GetDatabaseEncoding();
 	key.query_id = query_id;
 
-	/* Lookup the hash table entry with shared lock. */
-	LWLockAcquire(pgss->lock, LW_SHARED);
-
 	(void) hash_search(pgss_hash, &key, HASH_FIND, &found);
 
 	if (!found)
@@ -732,12 +729,10 @@ pgss_store_constants(uint64 query_id)
 		memcpy(entry->offsets, last_offsets, sizeof(pgssTokenOffset) * last_offset_num);
 		entry->n_elems = last_offset_num;
 	}
-
-	LWLockRelease(pgss->lock);
 }
 
 /*
- * XXX: Given query_str_const, which points to the first character of a constant
+ * Given query_str_const, which points to the first character of a constant
  * within a null-terminated SQL query string, determine the total length of the
  * constant.
  *
@@ -765,6 +760,10 @@ get_constant_length(const char* query_str_const)
 	uint32 len = 0;
 	YYLTYPE pos;
 	int token;
+
+	if (query_str_const[0] == '-')
+		return 1 + get_constant_length(&query_str_const[1]);
+
 	init_scan = scanner_init(query_str_const,
 							 &ext_type,
 							 ScanKeywords,
@@ -789,10 +788,7 @@ get_constant_length(const char* query_str_const)
 			 * Probably a negative constant - position still starts with minus
 			 * symbol
 			 */
-			if (query_str_const[0] == '-')
-				len = 1 + get_constant_length(&query_str_const[1]);
-			else
-				elog(ERROR, "unrecognized constant literal in pg_stat_statements: %d", token);
+			elog(ERROR, "unrecognized constant literal in pg_stat_statements: %d", token);
 	}
 
 	scanner_finish(init_scan);
