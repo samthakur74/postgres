@@ -676,12 +676,12 @@ pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 {
 	Query *post_analysis_tree;
 
-	 if (prev_parse_analyze_hook)
-		post_analysis_tree = (*prev_parse_analyze_varparams_hook) (parseTree, sourceText,
-			  paramTypes, numParams);
+	if (prev_parse_analyze_hook)
+		post_analysis_tree = (*prev_parse_analyze_varparams_hook) (parseTree,
+				sourceText, paramTypes, numParams);
 	else
-		post_analysis_tree = standard_parse_analyze_varparams(parseTree, sourceText,
-			  paramTypes, numParams);
+		post_analysis_tree = standard_parse_analyze_varparams(parseTree,
+				sourceText, paramTypes, numParams);
 
 	post_analysis_tree->query_id = JumbleQuery(post_analysis_tree);
 
@@ -690,6 +690,10 @@ pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 	return post_analysis_tree;
 }
 
+/*
+ * Store the set of constants just recorded to last_offsets in the backend local
+ * hash table, so that they may later be resolved to their originating query.
+ */
 static void
 pgss_store_constants(uint64 query_id)
 {
@@ -762,6 +766,7 @@ get_constant_length(const char* query_str_const)
 	int token;
 
 	if (query_str_const[0] == '-')
+		/* Negative constant */
 		return 1 + get_constant_length(&query_str_const[1]);
 
 	init_scan = scanner_init(query_str_const,
@@ -783,11 +788,24 @@ get_constant_length(const char* query_str_const)
 		case ICONST:
 			len = strlen(ext_type.scanbuf);
 			break;
+		case TIMESTAMP:
+		case TIME:
+		case IDENT:
+		case INTERVAL:
+			for(;;)
+			{
+				token = core_yylex(&type, &pos,
+						   init_scan);
+				/* String to follow */
+				if (token == SCONST)
+				{
+					len = strlen(ext_type.scanbuf);
+					break;
+				}
+				Assert(token != 0);
+			}
+			break;
 		default:
-			/*
-			 * Probably a negative constant - position still starts with minus
-			 * symbol
-			 */
 			elog(ERROR, "unrecognized constant literal in pg_stat_statements: %d", token);
 	}
 
@@ -1145,7 +1163,13 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	{
 		/*
 		 * Serialize generic magic value to
-		 * normalize constants
+		 * normalize constants.
+		 *
+		 * If implicit casts are used, such as when inserting an integer into a
+		 * text column, then that will be a distinct query from directly
+		 * inserting a string literal, so that literal value will be a FuncExpr
+		 * to cast, and control won't reach here for that node. This behavior is
+		 * considered correct.
 		 */
 		unsigned char magic = 0xC0;
 		Const *c = (Const *) arg;
@@ -1156,9 +1180,6 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 		APP_JUMB(c->consttype);
 		/*
 		 * Some Const nodes naturally don't have a location.
-		 *
-		 * Views that have constants in their
-		 * definitions will have a tok_len of 0
 		 */
 		if (c->location > 0)
 		{
@@ -1172,17 +1193,28 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 			}
 			last_offsets[last_offset_num].offset = c->location;
 			last_offset_num++;
+			elog(DEBUG1,"c->location: %d", c->location);
 		}
 	}
 	else if (IsA(arg, Var))
 	{
 		unsigned char		  magic = 0xFA;
 		Var			  *v = (Var *) arg;
-		RangeTblEntry *rte = rt_fetch(v->varno, rtable);
-		/* Identify column by XOR'ing relid + col number */
-		Oid col_ident = rte->relid ^ v->varattno;
-		APP_JUMB(magic);
-		APP_JUMB(col_ident);
+
+		if (v->varno != INNER_VAR &&
+				v->varno != OUTER_VAR &&
+				v->varno != INDEX_VAR)
+		{
+			RangeTblEntry *rte = rt_fetch(v->varno, rtable);
+			/* Identify column by XOR'ing relid + col number */
+			Oid col_ident = rte->relid ^ v->varattno;
+			APP_JUMB(magic);
+			APP_JUMB(col_ident);
+		}
+		else
+		{
+			APP_JUMB(v->varno);
+		}
 	}
 	else if (IsA(arg, Param))
 	{

@@ -266,6 +266,7 @@ def main():
 		"values(1, 2, 3);", 
 		"values(4, 5, 6, 7);", conn)
 
+
 	verify_statement_equivalency(
 		"select * from (values(1, 2, 3)) as v;", 
 		"select * from (values(4, 5, 6)) as v;", conn)
@@ -614,6 +615,17 @@ def main():
 	"update products set special=default where prod_id = 7;",
 	"update products set special=default where prod_id = 10;",
 	conn)	
+
+	verify_statement_equivalency(
+	"insert into products(category, title, actor, price, special, common_prod_id) values (1,2,3,4,5,6);",
+	"insert into products(category, title, actor, price, special, common_prod_id) values (1,2,3,4,5,6);",
+	conn)	
+
+	verify_statement_differs(
+	"insert into products(category, title, actor, price, special, common_prod_id) values (1,2,3,4,5,6), (1,2,3,4,5,6);",
+	"insert into products(category, title, actor, price, special, common_prod_id) values (1,2,3,4,5,6);",
+	conn)	
+
 	# select into
 	verify_statement_equivalency(
 	"select * into orders_recent FROM orders WHERE orderdate >= '2002-01-01';",
@@ -1068,20 +1080,36 @@ def main():
 
 	# Test this cast syntax works:
 	verify_normalizes_correctly("select timestamp without time zone '2009-05-05 15:34:24';", 
-								"select timestamp without time zone ?;", conn, "excercise alternative cast syntax, timestamp")
+								"select ?;", conn, "excercise alternative cast syntax, timestamp")
 	verify_normalizes_correctly("select timestamptz '2009-05-05 15:34:24.1234';", 
-								"select timestamptz ?;", conn, "excercise alternative cast syntax, timestamptz")
+								"select ?;", conn, "excercise alternative cast syntax, timestamptz")
 	verify_normalizes_correctly("select date '2009-05-05';", 
-								"select date ?;", conn, "excercise alternative cast syntax, date")
+								"select ?;", conn, "excercise alternative cast syntax, date")
 	verify_normalizes_correctly("select time '15:15:15';", 
-								"select time ?;", conn, "excercise alternative cast syntax, time")
+								"select ?;", conn, "excercise alternative cast syntax, time")
 	verify_normalizes_correctly("select time with time zone '15:15:15';", 
-								"select time with time zone ?;", conn, "excercise alternative cast syntax, time with time zone")
+								"select ?;", conn, "excercise alternative cast syntax, time with time zone")
 
 
-	verify_normalizes_correctly("select interval '1 hour';", "select interval ?;", conn, "excercise alternative cast syntax, interval")
+	verify_normalizes_correctly("select interval '1 hour';", "select ?;", conn, "excercise alternative cast syntax, interval")
 	# Binary/bit strings have special handling within parser
 	verify_normalizes_correctly("select B'1001' | B'1111';", "select ? | ?;", conn, "bitstring parser handling")
+
+	verify_normalizes_correctly(
+	"insert into products(category, title, actor, price, special, common_prod_id) values (1,2,3,4,5,6);",
+	"insert into products(category, title, actor, price, special, common_prod_id) values (?,?,?,?,?,?);",
+	conn)	
+
+	verify_normalizes_correctly(
+	"insert into products(category, title, actor, price, special, common_prod_id) values (1,2,3,4,5,6), (1,2,3,4,5,6);",
+	"insert into products(category, title, actor, price, special, common_prod_id) values (?,?,?,?,?,?), (?,?,?,?,?,?);",
+	conn)	
+
+
+	# This constant considerably exceeds track_activity_query_size, but it
+	# doesn't matter - we still get a correctly canonicalized string representation.
+	verify_normalizes_correctly("select " + ("1" * 2048)  + ";", "select ?;",
+	conn, "constant exceeds track_activity_query_size")
 	demonstrate_buffer_limitation(conn)
 
 if __name__=="__main__":
