@@ -1057,8 +1057,86 @@ def main():
 	"select coalesce(orderid) from orders;", 
 	"select sum(orderid) from orders;", 
 	conn, "Don't confuse functions/function like nodes")
-
 	
+	# We have special handling for subselection Vars whose varnos reference
+	# outer range tables - exercise that
+
+	verify_statement_differs(
+	"""
+	SELECT a.attname,
+	  pg_catalog.format_type(a.atttypid, a.atttypmod),
+	  (SELECT substring(pg_catalog.pg_get_expr(d.adbin, d.adrelid) for 128)
+	   FROM pg_catalog.pg_attrdef d
+	   WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef),
+	  a.attnotnull, a.attnum,
+	  (SELECT c.collname FROM pg_catalog.pg_collation c, pg_catalog.pg_type t
+	   WHERE c.oid = a.attcollation AND t.oid = a.atttypid AND a.attcollation <> t.typcollation) AS attcollation,
+	  NULL AS indexdef,
+	  NULL AS attfdwoptions,
+	  a.attstorage,
+	  CASE WHEN a.attstattarget=-1 THEN NULL ELSE a.attstattarget END AS attstattarget, pg_catalog.col_description(a.attrelid, a.attnum)
+	FROM pg_catalog.pg_attribute a
+	WHERE a.attrelid = '16438' AND a.attnum > 0 AND NOT a.attisdropped
+	ORDER BY a.attnum;
+	""",
+	"""
+	SELECT a.attname,
+	  pg_catalog.format_type(a.atttypid, a.atttypmod),
+	  (SELECT substring(pg_catalog.pg_get_expr(d.adbin, d.adrelid) for 128)
+	   FROM pg_catalog.pg_attrdef d
+	   WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef),
+	  a.attnotnull, a.attnum,
+	  (SELECT c.collname FROM pg_catalog.pg_collation c, pg_catalog.pg_type t
+	   WHERE c.oid = a.attcollation AND t.oid = a.attnum AND a.attcollation <> t.typcollation) AS attcollation,
+	  NULL AS indexdef,
+	  NULL AS attfdwoptions,
+	  a.attstorage,
+	  CASE WHEN a.attstattarget=-1 THEN NULL ELSE a.attstattarget END AS attstattarget, pg_catalog.col_description(a.attrelid, a.attnum)
+	FROM pg_catalog.pg_attribute a
+	WHERE a.attrelid = '16438' AND a.attnum > 0 AND NOT a.attisdropped
+	ORDER BY a.attnum;
+	""",
+	conn)
+
+	verify_statement_equivalency(
+	"""
+	SELECT a.attname,
+	  pg_catalog.format_type(a.atttypid, a.atttypmod),
+	  (SELECT substring(pg_catalog.pg_get_expr(d.adbin, d.adrelid) for 128)
+	   FROM pg_catalog.pg_attrdef d
+	   WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef),
+	  a.attnotnull, a.attnum,
+	  (SELECT c.collname FROM pg_catalog.pg_collation c, pg_catalog.pg_type t
+	   WHERE c.oid = a.attcollation AND t.oid = a.atttypid AND a.attcollation <> t.typcollation) AS attcollation,
+	  NULL AS indexdef,
+	  NULL AS attfdwoptions,
+	  a.attstorage,
+	  CASE WHEN a.attstattarget=-1 THEN NULL ELSE a.attstattarget END AS attstattarget, pg_catalog.col_description(a.attrelid, a.attnum)
+	FROM pg_catalog.pg_attribute a
+	WHERE a.attrelid = '16438' AND a.attnum > 0 AND NOT a.attisdropped
+	ORDER BY a.attnum;
+	""",
+	"""
+	SELECT a.attname,
+	  pg_catalog.format_type(a.atttypid, a.atttypmod),
+	  (SELECT substring(pg_catalog.pg_get_expr(d.adbin, d.adrelid) for 128)
+	   FROM pg_catalog.pg_attrdef d
+	   WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef),
+	  a.attnotnull, a.attnum,
+	  (SELECT c.collname FROM pg_catalog.pg_collation c, pg_catalog.pg_type t
+	   WHERE c.oid = a.attcollation AND t.oid = a.atttypid AND a.attcollation <> t.typcollation) AS attcollation,
+	  NULL AS indexdef,
+	  NULL AS attfdwoptions,
+	  a.attstorage,
+	  CASE WHEN a.attstattarget=-1 THEN NULL ELSE a.attstattarget END AS attstattarget, pg_catalog.col_description(a.attrelid, a.attnum)
+	FROM pg_catalog.pg_attribute a
+	WHERE a.attrelid = '163438' AND a.attnum > 2 AND NOT a.attisdropped
+	ORDER BY a.attnum;
+	""",
+
+	conn)
+
+
 	verify_normalizes_correctly("select 1, 2, 3;", "select ?, ?, ?;", conn, "integer verification" )
 	verify_normalizes_correctly("select 'foo';", "select ?;", conn, "unknown/string normalization verification" )
 	verify_normalizes_correctly("select 'bar'::text;", "select ?::text;", conn, "text verification" )
@@ -1080,18 +1158,18 @@ def main():
 
 	# Test this cast syntax works:
 	verify_normalizes_correctly("select timestamp without time zone '2009-05-05 15:34:24';", 
-								"select ?;", conn, "excercise alternative cast syntax, timestamp")
+								"select ?;", conn, "exercise alternative cast syntax, timestamp")
 	verify_normalizes_correctly("select timestamptz '2009-05-05 15:34:24.1234';", 
-								"select ?;", conn, "excercise alternative cast syntax, timestamptz")
+								"select ?;", conn, "exercise alternative cast syntax, timestamptz")
 	verify_normalizes_correctly("select date '2009-05-05';", 
-								"select ?;", conn, "excercise alternative cast syntax, date")
+								"select ?;", conn, "exercise alternative cast syntax, date")
 	verify_normalizes_correctly("select time '15:15:15';", 
-								"select ?;", conn, "excercise alternative cast syntax, time")
+								"select ?;", conn, "exercise alternative cast syntax, time")
 	verify_normalizes_correctly("select time with time zone '15:15:15';", 
-								"select ?;", conn, "excercise alternative cast syntax, time with time zone")
+								"select ?;", conn, "exercise alternative cast syntax, time with time zone")
 
 
-	verify_normalizes_correctly("select interval '1 hour';", "select ?;", conn, "excercise alternative cast syntax, interval")
+	verify_normalizes_correctly("select interval '1 hour';", "select ?;", conn, "exercise alternative cast syntax, interval")
 	# Binary/bit strings have special handling within parser
 	verify_normalizes_correctly("select B'1001' | B'1111';", "select ? | ?;", conn, "bitstring parser handling")
 
