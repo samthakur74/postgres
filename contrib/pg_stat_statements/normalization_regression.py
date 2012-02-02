@@ -1096,12 +1096,12 @@ def main():
 	verify_normalizes_correctly("select B'1001' | B'1111';", "select ? | ?;", conn, "bitstring parser handling")
 
 	verify_normalizes_correctly(
-	"insert into products(category, title, actor, price, special, common_prod_id) values (1,2,3,4,5,6);",
+	"insert into products(category, title, actor, price, special, common_prod_id) values (1,'abc','abc',4,5,6);",
 	"insert into products(category, title, actor, price, special, common_prod_id) values (?,?,?,?,?,?);",
 	conn)	
 
 	verify_normalizes_correctly(
-	"insert into products(category, title, actor, price, special, common_prod_id) values (1,2,3,4,5,6), (1,2,3,4,5,6);",
+	"insert into products(category, title, actor, price, special, common_prod_id) values (1,'abc','abc',4,5,6), (1,'abc','abc',4,5,6);",
 	"insert into products(category, title, actor, price, special, common_prod_id) values (?,?,?,?,?,?), (?,?,?,?,?,?);",
 	conn)	
 

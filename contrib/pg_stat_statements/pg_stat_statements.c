@@ -179,6 +179,12 @@ static HTAB *pgss_hash = NULL;
 
 /* Backend-local hash table of info to canonicalize query strings */
 static HTAB *pgss_const_pos = NULL;
+/*
+ * Maintain a stack of cur query's rangetables, so subqueries can reference
+ * parent rangetables (not strictly a stack, but conceptually similar, as the
+ * top of the stack/tail is the subquery's range table.
+ */
+static List* pgss_rangetbl_stack = NIL;
 
 /*---- GUC variables ----*/
 
@@ -830,6 +836,10 @@ JumbleQuery(Query *post_analysis_tree)
 	memset(last_jumble, 0, JUMBLE_SIZE);
 	last_jumble[++i] = HASH_BUF;
 	PerformJumble(post_analysis_tree, JUMBLE_SIZE, &i);
+	/* Reset rangetbl state */
+	list_free(pgss_rangetbl_stack);
+	pgss_rangetbl_stack = NIL;
+
 	/* Sort offsets for later query string canonicalization */
 	qsort(last_offsets, last_offset_num, sizeof(pgssTokenOffset), comp_offset);
 	return hash_any64((const unsigned char* ) last_jumble, Min(i, JUMBLE_SIZE));
@@ -922,6 +932,9 @@ PerformJumble(const Query *tree, size_t size, size_t *i)
 	FuncExpr *off = (FuncExpr *) tree->limitOffset;
 	/* # of result tuples to skip (int8 expr) */
 	FuncExpr *limcount = (FuncExpr *) tree->limitCount;
+
+
+	pgss_rangetbl_stack = lappend(pgss_rangetbl_stack, tree->rtable);
 
 	APP_JUMB(tree->resultRelation);
 
@@ -1132,6 +1145,8 @@ PerformJumble(const Query *tree, size_t size, size_t *i)
 				PerformJumble(r->subquery, size, i);
 		}
 	}
+
+	pgss_rangetbl_stack = list_delete(pgss_rangetbl_stack, pgss_rangetbl_stack->tail);
 }
 
 /*
@@ -1193,28 +1208,36 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 			}
 			last_offsets[last_offset_num].offset = c->location;
 			last_offset_num++;
-			elog(DEBUG1,"c->location: %d", c->location);
 		}
 	}
 	else if (IsA(arg, Var))
 	{
 		unsigned char		  magic = 0xFA;
 		Var			  *v = (Var *) arg;
+		RangeTblEntry *rte;
 
-		if (v->varno != INNER_VAR &&
-				v->varno != OUTER_VAR &&
-				v->varno != INDEX_VAR)
+		if (v->varlevelsup > 0)
+			elog(DEBUG1, "v->varlevelsup: %d", v->varlevelsup);
+
+		/*
+		 * We need to get the details of the rangetable, but rtable may not
+		 * refer to the relevant one if we're in a subselection.
+		 */
+		if (v->varlevelsup == 0)
 		{
-			RangeTblEntry *rte = rt_fetch(v->varno, rtable);
-			/* Identify column by XOR'ing relid + col number */
-			Oid col_ident = rte->relid ^ v->varattno;
-			APP_JUMB(magic);
-			APP_JUMB(col_ident);
+			rte = rt_fetch(v->varno, rtable);
 		}
 		else
 		{
-			APP_JUMB(v->varno);
+			List *rtable_upper = list_nth(pgss_rangetbl_stack,
+					(list_length(pgss_rangetbl_stack) - 1) - v->varlevelsup);
+			rte = rt_fetch(v->varno, rtable_upper);
 		}
+
+		/* Identify column by XOR'ing relid + col number */
+		Oid col_ident = rte->relid ^ v->varattno;
+		APP_JUMB(magic);
+		APP_JUMB(col_ident);
 	}
 	else if (IsA(arg, Param))
 	{
