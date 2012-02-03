@@ -1050,9 +1050,8 @@ PerformJumble(const Query *tree, size_t size, size_t *i)
 		{
 			Var *v = (Var*) e;
 			RangeTblEntry *rte = rt_fetch(v->varno, tree->rtable);
-			/* Identify column by XOR'ing relid + col number */
-			Oid col_ident = rte->relid ^ v->varattno;
-			APP_JUMB(col_ident);
+			APP_JUMB(rte->relid);
+			APP_JUMB(v->varattno);
 		}
 		else
 		{
@@ -1234,10 +1233,9 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 			rte = rt_fetch(v->varno, rtable_upper);
 		}
 
-		/* Identify column by XOR'ing relid + col number */
-		Oid col_ident = rte->relid ^ v->varattno;
 		APP_JUMB(magic);
-		APP_JUMB(col_ident);
+		APP_JUMB(rte->relid);
+		APP_JUMB(v->varattno);
 	}
 	else if (IsA(arg, Param))
 	{
@@ -1300,9 +1298,8 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	{
 		TargetEntry *rt = (TargetEntry *) arg;
 		Node *e = (Node*) rt->expr;
-		/* XOR OID of column's source table + index to sort/group clause */
-		Oid target_repr = rt->resorigtbl ^ rt->ressortgroupref;
-		APP_JUMB(target_repr);
+		APP_JUMB(rt->resorigtbl);
+		APP_JUMB(rt->ressortgroupref);
 		LeafNode(e, size, i, rtable);
 	}
 	else if (IsA(arg, BoolExpr))
