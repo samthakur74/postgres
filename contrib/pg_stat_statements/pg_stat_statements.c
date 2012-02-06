@@ -33,10 +33,10 @@
 #include <unistd.h>
 
 /*
- * XXX: ugly hack to prevent gram.h from complaining about lack of a core-parser
- * type definition that we're not interested in anyway.
+ * XXX: include scanner.h first, to prevent code from gram.h complaining about
+ * lack of a core-parser type definition.
  */
-#define YYSTYPE_IS_DECLARED
+#include "parser/scanner.h"
 
 #include "access/hash.h"
 #include "executor/instrument.h"
@@ -46,7 +46,6 @@
 #include "parser/analyze.h"
 #include "parser/gram.h"
 #include "parser/parsetree.h"
-#include "parser/scanner.h"
 #include "pgstat.h"
 #include "storage/fd.h"
 #include "storage/ipc.h"
@@ -181,8 +180,8 @@ static HTAB *pgss_hash = NULL;
 static HTAB *pgss_const_pos = NULL;
 /*
  * Maintain a stack of cur query's rangetables, so subqueries can reference
- * parent rangetables (not strictly a stack, but conceptually similar, as the
- * top of the stack/tail is the subquery's range table.
+ * parent rangetables. Not strictly a stack, but conceptually similar, as the
+ * top of the stack/tail is the subquery's own range table.
  */
 static List* pgss_rangetbl_stack = NIL;
 
@@ -259,6 +258,9 @@ static Size pgss_memsize(void);
 static pgssEntry *entry_alloc(pgssHashKey *key, const char* query, int new_query_len);
 static void entry_dealloc(void);
 static void entry_reset(void);
+#ifdef USE_ASSERT_CHECKING
+static bool check_has_dups(pgssTokenOffset last_offsets[], size_t n);
+#endif
 
 
 /*
@@ -699,6 +701,9 @@ pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 /*
  * Store the set of constants just recorded to last_offsets in the backend local
  * hash table, so that they may later be resolved to their originating query.
+ *
+ * Assumes that pg_stat_statements global variables are set to values that are
+ * associated with query_id.
  */
 static void
 pgss_store_constants(uint64 query_id)
@@ -783,6 +788,8 @@ get_constant_length(const char* query_str_const)
 	token = core_yylex(&type, &pos,
 			   init_scan);
 
+	elog(DEBUG1, "pos: %d", pos);
+
 	switch(token)
 	{
 		case SCONST:
@@ -798,10 +805,14 @@ get_constant_length(const char* query_str_const)
 		case TIME:
 		case IDENT:
 		case INTERVAL:
+		case INTEGER:
+		case NUMERIC:
+		default:
 			for(;;)
 			{
 				token = core_yylex(&type, &pos,
 						   init_scan);
+				elog(DEBUG1, "pos: %d", pos);
 				/* String to follow */
 				if (token == SCONST)
 				{
@@ -811,12 +822,11 @@ get_constant_length(const char* query_str_const)
 				Assert(token != 0);
 			}
 			break;
-		default:
-			elog(ERROR, "unrecognized constant literal in pg_stat_statements: %d", token);
 	}
 
 	scanner_finish(init_scan);
 
+	Assert(len > 0);
 	return len;
 }
 
@@ -842,6 +852,7 @@ JumbleQuery(Query *post_analysis_tree)
 
 	/* Sort offsets for later query string canonicalization */
 	qsort(last_offsets, last_offset_num, sizeof(pgssTokenOffset), comp_offset);
+	Assert(!check_has_dups(last_offsets, last_offset_num));
 	return hash_any64((const unsigned char* ) last_jumble, Min(i, JUMBLE_SIZE));
 }
 
@@ -1188,7 +1199,9 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 		unsigned char magic = 0xC0;
 		Const *c = (Const *) arg;
 		APP_JUMB(magic);
-		/* Datatype of the constant is a
+
+		/*
+		 * Datatype of the constant is a
 		 * differentiator
 		 */
 		APP_JUMB(c->consttype);
@@ -1205,6 +1218,7 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 								sizeof(pgssTokenOffset));
 
 			}
+			elog(DEBUG1, "last_offset_num: %lu, location: %d", last_offset_num, c->location);
 			last_offsets[last_offset_num].offset = c->location;
 			last_offset_num++;
 		}
@@ -1214,6 +1228,7 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 		unsigned char		  magic = 0xFA;
 		Var			  *v = (Var *) arg;
 		RangeTblEntry *rte;
+		ListCell *lc;
 
 		if (v->varlevelsup > 0)
 			elog(DEBUG1, "v->varlevelsup: %d", v->varlevelsup);
@@ -1236,6 +1251,18 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 		APP_JUMB(magic);
 		APP_JUMB(rte->relid);
 		APP_JUMB(v->varattno);
+
+		foreach(lc, rte->values_lists)
+		{
+			List	   *sublist = (List *) lfirst(lc);
+			ListCell   *lc2;
+
+			foreach(lc2, sublist)
+			{
+				Node	   *col = (Node *) lfirst(lc2);
+				LeafNode(col, size, i, rtable);
+			}
+		}
 	}
 	else if (IsA(arg, Param))
 	{
@@ -1925,6 +1952,8 @@ pgss_store(const char *query, uint64 query_id,
 				tok_len = get_constant_length(&query[off]);
 				len_to_wrt = off - last_off;
 				len_to_wrt -= last_tok_len;
+
+				Assert(tok_len > 0);
 				/*
 				 * Each iteration copies everything prior to the current
 				 * offset/token to be replaced, except bytes copied in
@@ -1932,6 +1961,9 @@ pgss_store(const char *query, uint64 query_id,
 				 */
 				if (off + tok_len > new_query_len)
 					break;
+
+				Assert(len_to_wrt >= 0);
+
 				memcpy(norm_query + n_quer_it, query + quer_it, len_to_wrt);
 
 				n_quer_it += len_to_wrt;
@@ -2257,3 +2289,22 @@ entry_reset(void)
 
 	LWLockRelease(pgss->lock);
 }
+
+/*
+ * Array should not have any duplicates.
+ *
+ * Assumes that the array has already been sorted.
+ */
+#ifdef USE_ASSERT_CHECKING
+static bool check_has_dups(pgssTokenOffset last_offsets[], size_t n)
+{
+	int i;
+
+	for(i = 1; i < n; i++)
+		if (last_offsets[i - 1].offset == last_offsets[i].offset)
+			return true;
+
+	return false;
+}
+#endif
+

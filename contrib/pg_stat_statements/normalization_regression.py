@@ -1167,6 +1167,18 @@ def main():
 								"select ?;", conn, "exercise alternative cast syntax, time")
 	verify_normalizes_correctly("select time with time zone '15:15:15';", 
 								"select ?;", conn, "exercise alternative cast syntax, time with time zone")
+	verify_normalizes_correctly("select int4 '5';", 
+								"select ?;", conn, "exercise alternative cast syntax, int4")
+	verify_normalizes_correctly("select integer '5';", 
+								"select ?;", conn, "exercise alternative cast syntax, integer")
+	verify_normalizes_correctly("select numeric '5.5';", 
+								"select ?;", conn, "exercise alternative cast syntax, numeric")
+	verify_normalizes_correctly("select decimal '5.5';", 
+								"select ?;", conn, "exercise alternative cast syntax, decimal")
+	verify_normalizes_correctly("select name 'abc';", 
+								"select ?;", conn, "exercise alternative cast syntax, name")
+	verify_normalizes_correctly("select text 'abc';", 
+								"select ?;", conn, "exercise alternative cast syntax, text")
 
 
 	verify_normalizes_correctly("select interval '1 hour';", "select ?;", conn, "exercise alternative cast syntax, interval")
