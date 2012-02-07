@@ -58,9 +58,10 @@ PG_MODULE_MAGIC;
 
 /* Location of stats file */
 #define PGSS_DUMP_FILE	"global/pg_stat_statements.stat"
-
 /* This constant defines the magic number in the stats file header */
 static const uint32 PGSS_FILE_HEADER = 0x20100108;
+/* Constant representing query_id of queries hashed based on their string */
+#define PGSS_STR_QUERYID		(0)
 
 /* XXX: Should USAGE_EXEC reflect execution time and/or buffer usage? */
 #define USAGE_EXEC(duration)	(1.0)
@@ -148,7 +149,7 @@ typedef struct pgssQueryConEntry
 	pgssHashKey		key;			/* hash key of entry - MUST BE FIRST */
 	int				n_elems;		/* length of offsets array */
 	pgssTokenOffset offsets[1];		/* VARIABLE LENGTH ARRAY - MUST BE LAST */
-
+	/* Note: the allocated length of offsets is actually n_elems */
 } pgssQueryConEntry;
 
 /*---- Local variables ----*/
@@ -757,8 +758,8 @@ pgss_store_constants(uint64 query_id)
  * with a few workarounds for quirks of their representation, such as the fact
  * that constants preceded by a minus symbol have a position at the minus
  * symbol, and yet are separately tokenized. This is effectively the inverse of
- * what the later parsing step would have done to the position Const token at
- * the minus symbol and not immediately afterwards.
+ * what the later parsing step would have done to the Const node's position -
+ * compensate for the inclusion of the minus symbol.
  *
  * If the string does not point to the first character of a valid constant, or
  * does not include the constant in its entirety, behavior is undefined. Since
@@ -849,7 +850,7 @@ JumbleQuery(Query *post_analysis_tree)
 
 	/* Sort offsets for later query string canonicalization */
 	qsort(last_offsets, last_offset_num, sizeof(pgssTokenOffset), comp_offset);
-	return hash_any64((const unsigned char* ) last_jumble, Min(i, JUMBLE_SIZE));
+	return hash_any64((const unsigned char* ) last_jumble, i);
 }
 
 /*
@@ -912,10 +913,10 @@ AppendJumb((unsigned char*)&item, last_jumble, sizeof(item), i)
  *
  * It would be pretty questionable to attempt this with an enum that has
  * explicit integer values corresponding to constants, such as the huge enum
- * "Node" that we use to represent all possible nodes, and it would be
- * downright incorrect to do so with one with negative values explicitly
- * assigned to constants. This is intended to be used with enums with perhaps
- * less than a dozen possible values, that are never likely to far exceed that.
+ * "Node" that we use to dynamically identify nodes, and it would be downright
+ * incorrect to do so with one with negative values explicitly assigned to
+ * constants. This is intended to be used with enums with perhaps less than a
+ * dozen possible values, that are never likely to far exceed that.
  */
 #define COMPACT_ENUM(val) \
 	(unsigned char) val;
@@ -939,7 +940,6 @@ PerformJumble(const Query *tree, size_t size, size_t *i)
 	FuncExpr *off = (FuncExpr *) tree->limitOffset;
 	/* # of result tuples to skip (int8 expr) */
 	FuncExpr *limcount = (FuncExpr *) tree->limitCount;
-
 
 	pgss_rangetbl_stack = lappend(pgss_rangetbl_stack, tree->rtable);
 
@@ -1764,7 +1764,6 @@ pgss_ProcessUtility(Node *tree, const char *queryString,
 		instr_time	start;
 		instr_time	duration;
 		uint64		rows = 0;
-		uint64		query_id = 0;
 		BufferUsage bufusage;
 
 		bufusage = pgBufferUsage;
@@ -1815,8 +1814,8 @@ pgss_ProcessUtility(Node *tree, const char *queryString,
 			pgBufferUsage.temp_blks_written - bufusage.temp_blks_written;
 
 		/* In the case of utility statements, hash the query string directly */
-		pgss_store(queryString, query_id, INSTR_TIME_GET_DOUBLE(duration), rows,
-				   &bufusage);
+		pgss_store(queryString, PGSS_STR_QUERYID,
+				INSTR_TIME_GET_DOUBLE(duration), rows, &bufusage);
 	}
 	else
 	{
@@ -1968,13 +1967,13 @@ pgss_store(const char *query, uint64 query_id,
 				 * offset/token to be replaced, except bytes copied in
 				 * previous iterations
 				 */
-				if ((off - length_delta) + tok_len > new_query_len)
+				if (off - length_delta + tok_len > new_query_len)
 				{
 					/* We could just be oversized due to a large constant
 					 * literal. Try and copy bytes prior to the literal that may
 					 * have been missed.
 					 */
-					if ((off - length_delta) < new_query_len)
+					if (off - length_delta < new_query_len)
 					{
 						memcpy(norm_query + n_quer_it, query + quer_it,
 								Min(len_to_wrt, new_query_len - n_quer_it));

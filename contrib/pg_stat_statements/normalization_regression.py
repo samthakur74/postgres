@@ -18,7 +18,7 @@ test_no = 1
 def do_post_mortem(conn):
 	print "Post-mortem:"
 	cur = conn.cursor()
-	cur.execute("select * from pg_stat_statements();")
+	cur.execute("select * from pg_stat_statements;")
 	for i in cur:
 		print i
 
@@ -618,7 +618,7 @@ def main():
 
 	verify_statement_equivalency(
 	"insert into products(category, title, actor, price, special, common_prod_id) values (1,2,3,4,5,6);",
-	"insert into products(category, title, actor, price, special, common_prod_id) values (1,2,3,4,5,6);",
+	"insert into products(category, title, actor, price, special, common_prod_id) values (6,5,4,3,2,1);",
 	conn)
 
 	verify_statement_differs(
@@ -1096,8 +1096,9 @@ def main():
 	WHERE a.attrelid = '16438' AND a.attnum > 0 AND NOT a.attisdropped
 	ORDER BY a.attnum;
 	""",
-	conn)
+	conn, "Differs, rangetable varnos")
 
+	# Used synonymous operators (<> and !=) here:
 	verify_statement_equivalency(
 	"""
 	SELECT a.attname,
@@ -1124,17 +1125,54 @@ def main():
 	   WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef),
 	  a.attnotnull, a.attnum,
 	  (SELECT c.collname FROM pg_catalog.pg_collation c, pg_catalog.pg_type t
+	   WHERE c.oid = a.attcollation AND t.oid = a.atttypid AND a.attcollation != t.typcollation) AS attcollation,
+	  NULL AS indexdef,
+	  NULL AS attfdwoptions,
+	  a.attstorage,
+	  CASE WHEN a.attstattarget=-1 THEN NULL ELSE a.attstattarget END AS attstattarget, pg_catalog.col_description(a.attrelid, a.attnum)
+	FROM pg_catalog.pg_attribute a
+	WHERE a.attrelid = '16438' AND a.attnum > 0 AND NOT a.attisdropped
+	ORDER BY a.attnum;
+	""",
+	conn, "Equivalent, rangetable varnos")
+
+	# Same datatype, different Var (referencing same outer rangetable)
+	verify_statement_differs(
+	"""
+	SELECT a.attname,
+	  pg_catalog.format_type(a.atttypid, a.atttypmod),
+	  (SELECT substring(pg_catalog.pg_get_expr(d.adbin, d.adrelid) for 128)
+	   FROM pg_catalog.pg_attrdef d
+	   WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef),
+	  a.attnotnull, a.attnum,
+	  (SELECT c.collname FROM pg_catalog.pg_collation c, pg_catalog.pg_type t
 	   WHERE c.oid = a.attcollation AND t.oid = a.atttypid AND a.attcollation <> t.typcollation) AS attcollation,
 	  NULL AS indexdef,
 	  NULL AS attfdwoptions,
 	  a.attstorage,
 	  CASE WHEN a.attstattarget=-1 THEN NULL ELSE a.attstattarget END AS attstattarget, pg_catalog.col_description(a.attrelid, a.attnum)
 	FROM pg_catalog.pg_attribute a
-	WHERE a.attrelid = '163438' AND a.attnum > 2 AND NOT a.attisdropped
+	WHERE a.attrelid = '16438' AND a.attnum > 0 AND NOT a.attisdropped
 	ORDER BY a.attnum;
 	""",
-
-	conn)
+	"""
+	SELECT a.attname,
+	  pg_catalog.format_type(a.atttypid, a.atttypmod),
+	  (SELECT substring(pg_catalog.pg_get_expr(d.adbin, d.adrelid) for 128)
+	   FROM pg_catalog.pg_attrdef d
+	   WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef),
+	  a.attnotnull, a.attnum,
+	  (SELECT c.collname FROM pg_catalog.pg_collation c, pg_catalog.pg_type t
+	   WHERE c.oid = a.attcollation AND t.oid = a.atttypid AND a.atttypid <> t.typcollation) AS attcollation,
+	  NULL AS indexdef,
+	  NULL AS attfdwoptions,
+	  a.attstorage,
+	  CASE WHEN a.attstattarget=-1 THEN NULL ELSE a.attstattarget END AS attstattarget, pg_catalog.col_description(a.attrelid, a.attnum)
+	FROM pg_catalog.pg_attribute a
+	WHERE a.attrelid = '16438' AND a.attnum > 0 AND NOT a.attisdropped
+	ORDER BY a.attnum;
+	""",
+	conn, "Equivalent, rangetable varnos")
 
 
 	verify_normalizes_correctly("select 1, 2, 3;", "select ?, ?, ?;", conn, "integer verification" )
@@ -1188,6 +1226,11 @@ def main():
 	verify_normalizes_correctly(
 	"insert into products(category, title, actor, price, special, common_prod_id) values (1,'abc','abc',4,5,6);",
 	"insert into products(category, title, actor, price, special, common_prod_id) values (?,?,?,?,?,?);",
+	conn)
+
+	verify_normalizes_correctly(
+	"values (1, 2, 3, 4, 5) " + (", (1, 2, 3, 4, 5)" * 50)  + ";",
+	"values (?, ?, ?, ?, ?) " + (", (?, ?, ?, ?, ?)" * 50)  + ";",
 	conn)
 
 	verify_normalizes_correctly(
