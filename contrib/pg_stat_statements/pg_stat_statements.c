@@ -1727,8 +1727,6 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 {
 	if (queryDesc->totaltime && pgss_enabled())
 	{
-		int64 query_id = queryDesc->plannedstmt->queryId;
-
 		/*
 		 * Make sure stats accumulation is done.  (Note: it's okay if several
 		 * levels of hook all do this.)
@@ -1736,7 +1734,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		InstrEndLoop(queryDesc->totaltime);
 
 		pgss_store(queryDesc->sourceText,
-		   query_id,
+		   queryDesc->plannedstmt->queryId,
 		   queryDesc->totaltime->total,
 		   queryDesc->estate->es_processed,
 		   &queryDesc->totaltime->bufusage);
@@ -1909,10 +1907,10 @@ pgss_store(const char *query, uint64 query_id,
 	if (!entry)
 	{
 		pgssQueryConEntry *const_entry;
-		pgssTokenOffset *offs;
+		pgssTokenOffset *offs = NULL;
 		int qry_n_dups;
 		int off_n = 0;
-		int i;
+
 		const_entry	= (pgssQueryConEntry *) hash_search(pgss_const_pos, &key, HASH_FIND, NULL);
 
 		if (const_entry)
@@ -1921,22 +1919,18 @@ pgss_store(const char *query, uint64 query_id,
 			off_n = const_entry->n_elems;
 		}
 
-		for (i = 0; i < off_n; i++)
-			elog(DEBUG1, "init: offs->offset: %d, off_n: %d", offs[i].offset, i);
-
-		if ((qry_n_dups = n_dups(offs, off_n)) > 0)
+		if ((qry_n_dups = n_dups(offs, off_n)) > 0 && offs != NULL)
 		{
 			/* Assuming that we cannot have walked some part of the tree twice
 			 * seems rather fragile, and besides, there isn't much we can do to
 			 * ensure that this does not happen with targetLists that contain
 			 * duplicate entries, as with queries like "values(1,2), (3,4)".
 			 */
-			offs = dedup_toks(offs, off_n, off_n - qry_n_dups);
+			pgssTokenOffset *offs_new;
+			offs_new = dedup_toks(offs, off_n, off_n - qry_n_dups);
+			offs = offs_new;
 			off_n = off_n - qry_n_dups;
 		}
-		for (i = 0; i < off_n; i++)
-			elog(DEBUG1, "offs->offset: %d, off_n: %d", offs[i].offset, i);
-
 
 		/*
 		 * It is necessary to generate a normalized version of the query
@@ -1965,20 +1959,37 @@ pgss_store(const char *query, uint64 query_id,
 			{
 				off = offs[i].offset;
 				tok_len = get_constant_length(&query[off]);
-				elog(DEBUG1, "off: %d, tok_len: %d", off, tok_len);
 				len_to_wrt = off - last_off;
 				len_to_wrt -= last_tok_len;
 
 				Assert(tok_len > 0);
+				Assert(len_to_wrt >= 0);
 				/*
 				 * Each iteration copies everything prior to the current
 				 * offset/token to be replaced, except bytes copied in
 				 * previous iterations
 				 */
 				if (off + tok_len > new_query_len)
-					break;
+				{
+					/* We could just be oversized due to a large constant
+					 * literal. Try and copy bytes prior to the literal that may
+					 * have been missed.
+					 */
+					if (off < new_query_len)
+					{
+						memcpy(norm_query + n_quer_it, query + quer_it, len_to_wrt);
+						n_quer_it += len_to_wrt;
+						quer_it += len_to_wrt + tok_len;
 
-				Assert(len_to_wrt >= 0);
+						/*
+						 * See if there is room left for a '?', and copy one
+						 * over if there is.
+						 */
+						if (n_quer_it < new_query_len)
+							norm_query[n_quer_it++] = '?';
+					}
+					break;
+				}
 
 				memcpy(norm_query + n_quer_it, query + quer_it, len_to_wrt);
 
@@ -1988,7 +1999,7 @@ pgss_store(const char *query, uint64 query_id,
 				last_off = off;
 				last_tok_len = tok_len;
 			}
-			/* Copy end of query string (piece past last constant) */
+			/* Copy end of query string (piece past last constant) if there's room */
 			memcpy(norm_query + n_quer_it, query + (off + tok_len),
 				Min( strlen(query) - (off + tok_len),
 					new_query_len - n_quer_it ) );
@@ -2328,7 +2339,6 @@ n_dups(pgssTokenOffset last_offsets[], size_t n)
  *
  * new_size specifies the size of the new, duplicate-free array, which must be
  * known ahead of time.
- *
  */
 static pgssTokenOffset*
 dedup_toks(pgssTokenOffset offs[], size_t n, size_t new_size)
