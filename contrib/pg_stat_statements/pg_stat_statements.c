@@ -258,9 +258,9 @@ static Size pgss_memsize(void);
 static pgssEntry *entry_alloc(pgssHashKey *key, const char* query, int new_query_len);
 static void entry_dealloc(void);
 static void entry_reset(void);
-#ifdef USE_ASSERT_CHECKING
-static bool check_has_dups(pgssTokenOffset last_offsets[], size_t n);
-#endif
+static int n_dups(pgssTokenOffset last_offsets[], size_t n);
+static pgssTokenOffset* dedup_toks(pgssTokenOffset offs[], size_t n,
+		size_t new_size);
 
 
 /*
@@ -832,7 +832,7 @@ get_constant_length(const char* query_str_const)
 
 /*
  * JumbleQuery: Selectively serialize query tree, and return a hash representing
- * that serialization - it's query id.
+ * that serialization - it's query_id.
  *
  * Note that this doesn't necessarily uniquely identify the query across
  * different databases and encodings.
@@ -852,7 +852,6 @@ JumbleQuery(Query *post_analysis_tree)
 
 	/* Sort offsets for later query string canonicalization */
 	qsort(last_offsets, last_offset_num, sizeof(pgssTokenOffset), comp_offset);
-	Assert(!check_has_dups(last_offsets, last_offset_num));
 	return hash_any64((const unsigned char* ) last_jumble, Min(i, JUMBLE_SIZE));
 }
 
@@ -874,7 +873,7 @@ AppendJumb(unsigned char* item, unsigned char jumble[], size_t size, size_t *i)
 	memcpy(jumble + *i, item, Min(*i > JUMBLE_SIZE? 0:JUMBLE_SIZE - *i, size));
 
 	/*
-	 * Continually hash the query tree.
+	 * Continually hash the query tree's jumble.
 	 *
 	 * Was JUMBLE_SIZE exceeded? If so, hash the jumble and append that to the
 	 * start of the jumble buffer, and then continue to append the fraction of
@@ -1218,7 +1217,6 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 								sizeof(pgssTokenOffset));
 
 			}
-			elog(DEBUG1, "last_offset_num: %lu, location: %d", last_offset_num, c->location);
 			last_offsets[last_offset_num].offset = c->location;
 			last_offset_num++;
 		}
@@ -1229,9 +1227,6 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 		Var			  *v = (Var *) arg;
 		RangeTblEntry *rte;
 		ListCell *lc;
-
-		if (v->varlevelsup > 0)
-			elog(DEBUG1, "v->varlevelsup: %d", v->varlevelsup);
 
 		/*
 		 * We need to get the details of the rangetable, but rtable may not
@@ -1915,13 +1910,33 @@ pgss_store(const char *query, uint64 query_id,
 	{
 		pgssQueryConEntry *const_entry;
 		pgssTokenOffset *offs;
+		int qry_n_dups;
 		int off_n = 0;
+		int i;
 		const_entry	= (pgssQueryConEntry *) hash_search(pgss_const_pos, &key, HASH_FIND, NULL);
+
 		if (const_entry)
 		{
 			offs = const_entry->offsets;
 			off_n = const_entry->n_elems;
 		}
+
+		for (i = 0; i < off_n; i++)
+			elog(DEBUG1, "init: offs->offset: %d, off_n: %d", offs[i].offset, i);
+
+		if ((qry_n_dups = n_dups(offs, off_n)) > 0)
+		{
+			/* Assuming that we cannot have walked some part of the tree twice
+			 * seems rather fragile, and besides, there isn't much we can do to
+			 * ensure that this does not happen with targetLists that contain
+			 * duplicate entries, as with queries like "values(1,2), (3,4)".
+			 */
+			offs = dedup_toks(offs, off_n, off_n - qry_n_dups);
+			off_n = off_n - qry_n_dups;
+		}
+		for (i = 0; i < off_n; i++)
+			elog(DEBUG1, "offs->offset: %d, off_n: %d", offs[i].offset, i);
+
 
 		/*
 		 * It is necessary to generate a normalized version of the query
@@ -1950,6 +1965,7 @@ pgss_store(const char *query, uint64 query_id,
 			{
 				off = offs[i].offset;
 				tok_len = get_constant_length(&query[off]);
+				elog(DEBUG1, "off: %d, tok_len: %d", off, tok_len);
 				len_to_wrt = off - last_off;
 				len_to_wrt -= last_tok_len;
 
@@ -2295,16 +2311,41 @@ entry_reset(void)
  *
  * Assumes that the array has already been sorted.
  */
-#ifdef USE_ASSERT_CHECKING
-static bool check_has_dups(pgssTokenOffset last_offsets[], size_t n)
+static int
+n_dups(pgssTokenOffset last_offsets[], size_t n)
 {
-	int i;
+	int i, n_fdups = 0;
 
 	for(i = 1; i < n; i++)
 		if (last_offsets[i - 1].offset == last_offsets[i].offset)
-			return true;
+			n_fdups++;
 
-	return false;
+	return n_fdups;
 }
-#endif
 
+/*
+ * Function removes duplicate values, returning new array.
+ *
+ * new_size specifies the size of the new, duplicate-free array, which must be
+ * known ahead of time.
+ *
+ */
+static pgssTokenOffset*
+dedup_toks(pgssTokenOffset offs[], size_t n, size_t new_size)
+{
+	int i, j = 0;
+	pgssTokenOffset *new_offsets;
+
+	new_offsets = (pgssTokenOffset*) palloc(sizeof(pgssTokenOffset) * new_size);
+	new_offsets[j++] = offs[0];
+
+	for(i = 1; i < n; i++)
+	{
+		if (offs[i - 1].offset == offs[i].offset)
+			continue;
+		new_offsets[j++] = offs[i];
+	}
+	Assert(j == new_size);
+
+	return new_offsets;
+}
