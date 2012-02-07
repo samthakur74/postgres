@@ -1200,6 +1200,15 @@ def main():
 	# doesn't matter - we still get a correctly canonicalized string representation.
 	verify_normalizes_correctly("select " + ("1" * 2048)  + ";", "select ?;",
 	conn, "constant exceeds track_activity_query_size")
+
+	# Really try and stress the implementation here, with several ridiculously
+	# long constants
+	verify_normalizes_correctly("select " + ("1" * 553)  + ", " + ("2" * 532) + ", " + ("3" * 7343) + ", " + ("4" * 33) + ";", "select ?, ?, ?, ?;",
+	conn, "constant exceeds track_activity_query_size, multiple constants (integer-like)")
+
+	verify_normalizes_correctly("select '" + ("A" * 553)  + "', $$" + ("B" * 432) + "$$, $$" + ("c" * 343) + "$$, $foo$" + ("D" * 933) + "$foo$, $$"+ ("e"*31) +"$$;", "select ?, ?, ?, ?, ?;",
+	conn, "constant exceeds track_activity_query_size, multiple constants (string)")
+
 	demonstrate_buffer_limitation(conn)
 
 if __name__=="__main__":

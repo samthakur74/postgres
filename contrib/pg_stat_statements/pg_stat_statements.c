@@ -788,8 +788,6 @@ get_constant_length(const char* query_str_const)
 	token = core_yylex(&type, &pos,
 			   init_scan);
 
-	elog(DEBUG1, "pos: %d", pos);
-
 	switch(token)
 	{
 		case SCONST:
@@ -812,7 +810,6 @@ get_constant_length(const char* query_str_const)
 			{
 				token = core_yylex(&type, &pos,
 						   init_scan);
-				elog(DEBUG1, "pos: %d", pos);
 				/* String to follow */
 				if (token == SCONST)
 				{
@@ -1952,7 +1949,8 @@ pgss_store(const char *query, uint64 query_id,
 			  n_quer_it = 0,	/* Normalized query iterator */
 			  len_to_wrt = 0,	/* Length (in bytes) to write */
 			  last_off = 0,		/* Offset from start for last iter tok */
-			  last_tok_len = 0;	/* length (in bytes) of that tok */
+			  last_tok_len = 0,	/* length (in bytes) of that tok */
+			  length_delta = 0; /* Finished str is n bytes shorter so far */
 
 			norm_query = palloc0(new_query_len + 1);
 			for(i = 0; i < off_n; i++)
@@ -1961,6 +1959,7 @@ pgss_store(const char *query, uint64 query_id,
 				tok_len = get_constant_length(&query[off]);
 				len_to_wrt = off - last_off;
 				len_to_wrt -= last_tok_len;
+				length_delta += tok_len - 1;
 
 				Assert(tok_len > 0);
 				Assert(len_to_wrt >= 0);
@@ -1969,15 +1968,16 @@ pgss_store(const char *query, uint64 query_id,
 				 * offset/token to be replaced, except bytes copied in
 				 * previous iterations
 				 */
-				if (off + tok_len > new_query_len)
+				if ((off - length_delta) + tok_len > new_query_len)
 				{
 					/* We could just be oversized due to a large constant
 					 * literal. Try and copy bytes prior to the literal that may
 					 * have been missed.
 					 */
-					if (off < new_query_len)
+					if ((off - length_delta) < new_query_len)
 					{
-						memcpy(norm_query + n_quer_it, query + quer_it, len_to_wrt);
+						memcpy(norm_query + n_quer_it, query + quer_it,
+								Min(len_to_wrt, new_query_len - n_quer_it));
 						n_quer_it += len_to_wrt;
 						quer_it += len_to_wrt + tok_len;
 
@@ -1988,7 +1988,13 @@ pgss_store(const char *query, uint64 query_id,
 						if (n_quer_it < new_query_len)
 							norm_query[n_quer_it++] = '?';
 					}
-					break;
+					/*
+					 * Even though we'd have exceeded buffer size with last
+					 * constant if constants weren't canonicalized, they are, so
+					 * there could be additional constants that will fit in that
+					 * buffer, once they're actually represented as '?'
+					 */
+					continue;
 				}
 
 				memcpy(norm_query + n_quer_it, query + quer_it, len_to_wrt);
