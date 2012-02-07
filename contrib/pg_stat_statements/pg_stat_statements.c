@@ -816,8 +816,8 @@ get_constant_length(const char* query_str_const)
 					len = strlen(ext_type.scanbuf);
 					break;
 				}
-				Assert(token != 0);
 			}
+			Assert(token != 0);
 			break;
 	}
 
