@@ -1083,8 +1083,8 @@ PerformJumble(const Query *tree, size_t size, size_t *i)
 		}
 		else
 		{
-			elog(ERROR, "unrecognized node type for havingclause node: %d",
-					(int) nodeTag(tree->havingQual));
+			Node *n = (Node*) tree->havingQual;
+			LeafNode(n, size, i, tree->rtable);
 		}
 	}
 	foreach(l, tree->windowClause)

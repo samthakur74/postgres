@@ -581,6 +581,11 @@ def main():
 	"select avg(customerid), sum(customerid::bigint) from orders o group by orderid having sum(customerid::bigint) > 100;",
 	"select avg(customerid), sum(customerid::bigint) from orders o group by orderid having sum(customerid::bigint) > 15450;",
 	conn)
+	# Having Qual BoolExpr
+	verify_statement_differs(
+	"select avg(customerid), sum(customerid::bigint) from orders o group by orderid having not sum(customerid::bigint) > 100;",
+	"select avg(customerid), sum(customerid::bigint) from orders o group by orderid having     sum(customerid::bigint) > 100;",
+	conn)
 	verify_statement_differs(
 	"select avg(customerid), sum(customerid) from orders o group by orderid having sum(customerid) > 100;",
 	"select avg(customerid), sum(customerid::bigint) from orders o group by orderid having sum(customerid::bigint) > 100;",
