@@ -1723,6 +1723,11 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 {
 	if (queryDesc->totaltime && pgss_enabled())
 	{
+		int64 queryId;
+		if (pgss_string_key)
+			queryId = pgss_hash_string(queryDesc->sourceText);
+		else
+			queryId = queryDesc->plannedstmt->queryId;
 		/*
 		 * Make sure stats accumulation is done.  (Note: it's okay if several
 		 * levels of hook all do this.)
@@ -1730,7 +1735,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		InstrEndLoop(queryDesc->totaltime);
 
 		pgss_store(queryDesc->sourceText,
-		   queryDesc->plannedstmt->queryId,
+		   queryId,
 		   queryDesc->totaltime->total,
 		   queryDesc->estate->es_processed,
 		   &queryDesc->totaltime->bufusage);
