@@ -216,6 +216,11 @@ def main():
 	"select o.orderid from orders o join orders oo using (orderid);",
 	"select o.orderid from orders o join orders oo using (customerid);", conn)
 
+
+	# Only CRUD has query string normalized. Otherwise, hash on query string:
+	verify_statement_differs("show work_mem;","show shared_buffers", conn)
+	verify_statement_differs("show work_mem;","show work_mem", conn)
+
 	# "select * from " and "select <enumerate columns> from " equivalency:
 	verify_statement_equivalency("select * from orders", "select orderid, orderdate, customerid, netamount, tax, totalamount from orders;", conn)
 	# The equivalency only holds if you happen to enumerate columns in the exact same order though:

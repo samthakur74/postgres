@@ -60,8 +60,6 @@ PG_MODULE_MAGIC;
 #define PGSS_DUMP_FILE	"global/pg_stat_statements.stat"
 /* This constant defines the magic number in the stats file header */
 static const uint32 PGSS_FILE_HEADER = 0x20100108;
-/* Constant representing query_id of queries hashed based on their string */
-#define PGSS_STR_QUERYID		(0)
 
 /* XXX: Should USAGE_EXEC reflect execution time and/or buffer usage? */
 #define USAGE_EXEC(duration)	(1.0)
@@ -252,6 +250,7 @@ static void pgss_ProcessUtility(Node *treetree,
 					DestReceiver *dest, char *completionTag);
 static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
+static uint64 pgss_hash_string(const char* str);
 static void pgss_store(const char *query, uint64 query_id,
 				double total_time, uint64 rows,
 				const BufferUsage *bufusage);
@@ -1764,6 +1763,7 @@ pgss_ProcessUtility(Node *tree, const char *queryString,
 		instr_time	start;
 		instr_time	duration;
 		uint64		rows = 0;
+		uint64		query_id;
 		BufferUsage bufusage;
 
 		bufusage = pgBufferUsage;
@@ -1813,8 +1813,10 @@ pgss_ProcessUtility(Node *tree, const char *queryString,
 		bufusage.temp_blks_written =
 			pgBufferUsage.temp_blks_written - bufusage.temp_blks_written;
 
+		query_id = pgss_hash_string(queryString);
+
 		/* In the case of utility statements, hash the query string directly */
-		pgss_store(queryString, PGSS_STR_QUERYID,
+		pgss_store(queryString, query_id,
 				INSTR_TIME_GET_DOUBLE(duration), rows, &bufusage);
 	}
 	else
@@ -1858,6 +1860,25 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
 		return 0;
 	else
 		return 1;
+}
+
+/*
+ * Given an arbitrarily long query string, produce a hash for the purposes of
+ * identifying the query, without canonicalizing constants. Used when hashing
+ * utility statements, or for legacy compatibility mode.
+ */
+static uint64
+pgss_hash_string(const char* str)
+{
+	uint64 Magic = STR_BUF;
+	uint64 result;
+	size_t size = sizeof(Magic) + strlen(str);
+	unsigned char* p = palloc(size);
+	memcpy(p, &Magic, sizeof(Magic));
+	memcpy(p + sizeof(Magic), str, strlen(str));
+	result = hash_any64((const unsigned char *) p, size);
+	pfree(p);
+	return result;
 }
 
 /*
