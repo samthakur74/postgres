@@ -1248,6 +1248,16 @@ def main():
 	"insert into products(category, title, actor, price, special, common_prod_id) values (?,?,?,?,?,?), (?,?,?,?,?,?);",
 	conn)
 
+	verify_normalizes_correctly(
+	"select '-1'",
+	"select ?",
+	conn)
+
+	verify_normalizes_correctly(
+	"select $foo$-1$foo$::integer",
+	"select ?::integer",
+	conn)
+
 	# XXX: Sometimes, questionable implicit casts (beyond those deprecated in
 	# 8.3) result in there being no Const nodes to get location in query string
 	# from.  This case is judged to be too marginal to make additional changes
