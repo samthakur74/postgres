@@ -792,7 +792,6 @@ get_constant_length(const char* query_str_const)
 			   init_scan);
 
 	orig_tok_len = strlen(ext_type.scanbuf);
-	elog(DEBUG1, "token: %d", token);
 	switch(token)
 	{
 		case SCONST:
@@ -816,7 +815,6 @@ get_constant_length(const char* query_str_const)
 			{
 				int lat_tok = core_yylex(&type, &pos,
 						   init_scan);
-				elog(DEBUG1, "token (inside loop): %d", lat_tok);
 				if (token == IDENT && lat_tok != SCONST)
 				{
 					len = orig_tok_len;
@@ -1330,7 +1328,7 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 			LeafNode(arg, size, i, rtable);
 		}
 	}
-	else if (IsA(arg, OpExpr))
+	else if (IsA(arg, OpExpr) || IsA(arg, DistinctExpr))
 	{
 		QualsNode((OpExpr*) arg, size, i, rtable);
 	}
