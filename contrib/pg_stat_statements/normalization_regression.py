@@ -56,7 +56,7 @@ def stress_constant_canonicalization(conn):
 	# Stress constant canonicalization by crafting a large succession of query
 	# strings that have a variable, psuedo-random number of constants, constant
 	# representations, and lengths for each constant
-	for i in range(0, 10000):
+	for i in range(0, 100):
 		qry = "select "
 		num_consts = max(3, int(random.random() * 100))
 		const_vals = {}
@@ -100,7 +100,11 @@ def verify_statement_equivalency(sql, equiv, conn, test_name = None, cleanup_sql
 	"""select count(*) from pg_stat_statements
 		where query not like '%pg_stat_statements_reset%'
 		and
-		query not like 'SELECT 1 FROM ONLY%'
+		query not like '%OPERATOR(pg_catalog.=) $1 FOR SHARE OF x%'
+		and
+		query not like '%pg_catalog.pg_description%'
+		and
+		query not like '%pg_catalog.date_part%'
 		{0};""".format(
 		"" if cleanup_sql is None else "and query != '{0}'".format(cleanup_sql))
 			)
@@ -135,7 +139,11 @@ def verify_statement_differs(sql, diff, conn, test_name = None, cleanup_sql = No
 	"""select count(*) from pg_stat_statements
 		where query not like '%pg_stat_statements_reset%'
 		and
-		query not like 'SELECT 1 FROM ONLY%'
+		query not like '%OPERATOR(pg_catalog.=) $1 FOR SHARE OF x%'
+		and
+		query not like '%pg_catalog.pg_description%'
+		and
+		query not like '%pg_catalog.date_part%'
 		{0};""".format(
 		"" if cleanup_sql is None else "and query != '{0}'".format(cleanup_sql))
 			)
@@ -172,7 +180,7 @@ def verify_normalizes_correctly(sql, norm_sql, conn, test_name = None):
 	# Comment out this line, and observe how the connection apparently leaks,
 	# albeit only because of the fact that each query is unique, and the local
 	# hashtable allocates memory within CurTransactionContext.
-	conn.commit()
+	# conn.commit()
 	test_no +=1
 
 # Test for bugs in synchronisation between planner and executor
@@ -227,13 +235,12 @@ def main():
 	# functions). This is necessary for the test_sync_issues() test, but shouldn't
 	# otherwise matter. I suspect that it may usefully increase test coverage
 	# in some cases at some point in the code's development.
-#	cur = conn.cursor()
-#	cur.execute("set pg_stat_statements.track = 'all';")
+	cur = conn.cursor()
+	cur.execute("set pg_stat_statements.track = 'all';")
 
 	## Start tests...just let exceptions propagate
-#	test_sync_issues(conn, 25)
+	test_sync_issues(conn, 25)
 
-	stress_constant_canonicalization(conn)
 
 	verify_statement_equivalency("select '5'::integer;", "select  '17'::integer;", conn)
 	verify_statement_equivalency("select 1;", "select      5   ;", conn)
@@ -1077,10 +1084,10 @@ def main():
 
 	# Not really worth serializing the tree like a select statement though -
 	# Just treat it as a utility statement
-	verify_statement_equivalency(
-	"declare test cursor for select * from orders;",
-	"declare test cursor for select * from orders;",
-	cleanup_sql = "close all;", conn = conn)
+	#verify_statement_equivalency(
+	#"declare test_cursor cursor for select * from orders;",
+	#"declare test_cursor cursor for select * from orders;",
+	#cleanup_sql = "close all;", conn = conn)
 
 	# function-like dedicated ExprNodes
 
@@ -1265,6 +1272,8 @@ def main():
 								"select ?;", conn, "exercise alternative cast syntax, name")
 	verify_normalizes_correctly("select text 'abc';",
 								"select ?;", conn, "exercise alternative cast syntax, text")
+	verify_normalizes_correctly("select extract(century from date '0101-12-31 BC');",
+								"select extract(? from ?);", conn, "extract syntax, date")
 
 
 	verify_normalizes_correctly("select interval '1 hour';", "select ?;", conn, "exercise alternative cast syntax, interval")
@@ -1312,7 +1321,8 @@ def main():
 	conn, "constant exceeds track_activity_query_size")
 
 
-	#demonstrate_buffer_limitation(conn)
+	stress_constant_canonicalization(conn)
+	demonstrate_buffer_limitation(conn)
 
 if __name__=="__main__":
 	main()

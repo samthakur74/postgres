@@ -777,6 +777,7 @@ get_constant_length(const char* query_str_const)
 	uint32 len;
 	YYLTYPE pos;
 	int token;
+	int orig_tok_len;
 
 	if (query_str_const[0] == '-')
 		/* Negative constant */
@@ -790,6 +791,8 @@ get_constant_length(const char* query_str_const)
 	token = core_yylex(&type, &pos,
 			   init_scan);
 
+	orig_tok_len = strlen(ext_type.scanbuf);
+	elog(DEBUG1, "token: %d", token);
 	switch(token)
 	{
 		case SCONST:
@@ -799,27 +802,34 @@ get_constant_length(const char* query_str_const)
 		case FALSE_P:
 		case FCONST:
 		case ICONST:
-			len = strlen(ext_type.scanbuf);
+		case TYPECAST:
+			len = orig_tok_len;
 			break;
 		case TIMESTAMP:
 		case TIME:
-		case IDENT:
 		case INTERVAL:
 		case INTEGER:
 		case NUMERIC:
+		case IDENT:
 		default:
 			for(;;)
 			{
-				token = core_yylex(&type, &pos,
+				int lat_tok = core_yylex(&type, &pos,
 						   init_scan);
+				elog(DEBUG1, "token (inside loop): %d", lat_tok);
+				if (token == IDENT && lat_tok != SCONST)
+				{
+					len = orig_tok_len;
+					break;
+				}
 				/* String to follow */
-				if (token == SCONST)
+				if (lat_tok == SCONST)
 				{
 					len = strlen(ext_type.scanbuf);
 					break;
 				}
+				Assert(token != 0);
 			}
-			Assert(token != 0);
 			break;
 	}
 	scanner_finish(init_scan);
@@ -1219,6 +1229,38 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 				last_offset_num++;
 			}
 		}
+	}
+	else if(IsA(arg, CoerceToDomain))
+	{
+		CoerceToDomain *cd = (CoerceToDomain*) arg;
+		unsigned char magic = 0xD0;
+		APP_JUMB(magic);
+
+		/*
+		 * Datatype of the constant is a
+		 * differentiator
+		 */
+		APP_JUMB(cd->resulttype);
+		/*
+		 * Some Const nodes naturally don't have a location.
+		 */
+		if (cd->location > -1)
+		{
+			if (last_offset_num < pgss->query_size / 2)
+			{
+				if (last_offset_num >= last_offset_buf_size)
+				{
+					last_offset_buf_size *= 2;
+					last_offsets = repalloc(last_offsets,
+									last_offset_buf_size *
+									sizeof(pgssTokenOffset));
+
+				}
+				last_offsets[last_offset_num].offset = cd->location;
+				last_offset_num++;
+			}
+		}
+
 	}
 	else if (IsA(arg, Var))
 	{
