@@ -12,6 +12,8 @@
 # http://pgfoundry.org/forum/forum.php?forum_id=603
 
 import psycopg2
+import random
+import time
 
 test_no = 1
 
@@ -49,6 +51,35 @@ def demonstrate_buffer_limitation(conn):
 
 		print long_query
 		verify_statement_differs(long_query, long_long_query, conn, "Differences out of range (iteration {0})".format(it + 1))
+
+def stress_constant_canonicalization(conn):
+	# Stress constant canonicalization by crafting a large succession of query
+	# strings that have a variable, psuedo-random number of constants, constant
+	# representations, and lengths for each constant
+	for i in range(0, 10000):
+		qry = "select "
+		num_consts = max(3, int(random.random() * 100))
+		const_vals = {}
+		for j in range(0, num_consts):
+			rand_val = max(1, int(random.random() * 1000))
+			if i % 2 == 0:
+				qry += "$foo$" + ("A" * rand_val) + "$foo$"
+			else:
+				qry += ("5" * rand_val)
+
+			if j != num_consts - 1:
+				qry += ", "
+			else:
+				qry += ";"
+		norm_query = "select "
+		for j in range(0, num_consts):
+			norm_query += "?"
+			if j != num_consts - 1:
+				norm_query += ", "
+			else:
+				norm_query += ";"
+		verify_normalizes_correctly(qry, norm_query,
+		conn, "constant exceeds track_activity_query_size, multiple constants (string,random)(iteration {0})".format(i + 1))
 
 def verify_statement_equivalency(sql, equiv, conn, test_name = None, cleanup_sql = None):
 	# Run both queries in isolation and verify that there
@@ -137,6 +168,11 @@ def verify_normalizes_correctly(sql, norm_sql, conn, test_name = None):
 		do_post_mortem(conn)
 		raise SystemExit("""The SQL statement \n'{0}'\n does not normalize to \n  '{1}'\n , which is not expected!
 				Test {2} failed.""".format(sql, norm_sql, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no)))
+
+	# Comment out this line, and observe how the connection apparently leaks,
+	# albeit only because of the fact that each query is unique, and the local
+	# hashtable allocates memory within CurTransactionContext.
+	conn.commit()
 	test_no +=1
 
 # Test for bugs in synchronisation between planner and executor
@@ -196,6 +232,8 @@ def main():
 
 	## Start tests...just let exceptions propagate
 #	test_sync_issues(conn, 25)
+
+	stress_constant_canonicalization(conn)
 
 	verify_statement_equivalency("select '5'::integer;", "select  '17'::integer;", conn)
 	verify_statement_equivalency("select 1;", "select      5   ;", conn)
@@ -1273,15 +1311,8 @@ def main():
 	verify_normalizes_correctly("select " + ("1" * 2048)  + ";", "select ?;",
 	conn, "constant exceeds track_activity_query_size")
 
-	# Really try and stress the implementation here, with several ridiculously
-	# long constants
-	verify_normalizes_correctly("select " + ("1" * 553)  + ", " + ("2" * 532) + ", " + ("3" * 7343) + ", " + ("4" * 33) + ";", "select ?, ?, ?, ?;",
-	conn, "constant exceeds track_activity_query_size, multiple constants (integer-like)")
 
-	verify_normalizes_correctly("select '" + ("A" * 553)  + "', $$" + ("B" * 432) + "$$, $$" + ("c" * 343) + "$$, $foo$" + ("D" * 933) + "$foo$, $$"+ ("e"*31) +"$$;", "select ?, ?, ?, ?, ?;",
-	conn, "constant exceeds track_activity_query_size, multiple constants (string)")
-
-	demonstrate_buffer_limitation(conn)
+	#demonstrate_buffer_limitation(conn)
 
 if __name__=="__main__":
 	main()

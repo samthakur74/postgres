@@ -59,7 +59,7 @@ PG_MODULE_MAGIC;
 /* Location of stats file */
 #define PGSS_DUMP_FILE	"global/pg_stat_statements.stat"
 /* This constant defines the magic number in the stats file header */
-static const uint32 PGSS_FILE_HEADER = 0x20100108;
+static const uint32 PGSS_FILE_HEADER = 0x20120103;
 
 /* XXX: Should USAGE_EXEC reflect execution time and/or buffer usage? */
 #define USAGE_EXEC(duration)	(1.0)
@@ -85,7 +85,7 @@ typedef struct pgssHashKey
 	Oid			userid;			/* user OID */
 	Oid			dbid;			/* database OID */
 	int			encoding;		/* query encoding */
-	int64		query_id;		/* query identifier */
+	uint64		query_id;		/* query identifier */
 } pgssHashKey;
 
 /*
@@ -357,11 +357,10 @@ _PG_init(void)
 	RequestAddinShmemSpace(pgss_memsize());
 	RequestAddinLWLocks(1);
 
-	/* Allocate a buffer to store selective serialization of the query tree
-	 * for the purposes of query normalization.
-	 */
-
 	/*
+	 * Allocate a buffer to store selective serialization of the query tree
+	 * for the purposes of query normalization.
+	 *
 	 * State that persists for the lifetime of the backend should be allocated
 	 * in TopMemoryContext
 	 */
@@ -371,20 +370,28 @@ _PG_init(void)
 	/* Allocate space for bookkeeping information for query str normalization */
 	last_offsets = palloc(last_offset_buf_size * sizeof(pgssTokenOffset));
 
+	MemoryContextSwitchTo(cur_context);
+
 	memset(&info, 0, sizeof(info));
 	info.keysize = sizeof(pgssHashKey);
-	/* Store offsets in hash table */
+	/*
+	 * Store offsets in hash table -total number of constants cannot exceed half
+	 * of query string.
+	 */
 	info.entrysize = offsetof(pgssQueryConEntry, offsets) +
-								pgstat_track_activity_query_size * sizeof(pgssQueryConEntry);
+								(pgstat_track_activity_query_size / 2) * sizeof(pgssQueryConEntry);
+
 	info.hash = pgss_hash_fn;
 	info.match = pgss_match_fn;
-
+	/* Temporary constant positions live in MessageContext. We don't
+	 * canonicalize prepared statements, which have their own private context
+	 * that persists, so this is sufficient.
+	 */
+	info.hcxt = CurTransactionContext;
 	pgss_const_pos = hash_create("pg_stat_statements constants hash",
 							  10,
 							  &info,
-							  HASH_ELEM | HASH_FUNCTION | HASH_COMPARE);
-
-	MemoryContextSwitchTo(cur_context);
+							  HASH_COMPARE | HASH_CONTEXT | HASH_ELEM | HASH_FUNCTION);
 
 	/*
 	 * Install hooks.
@@ -708,8 +715,8 @@ pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 static void
 pgss_store_constants(uint64 query_id)
 {
-	bool found;
 	pgssHashKey key;
+	pgssQueryConEntry *entry;
 	Assert(pgss_const_pos != NULL);
 	/*
 	 * Store constants for later canonicalization if this query doesn't already
@@ -722,28 +729,23 @@ pgss_store_constants(uint64 query_id)
 	key.encoding = GetDatabaseEncoding();
 	key.query_id = query_id;
 
-	(void) hash_search(pgss_hash, &key, HASH_FIND, &found);
+	entry = (pgssQueryConEntry *) hash_search(pgss_const_pos, &key, HASH_ENTER, NULL);
 
-	if (!found)
-	{
-		/*
-		 * Store position of constants for later. Since the same query could be
-		 * parsed many times before it is finally executed, we only avoid
-		 * updated constant positions when there is already a shared hashtable
-		 * entry that already has a canonicalized query string.
-		 *
-		 * Note that since the name of prepared queries influences the hash that
-		 * is produced, there is no need to be concerned about the same query
-		 * being separately prepared with a different amount of whitespace,
-		 * where the earlier query prepared in executed with the constants of
-		 * the later query.
-		 */
-		pgssQueryConEntry *entry;
+	/*
+	 * Store position of constants for later. Since the same query could be
+	 * parsed many times before it is finally executed, we only avoid
+	 * updated constant positions when there is already a shared hashtable
+	 * entry that already has a canonicalized query string.
+	 *
+	 * Note that since the name of prepared queries influences the hash that
+	 * is produced, there is no need to be concerned about the same query
+	 * being separately prepared with a different amount of whitespace,
+	 * where the earlier query prepared in executed with the constants of
+	 * the later query.
+	 */
 
-		entry = (pgssQueryConEntry *) hash_search(pgss_const_pos, &key, HASH_ENTER, NULL);
-		memcpy(entry->offsets, last_offsets, sizeof(pgssTokenOffset) * last_offset_num);
-		entry->n_elems = last_offset_num;
-	}
+	memcpy(entry->offsets, last_offsets, sizeof(pgssTokenOffset) * last_offset_num);
+	entry->n_elems = last_offset_num;
 }
 
 /*
@@ -760,19 +762,19 @@ pgss_store_constants(uint64 query_id)
  * what the later parsing step would have done to the Const node's position -
  * compensate for the inclusion of the minus symbol.
  *
- * If the string does not point to the first character of a valid constant, or
- * does not include the constant in its entirety, behavior is undefined. Since
- * the string has already been validated, and the initial position that the
- * caller provides must originate within the authoritative parser, this should
- * not be a problem.
+ * It is the caller's job to ensure that the string points to the first
+ * character of a valid constant, and that it includes the constant in its
+ * entirety. Since in practice the string has already been validated, and the
+ * initial position that the caller provides will have originated from within
+ * the authoritative parser, this should not be a problem.
  */
 static uint32
 get_constant_length(const char* query_str_const)
 {
-	core_yyscan_t  init_scan = {0};
-	core_yy_extra_type ext_type = {0};
-	core_YYSTYPE type = {0};
-	uint32 len = 0;
+	core_yyscan_t  init_scan;
+	core_yy_extra_type ext_type;
+	core_YYSTYPE type;
+	uint32 len;
 	YYLTYPE pos;
 	int token;
 
@@ -820,9 +822,7 @@ get_constant_length(const char* query_str_const)
 			Assert(token != 0);
 			break;
 	}
-
 	scanner_finish(init_scan);
-
 	Assert(len > 0);
 	return len;
 }
@@ -882,7 +882,7 @@ AppendJumb(unsigned char* item, unsigned char jumble[], size_t size, size_t *i)
 	 */
 	if (*i > JUMBLE_SIZE)
 	{
-		int64 start_hash = hash_any64((const unsigned char* ) last_jumble, JUMBLE_SIZE);
+		uint64 start_hash = hash_any64((const unsigned char* ) last_jumble, JUMBLE_SIZE);
 		int hash_l = sizeof(start_hash);
 		int part_left_l = Max(0, ((int) size - ((int) *i - JUMBLE_SIZE)));
 
@@ -1203,18 +1203,21 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 		/*
 		 * Some Const nodes naturally don't have a location.
 		 */
-		if (c->location > 0)
+		if (c->location > -1)
 		{
-			if (last_offset_num >= last_offset_buf_size)
+			if (last_offset_num < pgss->query_size / 2)
 			{
-				last_offset_buf_size *= 2;
-				last_offsets = repalloc(last_offsets,
-								last_offset_buf_size *
-								sizeof(pgssTokenOffset));
+				if (last_offset_num >= last_offset_buf_size)
+				{
+					last_offset_buf_size *= 2;
+					last_offsets = repalloc(last_offsets,
+									last_offset_buf_size *
+									sizeof(pgssTokenOffset));
 
+				}
+				last_offsets[last_offset_num].offset = c->location;
+				last_offset_num++;
 			}
-			last_offsets[last_offset_num].offset = c->location;
-			last_offset_num++;
 		}
 	}
 	else if (IsA(arg, Var))
@@ -1723,7 +1726,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 {
 	if (queryDesc->totaltime && pgss_enabled())
 	{
-		int64 queryId;
+		uint64 queryId;
 		if (pgss_string_key)
 			queryId = pgss_hash_string(queryDesc->sourceText);
 		else
@@ -1739,6 +1742,8 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		   queryDesc->totaltime->total,
 		   queryDesc->estate->es_processed,
 		   &queryDesc->totaltime->bufusage);
+
+
 
 		if (last_offset_buf_size > 10)
 		{
@@ -1930,18 +1935,19 @@ pgss_store(const char *query, uint64 query_id,
 	{
 		pgssQueryConEntry *const_entry;
 		pgssTokenOffset *offs = NULL;
+		bool found;
 		int qry_n_dups;
 		int off_n = 0;
 
-		const_entry	= (pgssQueryConEntry *) hash_search(pgss_const_pos, &key, HASH_FIND, NULL);
+		const_entry	= (pgssQueryConEntry *) hash_search(pgss_const_pos, &key, HASH_FIND, &found);
 
-		if (const_entry)
+		if (found)
 		{
 			offs = const_entry->offsets;
 			off_n = const_entry->n_elems;
 		}
 
-		if ((qry_n_dups = n_dups(offs, off_n)) > 0 && offs != NULL)
+		if ((qry_n_dups = n_dups(offs, off_n)) > 0 && found)
 		{
 			/* Assuming that we cannot have walked some part of the tree twice
 			 * seems rather fragile, and besides, there isn't much we can do to
@@ -1985,7 +1991,6 @@ pgss_store(const char *query, uint64 query_id,
 				len_to_wrt = off - last_off;
 				len_to_wrt -= last_tok_len;
 				length_delta += tok_len - 1;
-
 				Assert(tok_len > 0);
 				Assert(len_to_wrt >= 0);
 				/*
@@ -2059,7 +2064,6 @@ pgss_store(const char *query, uint64 query_id,
 		 * which we'll have to calculate new constant locations for a new,
 		 * potentially non-substantively different query string.
 		 */
-		hash_search(pgss_const_pos, &key, HASH_REMOVE, NULL);
 	}
 
 	/* Grab the spinlock while updating the counters. */
@@ -2084,6 +2088,7 @@ pgss_store(const char *query, uint64 query_id,
 	LWLockRelease(pgss->lock);
 	if (norm_query)
 		pfree(norm_query);
+
 }
 
 /*
