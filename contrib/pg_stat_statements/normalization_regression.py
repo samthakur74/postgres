@@ -1279,6 +1279,8 @@ def main():
 	verify_normalizes_correctly("select interval '1 hour';", "select ?;", conn, "exercise alternative cast syntax, interval")
 	# Binary/bit strings have special handling within parser
 	verify_normalizes_correctly("select B'1001' | B'1111';", "select ? | ?;", conn, "bitstring parser handling")
+	# Ditto hex strings
+	verify_normalizes_correctly("select x'abcd'::integer;", "select ?::integer;", conn, "bitstring parser handling")
 
 	verify_normalizes_correctly(
 	"insert into products(category, title, actor, price, special, common_prod_id) values (1,'abc','abc',4,5,6);",

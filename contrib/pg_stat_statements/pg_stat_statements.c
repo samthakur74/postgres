@@ -678,9 +678,11 @@ pgss_parse_analyze(Node *parseTree, const char *sourceText,
 		post_analysis_tree = standard_parse_analyze(parseTree, sourceText,
 			  paramTypes, numParams);
 
-	post_analysis_tree->query_id = JumbleQuery(post_analysis_tree);
-
-	pgss_store_constants(post_analysis_tree->query_id);
+	if (!post_analysis_tree->utilityStmt)
+	{
+		post_analysis_tree->query_id = JumbleQuery(post_analysis_tree);
+		pgss_store_constants(post_analysis_tree->query_id);
+	}
 
 	return post_analysis_tree;
 }
@@ -698,9 +700,11 @@ pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 		post_analysis_tree = standard_parse_analyze_varparams(parseTree,
 				sourceText, paramTypes, numParams);
 
-	post_analysis_tree->query_id = JumbleQuery(post_analysis_tree);
-
-	pgss_store_constants(post_analysis_tree->query_id);
+	if (!post_analysis_tree->utilityStmt)
+	{
+		post_analysis_tree->query_id = JumbleQuery(post_analysis_tree);
+		pgss_store_constants(post_analysis_tree->query_id);
+	}
 
 	return post_analysis_tree;
 }
@@ -792,11 +796,13 @@ get_constant_length(const char* query_str_const)
 			   init_scan);
 
 	orig_tok_len = strlen(ext_type.scanbuf);
+	elog(DEBUG1, "token: %d", token);
 	switch(token)
 	{
-		case SCONST:
 		case NULL_P:
+		case SCONST:
 		case BCONST:
+		case XCONST:
 		case TRUE_P:
 		case FALSE_P:
 		case FCONST:
@@ -815,6 +821,8 @@ get_constant_length(const char* query_str_const)
 			{
 				int lat_tok = core_yylex(&type, &pos,
 						   init_scan);
+				if (lat_tok != 0)
+					elog(DEBUG1, "lat_tok: %d", lat_tok);
 				if (token == IDENT && lat_tok != SCONST)
 				{
 					len = orig_tok_len;
@@ -948,7 +956,22 @@ PerformJumble(const Query *tree, size_t size, size_t *i)
 	/* # of result tuples to skip (int8 expr) */
 	FuncExpr *limcount = (FuncExpr *) tree->limitCount;
 
-	pgss_rangetbl_stack = lappend(pgss_rangetbl_stack, tree->rtable);
+	if (pgss_rangetbl_stack &&
+			!IsA(pgss_rangetbl_stack, List))
+		pgss_rangetbl_stack = NIL;
+
+	if (tree->rtable != NIL)
+	{
+		pgss_rangetbl_stack = lappend(pgss_rangetbl_stack, tree->rtable);
+	}
+	else
+	{
+		/* Add dummy Range table entry to maintain stack */
+		RangeTblEntry *rte = makeNode(RangeTblEntry);
+		List *dummy = lappend(NIL, rte);
+		pgss_rangetbl_stack = lappend(pgss_rangetbl_stack, dummy);
+	}
+
 
 	APP_JUMB(tree->resultRelation);
 
@@ -1158,7 +1181,8 @@ PerformJumble(const Query *tree, size_t size, size_t *i)
 				PerformJumble(r->subquery, size, i);
 		}
 	}
-	pgss_rangetbl_stack = list_delete_ptr(pgss_rangetbl_stack, list_nth(pgss_rangetbl_stack, pgss_rangetbl_stack->length - 1));
+	pgss_rangetbl_stack = list_delete_ptr(pgss_rangetbl_stack,
+			list_nth(pgss_rangetbl_stack, pgss_rangetbl_stack->length - 1));
 }
 
 /*
