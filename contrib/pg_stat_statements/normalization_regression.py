@@ -1244,6 +1244,17 @@ def main():
 	verify_normalizes_correctly("select $$bar$$ from pg_database where datname = 'postgres';",
 				    "select ? from pg_database where datname = ?;", conn, "Quals comparison" )
 
+	cur = conn.cursor()
+	cur.execute("drop domain if exists dtop; create domain dtop text check (substring(VALUE, 2, 1) = '1');")
+	conn.commit()
+
+	# This looks like an upstream bug, where a Const node has an incorrect
+	# location field:
+	verify_normalizes_correctly("select 'x123'::dtop;","select 'x123'?dtop;",conn, "domain literal canonicalization")
+
+	verify_normalizes_correctly("select 'x123' as dtop;","select ? as dtop;",conn, "domain literal canonicalization")
+	verify_normalizes_correctly("select dtop 'x123';","select ?;",conn, "domain literal canonicalization")
+
 	# You can parameterize a limit constant, so our behavior is consistent with that
 	verify_normalizes_correctly("select * from orders limit 1 offset 5;", "select * from orders limit ? offset ?;", conn, "integer verification" )
 	# Note: Due to :: operator precedence, this behavior is correct:
