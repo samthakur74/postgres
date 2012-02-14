@@ -1158,8 +1158,7 @@ PerformJumble(const Query *tree, size_t size, size_t *i)
 				PerformJumble(r->subquery, size, i);
 		}
 	}
-
-	pgss_rangetbl_stack = list_delete(pgss_rangetbl_stack, pgss_rangetbl_stack->tail);
+	pgss_rangetbl_stack = list_delete_ptr(pgss_rangetbl_stack, list_nth(pgss_rangetbl_stack, pgss_rangetbl_stack->length - 1));
 }
 
 /*
@@ -1281,10 +1280,8 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 					(list_length(pgss_rangetbl_stack) - 1) - v->varlevelsup);
 			rte = rt_fetch(v->varno, rtable_upper);
 		}
-
 		APP_JUMB(magic);
 		APP_JUMB(rte->relid);
-		APP_JUMB(v->varattno);
 
 		foreach(lc, rte->values_lists)
 		{
@@ -1297,6 +1294,7 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 				LeafNode(col, size, i, rtable);
 			}
 		}
+		APP_JUMB(v->varattno);
 	}
 	else if (IsA(arg, Param))
 	{

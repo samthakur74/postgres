@@ -1315,6 +1315,41 @@ def main():
 	"insert into products(category, title, actor, price, special, common_prod_id) values (?,2,3,?,?,?), (?,2,3,?,?,?);",
 	conn)
 
+	verify_statement_equivalency(
+	"""
+	SELECT p1.amoplefttype, p1.amoprighttype, p2.amoprighttype
+	FROM pg_amop AS p1, pg_amop AS p2
+	WHERE p1.amopfamily = p2.amopfamily AND
+		p1.amoprighttype = p2.amoplefttype AND
+		p1.amopmethod = (SELECT oid FROM pg_am WHERE amname = 'btree') AND
+		p2.amopmethod = (SELECT oid FROM pg_am WHERE amname = 'btree') AND
+		p1.amopstrategy = 3 AND p2.amopstrategy = 3 AND
+		p1.amoplefttype != p1.amoprighttype AND
+		p2.amoplefttype != p2.amoprighttype AND
+		NOT EXISTS(SELECT 1 FROM pg_amop p3 WHERE
+					 p3.amopfamily = p1.amopfamily AND
+					 p3.amoplefttype = p1.amoplefttype AND
+					 p3.amoprighttype = p2.amoprighttype AND
+					 p3.amopstrategy = 3);
+	""",
+	"""
+	SELECT p1.amoplefttype, p1.amoprighttype, p2.amoprighttype
+	FROM pg_amop AS p1, pg_amop AS p2
+	WHERE p1.amopfamily = p2.amopfamily AND
+		p1.amoprighttype = p2.amoplefttype AND
+		p1.amopmethod = (SELECT oid FROM pg_am WHERE amname = 'btree') AND
+		p2.amopmethod = (SELECT oid FROM pg_am WHERE amname = 'btree') AND
+		p1.amopstrategy = 3 AND p2.amopstrategy = 3 AND
+		p1.amoplefttype != p1.amoprighttype AND
+		p2.amoplefttype != p2.amoprighttype AND
+		NOT EXISTS(SELECT 1 FROM pg_amop p3 WHERE
+					 p3.amopfamily = p1.amopfamily AND
+					 p3.amoplefttype = p1.amoplefttype AND
+					 p3.amoprighttype = p2.amoprighttype AND
+					 p3.amopstrategy = 2);
+	""",
+	conn)
+
 	# This constant considerably exceeds track_activity_query_size, but it
 	# doesn't matter - we still get a correctly canonicalized string representation.
 	verify_normalizes_correctly("select " + ("1" * 2048)  + ";", "select ?;",
