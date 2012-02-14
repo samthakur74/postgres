@@ -819,6 +819,7 @@ get_constant_length(const char* query_str_const)
 		case DECIMAL_P:
 		case NAME_P:
 		case TEXT_P:
+		case XML_P:
 		case IDENT:
 			for(;;)
 			{

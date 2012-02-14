@@ -566,10 +566,17 @@ def main():
 	""",
 	conn)
 
+	verify_normalizes_correctly(
+	"SELECT xml '<foo>bar</foo>' IS DOCUMENT;",
+	"SELECT ? IS DOCUMENT;", conn)
+
+	verify_normalizes_correctly(
+	"""SELECT xmlelement(name foo, xmlattributes('<>&"''' as funny, xml 'b<a/>r' as funnier));""",
+	"""SELECT xmlelement(name foo, xmlattributes(? as funny, ? as funnier));""",
+	conn)
 
 
 	# subqueries
-
 	# in select list
 	verify_statement_differs("select *, (select customerid from orders limit 1) from orderlines ol join orders o on o.orderid = ol.orderid;",
 				 "select *, (select orderid    from orders limit 1) from orderlines ol join orders o on o.orderid = ol.orderid;", conn)
