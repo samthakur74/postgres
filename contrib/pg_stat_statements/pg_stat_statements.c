@@ -1081,22 +1081,13 @@ PerformJumble(const Query *tree, size_t size, size_t *i)
 	{
 		TargetEntry *rt = (TargetEntry *) lfirst(l);
 		Expr        *e  = (Expr*) rt->expr;
+		unsigned char magic = 0xAA;
+		APP_JUMB(magic);
 		/*
 		 * Handle the various types of nodes in
 		 * the select list of this query
 		 */
-		if (IsA(e, Var)) /* table column */
-		{
-			Var *v = (Var*) e;
-			RangeTblEntry *rte = rt_fetch(v->varno, tree->rtable);
-			APP_JUMB(rte->relid);
-			APP_JUMB(v->varattno);
-		}
-		else
-		{
-			elog(ERROR, "unrecognized node type for returnlist node: %d",
-					(int) nodeTag(e));
-		}
+		LeafNode((Node*) e, size, i, tree->rtable);
 	}
 	/* a list of SortGroupClause's */
 	foreach(l, tree->groupClause)
@@ -1283,7 +1274,6 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 				last_offset_num++;
 			}
 		}
-
 	}
 	else if (IsA(arg, Var))
 	{
@@ -1321,6 +1311,37 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 			}
 		}
 		APP_JUMB(v->varattno);
+	}
+	else if (IsA(arg, CurrentOfExpr))
+	{
+		CurrentOfExpr *CoE = (CurrentOfExpr*) arg;
+		unsigned char		  magic = 0xF1;
+		APP_JUMB(magic);
+		APP_JUMB(CoE->cvarno);
+		APP_JUMB(CoE->cursor_param);
+	}
+	else if (IsA(arg, CollateExpr))
+	{
+		CollateExpr *Ce = (CollateExpr*) arg;
+		unsigned char		  magic = 0xF3;
+		APP_JUMB(magic);
+		APP_JUMB(Ce->collOid);
+	}
+	else if (IsA(arg, FieldSelect))
+	{
+		FieldSelect *Fs = (FieldSelect*) arg;
+		unsigned char		  magic = 0xF4;
+		APP_JUMB(magic);
+		APP_JUMB(Fs->resulttype);
+		LeafNode((Node*) Fs->arg, size, i, rtable);
+	}
+	else if (IsA(arg, NamedArgExpr))
+	{
+		NamedArgExpr *Nae = (NamedArgExpr*) arg;
+		unsigned char		  magic = 0xF5;
+		APP_JUMB(magic);
+		APP_JUMB(Nae->argnumber);
+		APP_JUMB(magic);
 	}
 	else if (IsA(arg, Param))
 	{
@@ -1599,6 +1620,22 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 		SetToDefault *sd = (SetToDefault*) arg;
 		APP_JUMB(sd->typeId);
 		APP_JUMB(sd->typeMod);
+	}
+	else if (IsA(arg, ConvertRowtypeExpr))
+	{
+		ConvertRowtypeExpr* Cr = (ConvertRowtypeExpr*) arg;
+		unsigned char		  magic = 0xF6;
+		APP_JUMB(magic);
+		APP_JUMB(Cr->convertformat);
+		APP_JUMB(Cr->resulttype);
+		LeafNode((Node*) Cr->arg, size, i, rtable);
+	}
+	else if (IsA(arg, FieldStore))
+	{
+		FieldStore* Fs = (FieldStore*) arg;
+		unsigned char		  magic = 0xF7;
+		APP_JUMB(magic);
+		LeafNode((Node*) Fs->arg, size, i, rtable);
 	}
 	else
 	{
