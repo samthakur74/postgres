@@ -1266,6 +1266,8 @@ def main():
 								"select ?;", conn, "exercise alternative cast syntax, integer")
 	verify_normalizes_correctly("select numeric '5.5';",
 								"select ?;", conn, "exercise alternative cast syntax, numeric")
+	verify_normalizes_correctly("select '5.5'::numeric(10,2);",
+								"select ?::numeric(10,2);", conn, "numeric, fixed precision")
 	verify_normalizes_correctly("select decimal '5.5';",
 								"select ?;", conn, "exercise alternative cast syntax, decimal")
 	verify_normalizes_correctly("select name 'abc';",

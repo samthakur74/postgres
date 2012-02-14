@@ -808,6 +808,7 @@ get_constant_length(const char* query_str_const)
 		case FCONST:
 		case ICONST:
 		case TYPECAST:
+		default:
 			len = orig_tok_len;
 			break;
 		case TIMESTAMP:
@@ -815,8 +816,10 @@ get_constant_length(const char* query_str_const)
 		case INTERVAL:
 		case INTEGER:
 		case NUMERIC:
+		case DECIMAL_P:
+		case NAME_P:
+		case TEXT_P:
 		case IDENT:
-		default:
 			for(;;)
 			{
 				int lat_tok = core_yylex(&type, &pos,
@@ -834,7 +837,6 @@ get_constant_length(const char* query_str_const)
 					len = strlen(ext_type.scanbuf);
 					break;
 				}
-				Assert(token != 0);
 			}
 			break;
 	}
