@@ -1294,6 +1294,20 @@ def main():
 								"select ?;", conn, "exercise alternative cast syntax, text")
 	verify_normalizes_correctly("select extract(century from date '0101-12-31 BC');",
 								"select extract(? from ?);", conn, "extract syntax, date")
+	verify_normalizes_correctly("select extract(epoch from date '0101-12-31 BC');",
+								"select extract(? from ?);", conn, "extract syntax, epoch")
+	verify_normalizes_correctly("select extract(year from date '0101-12-31 BC');",
+								"select extract(? from ?);", conn, "extract syntax, year")
+	verify_normalizes_correctly("select extract(month from date '0101-12-31 BC');",
+								"select extract(? from ?);", conn, "extract syntax, month")
+	verify_normalizes_correctly("select extract(day from date '0101-12-31 BC');",
+								"select extract(? from ?);", conn, "extract syntax, day")
+	verify_normalizes_correctly("select extract(hour from date '0101-12-31 BC');",
+								"select extract(? from ?);", conn, "extract syntax, hour")
+	verify_normalizes_correctly("select extract(minute from date '0101-12-31 BC');",
+								"select extract(? from ?);", conn, "extract syntax, minute")
+	verify_normalizes_correctly("select extract(second from date '0101-12-31 BC');",
+								"select extract(? from ?);", conn, "extract syntax, second")
 
 
 	verify_normalizes_correctly("select interval '1 hour';", "select ?;", conn, "exercise alternative cast syntax, interval")

@@ -825,8 +825,6 @@ get_constant_length(const char* query_str_const)
 			{
 				int lat_tok = core_yylex(&type, &pos,
 						   init_scan);
-				if (lat_tok != 0)
-					elog(DEBUG1, "lat_tok: %d", lat_tok);
 				if (token == IDENT && lat_tok != SCONST)
 				{
 					len = orig_tok_len;
@@ -1054,8 +1052,10 @@ PerformJumble(const Query *tree, size_t size, size_t *i)
 			}
 			else
 			{
-				elog(ERROR, "unrecognized fromlist node type: %d",
-					 (int) nodeTag(fr));
+				ereport(WARNING,
+						(errcode(ERRCODE_INTERNAL_ERROR),
+						 errmsg("unexpected, unrecognised fromlist node type: %d",
+							 (int) nodeTag(fr))));
 			}
 		}
 	}
@@ -1640,8 +1640,10 @@ LeafNode(const Node *arg, size_t size, size_t *i, List *rtable)
 	}
 	else
 	{
-		elog(ERROR, "unrecognized node type for LeafNode node: %d",
-				(int) nodeTag(arg));
+		ereport(WARNING,
+				(errcode(ERRCODE_INTERNAL_ERROR),
+				 errmsg("unexpected, unrecognised LeafNode node type: %d",
+					 (int) nodeTag(arg))));
 	}
 }
 
