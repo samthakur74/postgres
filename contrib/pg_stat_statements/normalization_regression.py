@@ -98,7 +98,7 @@ def verify_statement_equivalency(sql, equiv, conn, test_name = None, cleanup_sql
 	cur.execute(
 	# Exclude both pg_stat_statements_reset() calls and foreign key enforcement queries
 	"""select count(*) from pg_stat_statements
-		where query not like '%pg_stat_statements_reset%'
+		where query not like '%pg_stat_statements%'
 		and
 		query not like '%OPERATOR(pg_catalog.=) $1 FOR SHARE OF x%'
 		and
@@ -137,7 +137,7 @@ def verify_statement_differs(sql, diff, conn, test_name = None, cleanup_sql = No
 	cur.execute(
 	# Exclude both pg_stat_statements_reset() calls and foreign key enforcement queries
 	"""select count(*) from pg_stat_statements
-		where query not like '%pg_stat_statements_reset%'
+		where query not like '%pg_stat_statements%'
 		and
 		query not like '%OPERATOR(pg_catalog.=) $1 FOR SHARE OF x%'
 		and
@@ -183,51 +183,6 @@ def verify_normalizes_correctly(sql, norm_sql, conn, test_name = None):
 	# conn.commit()
 	test_no +=1
 
-# Test for bugs in synchronisation between planner and executor
-def test_sync_issues(conn, count=5):
-	global test_no
-	cur = conn.cursor()
-	cur.execute("select pg_stat_statements_reset();")
-
-
-	# Note that the SQL in this plpgsql function is not paramaterized, so
-	# detecting that and hashing on string doesn't get the implementation
-	# off-the-hook:
-	spi_query = "update orders set orderid = 5 where orderid = 5"
-	cur.execute(""" create or replace function test() returns void as
-					$$begin {0};
-					end;$$ language plpgsql""".format(spi_query))
-
-	sql = "select test();"
-
-	for i in range(0, count):
-		cur.execute(sql)
-
-	# Plan caching will make the first call of the function above plan the sql statement after it plans the function call.
-	# This caused the assumption about their synchronisation to fall down in earlier revisions of the patch.
-	# Another concern is that we don't overwrite the jumble that is needed in the executor for an unnested
-	# query with a nested query's jumble
-
-	# pg_stat_statements.track is set to 'all', so we expect to see both the function call and the spi-executed query `count` times
-	cur.execute("select calls from pg_stat_statements where query = '{0}' order by calls;".format(sql));
-	for i in cur:
-		 function_calls = i[0]
-
-	cur.execute("select calls from pg_stat_statements where query = '{0}' order by calls;".format(spi_query));
-	for i in cur:
-		 spi_query_calls = i[0]
-
-	for i in (function_calls, spi_query_calls):
-		name = "function_calls" if i is function_calls else "spi_query_calls"
-
-		if i == count:
-				print "Planner/ Executor sync issue test (test {0}, '{1}') passed. actual calls: {2}".format(test_no, name, i)
-		else:
-			do_post_mortem(conn)
-			raise SystemExit("Planner/ Executor sync issue detected! Test {0} ('{1}') failed! (actual calls: {2}, reported: {3}".format(test_no, name, i, count))
-
-		test_no +=1
-
 def main():
 	conn = psycopg2.connect("")
 
@@ -237,10 +192,6 @@ def main():
 	# in some cases at some point in the code's development.
 	cur = conn.cursor()
 	cur.execute("set pg_stat_statements.track = 'all';")
-
-	## Start tests...just let exceptions propagate
-	test_sync_issues(conn, 25)
-
 
 	verify_statement_equivalency("select '5'::integer;", "select  '17'::integer;", conn)
 	verify_statement_equivalency("select 1;", "select      5   ;", conn)
