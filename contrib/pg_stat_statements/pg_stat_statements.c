@@ -1139,6 +1139,7 @@ static void
 QualsNode(const OpExpr *node, Size size, Size *i, List *rtable)
 {
 	ListCell *l;
+	APP_JUMB(node->xpr);
 	APP_JUMB(node->opno);
 	foreach(l, node->args)
 	{
@@ -1469,6 +1470,10 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 			Node *arg = (Node *) lfirst(l);
 			LeafNode(arg, size, i, rtable);
 		}
+		if (ar->refexpr)
+			LeafNode((Node*) ar->refexpr, size, i, rtable);
+		if (ar->refassgnexpr)
+			LeafNode((Node*) ar->refassgnexpr, size, i, rtable);
 	}
 	else if (IsA(arg, NullIfExpr))
 	{

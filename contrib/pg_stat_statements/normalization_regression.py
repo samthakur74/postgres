@@ -410,6 +410,12 @@ def main():
 	"select (array_agg(lower(upper(lower(initcap(lower('Bar')))))))[6] from orders;",
 				conn)
 
+	cur = conn.cursor()
+	cur.execute("CREATE TEMP TABLE arrtest1 (i int[], t text[]);")
+	verify_normalizes_correctly(
+	"update arrtest1 set i[2] = 22, t[2] = 'twenty-two';",
+	"update arrtest1 set i[?] = ?, t[?] = ?;",
+	conn, "array constant canonicalization")
 
 	# nullif, represented as a distinct node but actually just a typedef
 	verify_statement_differs(
