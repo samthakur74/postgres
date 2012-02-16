@@ -242,6 +242,7 @@ static void LeafNode(const Node *arg, Size size, Size *i, List *rtable);
 static void LimitOffsetNode(const Node *node, Size size, Size *i, List *rtable);
 static void JoinExprNode(JoinExpr *node, Size size, Size *i, List *rtable);
 static void JoinExprNodeChild(const Node *node, Size size, Size *i, List *rtable);
+static void recordConstLocation(int location);
 static void pgss_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgss_ExecutorRun(QueryDesc *queryDesc,
 				 ScanDirection direction,
@@ -1166,25 +1167,7 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 		 * differentiator
 		 */
 		APP_JUMB(c->consttype);
-		/*
-		 * Some Const nodes naturally don't have a location.
-		 */
-		if (c->location > -1)
-		{
-			if (last_offset_num < pgss->query_size / 2)
-			{
-				if (last_offset_num >= last_offset_buf_size)
-				{
-					last_offset_buf_size *= 2;
-					last_offsets = repalloc(last_offsets,
-									last_offset_buf_size *
-									sizeof(Size));
-
-				}
-				last_offsets[last_offset_num] = c->location;
-				last_offset_num++;
-			}
-		}
+		recordConstLocation(c->location);
 	}
 	else if(IsA(arg, CoerceToDomain))
 	{
@@ -1194,25 +1177,7 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 		 * differentiator
 		 */
 		APP_JUMB(cd->resulttype);
-		/*
-		 * Some Const nodes naturally don't have a location.
-		 */
-		if (cd->location > -1)
-		{
-			if (last_offset_num < pgss->query_size / 2)
-			{
-				if (last_offset_num >= last_offset_buf_size)
-				{
-					last_offset_buf_size *= 2;
-					last_offsets = repalloc(last_offsets,
-									last_offset_buf_size *
-									sizeof(Size));
-
-				}
-				last_offsets[last_offset_num] = cd->location;
-				last_offset_num++;
-			}
-		}
+		recordConstLocation(cd->location);
 	}
 	else if (IsA(arg, Var))
 	{
@@ -1669,6 +1634,32 @@ JoinExprNodeChild(const Node *node, Size size, Size *i, List *rtable)
 	else
 	{
 		LeafNode(node, size, i, rtable);
+	}
+}
+
+/*
+ * Record location of constant within query string of query tree that is
+ * currently being walked.
+ */
+static void
+recordConstLocation(int location)
+{
+	/* -1 indicates unknown or undefined location */
+	if (location > -1)
+	{
+		if (last_offset_num < pgss->query_size / 2)
+		{
+			if (last_offset_num >= last_offset_buf_size)
+			{
+				last_offset_buf_size *= 2;
+				last_offsets = repalloc(last_offsets,
+								last_offset_buf_size *
+								sizeof(Size));
+
+			}
+			last_offsets[last_offset_num] = location;
+			last_offset_num++;
+		}
 	}
 }
 
