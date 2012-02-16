@@ -1196,16 +1196,18 @@ def main():
 	verify_normalizes_correctly("select $$bar$$ from pg_database where datname = 'postgres';",
 				    "select ? from pg_database where datname = ?;", conn, "Quals comparison" )
 
+	# Domains
 	cur = conn.cursor()
 	cur.execute("drop domain if exists dtop; create domain dtop text check (substring(VALUE, 2, 1) = '1');")
+	cur.execute("drop domain if exists dnotnull; create domain dnotnull integer;")
 	conn.commit()
 
-	# This looks like an upstream bug, where a Const node has an incorrect
-	# location field:
-	verify_normalizes_correctly("select 'x123'::dtop;","select 'x123'?dtop;",conn, "domain literal canonicalization")
-
+	verify_normalizes_correctly("select 'x123'::dtop;","select ?::dtop;",conn, "domain literal canonicalization")
 	verify_normalizes_correctly("select 'x123' as dtop;","select ? as dtop;",conn, "domain literal canonicalization")
 	verify_normalizes_correctly("select dtop 'x123';","select ?;",conn, "domain literal canonicalization")
+	# XXX: This test currently fails!:
+	#verify_normalizes_correctly("SELECT cast('1' as dnotnull);","SELECT cast(? as dnotnull);",conn, "domain literal canonicalization/cast")
+
 
 	# You can parameterize a limit constant, so our behavior is consistent with that
 	verify_normalizes_correctly("select * from orders limit 1 offset 5;", "select * from orders limit ? offset ?;", conn, "integer verification" )
@@ -1298,6 +1300,11 @@ def main():
 	"insert into products(category, title, actor, price, special, common_prod_id) values (1,'abc','abc',4,5,6), (1,'abc','abc',4,5,6);",
 	"insert into products(category, title, actor, price, special, common_prod_id) values (?,?,?,?,?,?), (?,?,?,?,?,?);",
 	conn)
+	# XXX: Sometimes, we must go through CoerceViaIo nodes to get Consts:
+	verify_normalizes_correctly(
+	"insert into products(category, title, actor, price, special, common_prod_id) values (1,2,3,4,5,6), (1,2,3,4,5,6);",
+	"insert into products(category, title, actor, price, special, common_prod_id) values (?,?,?,?,?,?), (?,?,?,?,?,?);",
+	conn)
 
 	verify_normalizes_correctly(
 	"select '-1'",
@@ -1307,16 +1314,6 @@ def main():
 	verify_normalizes_correctly(
 	"select $foo$-1$foo$::integer",
 	"select ?::integer",
-	conn)
-
-	# XXX: Sometimes, questionable implicit casts (beyond those deprecated in
-	# 8.3) result in there being no Const nodes to get location in query string
-	# from.  This case is judged to be too marginal to make additional changes
-	# to the parser to fix, but it is demonstrated here for reviewer's
-	# reference:
-	verify_normalizes_correctly(
-	"insert into products(category, title, actor, price, special, common_prod_id) values (1,2,3,4,5,6), (1,2,3,4,5,6);",
-	"insert into products(category, title, actor, price, special, common_prod_id) values (?,2,3,?,?,?), (?,2,3,?,?,?);",
 	conn)
 
 	verify_statement_equivalency(

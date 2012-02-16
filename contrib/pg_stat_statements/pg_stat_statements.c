@@ -1185,7 +1185,7 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 		 * differentiator
 		 */
 		APP_JUMB(cd->resulttype);
-		RecordConstLocation(cd->location);
+		LeafNode((Node*) cd->arg, size, i, rtable);
 	}
 	else if (IsA(arg, Var))
 	{
@@ -1281,8 +1281,10 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 	}
 	else if (IsA(arg, CoerceViaIO))
 	{
-		APP_JUMB(((CoerceViaIO*) arg)->coerceformat);
-		APP_JUMB(((CoerceViaIO*) arg)->resulttype);
+		CoerceViaIO *Cio = (CoerceViaIO*) arg;
+		APP_JUMB(Cio->coerceformat);
+		APP_JUMB(Cio->resulttype);
+		LeafNode((Node*) Cio->arg, size, i, rtable);
 	}
 	else if (IsA(arg, Aggref))
 	{
