@@ -17,17 +17,18 @@
  * for non-prepared queries.
  *
  * Normalization is implemented by selectively serializing fields of each query
- * tree's nodes, which are judged to be essential to the nature of the
- * query. This is referred to as a query jumble. This is distinct from a straight
+ * tree's nodes, which are judged to be essential to the nature of the query.
+ * This is referred to as a query jumble. This is distinct from a straight
  * serialization of the query tree in that constants are canonicalized, and
  * various extraneous information is ignored as irrelevant, such as the
  * collation of Vars. Once this jumble is acquired, a 64-bit hash is taken,
  * which is copied back into the query tree at the post-analysis stage.
  * Postgres then naively copies this value around, making it later available
- * from with stored plans, obviating the need for us to synchronize hooks.
+ * from within the corresponding plan tree. The executor can then use this value
+ * to blame query costs on a known query_id.
  *
  * Within the executor hook, the module stores the cost of the queries
- * execution, using the query_id provided to the core system earlier.
+ * execution, based on a query_id provided by the core system.
  *
  * Copyright (c) 2008-2012, PostgreSQL Global Development Group
  *
@@ -77,10 +78,11 @@ static const uint32 PGSS_FILE_HEADER = 0x20120103;
 #define USAGE_DECREASE_FACTOR	(0.99)	/* decreased every entry_dealloc */
 #define USAGE_DEALLOC_PERCENT	5		/* free this % of entries at once */
 #define JUMBLE_SIZE				1024    /* query serialization buffer size */
-/* Magic values */
-#define HASH_BUF				(0xFA)	/* buffer is a hash of query tree */
-#define STR_BUF					(0xEB)	/* buffer is query string itself */
-
+/* Magic values for jumble */
+#define MAG_HASH_BUF				0xFA	/* buffer is a hash of query tree */
+#define MAG_STR_BUF					0xEB	/* buffer is query string itself */
+#define MAG_RETURN_LIST				0xAE	/* returning list node follows */
+#define MAG_LIMIT_OFFSET			0xBA	/* limit/offset node follows */
 /*
  * Hashtable key that defines the identity of a hashtable entry.  The
  * hash comparators do not assume that the query string is null-terminated;
@@ -810,7 +812,7 @@ JumbleQuery(Query *post_analysis_tree)
 	Size i = 0;
 	last_offset_num = 0;
 	memset(last_jumble, 0, JUMBLE_SIZE);
-	last_jumble[++i] = HASH_BUF;
+	last_jumble[++i] = MAG_HASH_BUF;
 	PerformJumble(post_analysis_tree, JUMBLE_SIZE, &i);
 	/* Reset rangetbl state */
 	list_free(pgss_rangetbl_stack);
@@ -1034,7 +1036,7 @@ PerformJumble(const Query *tree, Size size, Size *i)
 	{
 		TargetEntry *rt = (TargetEntry *) lfirst(l);
 		Expr        *e  = (Expr*) rt->expr;
-		unsigned char magic = 0xAA;
+		unsigned char magic = MAG_RETURN_LIST;
 		APP_JUMB(magic);
 		/*
 		 * Handle the various types of nodes in
@@ -1159,8 +1161,6 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 	ListCell *l;
 	/* Use the node's NodeTag as a magic number */
 	APP_JUMB(arg->type);
-
-	elog(DEBUG1, "type: %d", arg->type);
 
 	if (IsA(arg, Const))
 	{
@@ -1578,21 +1578,17 @@ static void
 LimitOffsetNode(const Node *node, Size size, Size *i, List *rtable)
 {
 	ListCell *l;
+	unsigned char magic = MAG_LIMIT_OFFSET;
+	APP_JUMB(magic);
+
 	if (IsA(node, FuncExpr))
 	{
-		unsigned char magic = 0xAE;
-		APP_JUMB(magic);
 
 		foreach(l, ((FuncExpr*) node)->args)
 		{
 			Node *arg = (Node *) lfirst(l);
 			LeafNode(arg, size, i, rtable);
 		}
-	}
-	else if (IsA(node, Const))
-	{
-		unsigned char magic = 0xEA;
-		APP_JUMB(magic);
 	}
 	else
 	{
@@ -1939,7 +1935,7 @@ static uint64
 pgss_hash_string(const char* str)
 {
 	/* For additional protection against collisions, including magic value */
-	uint64 Magic = STR_BUF;
+	uint64 Magic = MAG_STR_BUF;
 	uint64 result;
 	Size size = sizeof(Magic) + strlen(str);
 	unsigned char* p = palloc(size);
