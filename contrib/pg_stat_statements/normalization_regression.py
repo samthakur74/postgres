@@ -1219,6 +1219,15 @@ def main():
 	# XXX: This test currently fails!:
 	#verify_normalizes_correctly("SELECT cast('1' as dnotnull);","SELECT cast(? as dnotnull);",conn, "domain literal canonicalization/cast")
 
+	# row types
+	cur = conn.cursor()
+	cur.execute("drop type if exists quad; drop type if exists complex; create type complex as (r float8, i float8); create type quad as (c1 complex, c2 complex);create temp table quadtable(f1 int, q quad);")
+	conn.commit()
+
+	verify_normalizes_correctly(
+	"insert into quadtable (f1, q.c1.r, q.c2.i) values(44,55,66);",
+	"insert into quadtable (f1, q.c1.r, q.c2.i) values(?,?,?);",
+	conn)
 
 	# You can parameterize a limit constant, so our behavior is consistent with that
 	verify_normalizes_correctly("select * from orders limit 1 offset 5;", "select * from orders limit ? offset ?;", conn, "integer verification" )

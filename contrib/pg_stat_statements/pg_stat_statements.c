@@ -1308,6 +1308,14 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 		/* Serialize select-list subselect recursively */
 		if (s->subselect)
 			PerformJumble((Query*) s->subselect, size, i);
+
+		if (s->testexpr)
+			LeafNode((Node*) s->testexpr, size, i, rtable);
+		foreach(l, s->operName)
+		{
+			Node *arg = (Node *) lfirst(l);
+			LeafNode(arg, size, i, rtable);
+		}
 	}
 	else if (IsA(arg, TargetEntry))
 	{
@@ -1548,6 +1556,11 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 	{
 		FieldStore* Fs = (FieldStore*) arg;
 		LeafNode((Node*) Fs->arg, size, i, rtable);
+		foreach(l, Fs->newvals)
+		{
+			Node *arg = (Node *) lfirst(l);
+			LeafNode(arg, size, i, rtable);
+		}
 	}
 	else
 	{
