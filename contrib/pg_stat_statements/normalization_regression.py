@@ -533,6 +533,11 @@ def main():
 	"""SELECT xmlelement(name foo, xmlattributes(? as funny, ? as funnier));""",
 	conn)
 
+	verify_normalizes_correctly(
+	"SELECT xmlserialize(content 'good' as char(10));",
+	"SELECT xmlserialize(content ? as char(10));",
+	conn, "xmlserialize string")
+
 
 	# subqueries
 	# in select list

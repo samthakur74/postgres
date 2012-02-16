@@ -1160,6 +1160,8 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 	/* Use the node's NodeTag as a magic number */
 	APP_JUMB(arg->type);
 
+	elog(DEBUG1, "type: %d", arg->type);
+
 	if (IsA(arg, Const))
 	{
 		/*
@@ -1254,7 +1256,9 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 	}
 	else if (IsA(arg, RelabelType))
 	{
-		APP_JUMB(((RelabelType *) arg)->resulttype);
+		RelabelType *rt = (RelabelType*) arg;
+		APP_JUMB(rt->resulttype);
+		LeafNode((Node*) rt->arg, size, i, rtable);
 	}
 	else if (IsA(arg, WindowFunc))
 	{
