@@ -697,6 +697,15 @@ pgss_process_post_analysis_tree(Query* post_analysis_tree,
 	memset(&bufusage, 0, sizeof(bufusage));
 	pgss_store(sourceText, post_analysis_tree->query_id, 0, 0, &bufusage,
 			true, true);
+
+	/* Trim last_offsets */
+	if (last_offset_buf_size > 10)
+	{
+		last_offset_buf_size = 10;
+		last_offsets = repalloc(last_offsets,
+							last_offset_buf_size *
+							sizeof(Size));
+	}
 }
 
 /*
@@ -1065,17 +1074,18 @@ PerformJumble(const Query *tree, Size size, Size *i)
 			LeafNode(n, size, i, tree->rtable);
 		}
 	}
+
 	foreach(l, tree->windowClause)
 	{
 		WindowClause *wc = (WindowClause *) lfirst(l);
 		ListCell     *il;
 		APP_JUMB(wc->frameOptions);
-		foreach(il, wc->partitionClause) /* PARTITION BY list */
+		foreach(il, wc->partitionClause)	/* PARTITION BY list */
 		{
 			Node *n = (Node *) lfirst(il);
 			LeafNode(n, size, i, tree->rtable);
 		}
-		foreach(il, wc->orderClause) /* ORDER BY list */
+		foreach(il, wc->orderClause)		/* ORDER BY list */
 		{
 			Node *n = (Node *) lfirst(il);
 			LeafNode(n, size, i, tree->rtable);
@@ -1099,15 +1109,6 @@ PerformJumble(const Query *tree, Size size, Size *i)
 
 	if (limcount)
 		LimitOffsetNode((Node*) limcount, size, i, tree->rtable);
-
-	foreach(l, tree->rowMarks)
-	{
-		RowMarkClause *rc = (RowMarkClause *) lfirst(l);
-		APP_JUMB(rc->rti);				/* range table index of target relation */
-		APP_JUMB(rc->forUpdate);			/* true = FOR UPDATE, false = FOR SHARE */
-		APP_JUMB(rc->noWait);				/* NOWAIT option */
-		APP_JUMB(rc->pushedDown);			/* pushed down from higher query level? */
-	}
 
 	if (tree->setOperations)
 	{
@@ -1797,14 +1798,6 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		   false,
 		   false);
 
-		/* Trim last_offsets */
-		if (last_offset_buf_size > 10)
-		{
-			last_offset_buf_size = 10;
-			last_offsets = repalloc(last_offsets,
-								last_offset_buf_size *
-								sizeof(Size));
-		}
 	}
 
 	if (prev_ExecutorEnd)
