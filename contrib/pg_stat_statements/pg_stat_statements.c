@@ -1243,6 +1243,7 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 	{
 		NamedArgExpr *Nae = (NamedArgExpr*) arg;
 		APP_JUMB(Nae->argnumber);
+		LeafNode((Node*) Nae->arg, size, i, rtable);
 	}
 	else if (IsA(arg, Param))
 	{
