@@ -242,7 +242,7 @@ static void LeafNode(const Node *arg, Size size, Size *i, List *rtable);
 static void LimitOffsetNode(const Node *node, Size size, Size *i, List *rtable);
 static void JoinExprNode(JoinExpr *node, Size size, Size *i, List *rtable);
 static void JoinExprNodeChild(const Node *node, Size size, Size *i, List *rtable);
-static void recordConstLocation(int location);
+static void RecordConstLocation(int location);
 static void pgss_ExecutorStart(QueryDesc *queryDesc, int eflags);
 static void pgss_ExecutorRun(QueryDesc *queryDesc,
 				 ScanDirection direction,
@@ -755,15 +755,23 @@ get_constant_length(const char* query_str_const)
 		default:
 			len = orig_tok_len;
 			break;
+		/* XXX: "select integer '1'" must normalize to "select ?"
+		 * This is due to the position given within Const nodes.
+		 *
+		 * This is rather fragile, as I must enumerate all such types that there
+		 * may be leading tokens for here:
+		 */
+		case DECIMAL_P:
+		case BOOLEAN_P:
+		case NAME_P:
+		case TEXT_P:
+		case XML_P:
 		case TIMESTAMP:
 		case TIME:
 		case INTERVAL:
 		case INTEGER:
+		case BIGINT:
 		case NUMERIC:
-		case DECIMAL_P:
-		case NAME_P:
-		case TEXT_P:
-		case XML_P:
 		case IDENT:
 			for(;;)
 			{
@@ -1167,7 +1175,7 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 		 * differentiator
 		 */
 		APP_JUMB(c->consttype);
-		recordConstLocation(c->location);
+		RecordConstLocation(c->location);
 	}
 	else if(IsA(arg, CoerceToDomain))
 	{
@@ -1177,7 +1185,7 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 		 * differentiator
 		 */
 		APP_JUMB(cd->resulttype);
-		recordConstLocation(cd->location);
+		RecordConstLocation(cd->location);
 	}
 	else if (IsA(arg, Var))
 	{
@@ -1317,13 +1325,13 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 		Node     *arg = (Node *) nt->arg;
 		unsigned char nulltesttype = COMPACT_ENUM(nt->nulltesttype);
 		APP_JUMB(nulltesttype);	/* IS NULL, IS NOT NULL */
-		APP_JUMB(nt->argisrow);		/* is input a composite type ? */
+		APP_JUMB(nt->argisrow);	/* is input a composite type ? */
 		LeafNode(arg, size, i, rtable);
 	}
 	else if (IsA(arg, ArrayExpr))
 	{
 		ArrayExpr *ae = (ArrayExpr *) arg;
-		APP_JUMB(ae->array_typeid);	/* type of expression result */
+		APP_JUMB(ae->array_typeid);		/* type of expression result */
 		APP_JUMB(ae->element_typeid);	/* common type of array elements */
 		foreach(l, ae->elements)
 		{
@@ -1346,12 +1354,13 @@ LeafNode(const Node *arg, Size size, Size *i, List *rtable)
 
 		if (ce->defresult)
 		{
-			/* Default result (ELSE clause)
-			 * The ptr may be NULL, because no else clause
+			/* Default result (ELSE clause).
+			 *
+			 * May be NULL, because no else clause
 			 * was actually specified, and thus the value is
 			 * equivalent to SQL ELSE NULL
 			 */
-			LeafNode((Node*) ce->defresult, size, i, rtable); /* the default result (ELSE clause) */
+			LeafNode((Node*) ce->defresult, size, i, rtable);
 		}
 	}
 	else if (IsA(arg, CaseTestExpr))
@@ -1546,6 +1555,9 @@ LimitOffsetNode(const Node *node, Size size, Size *i, List *rtable)
 	ListCell *l;
 	if (IsA(node, FuncExpr))
 	{
+		unsigned char magic = 0xAE;
+		APP_JUMB(magic);
+
 		foreach(l, ((FuncExpr*) node)->args)
 		{
 			Node *arg = (Node *) lfirst(l);
@@ -1554,7 +1566,6 @@ LimitOffsetNode(const Node *node, Size size, Size *i, List *rtable)
 	}
 	else if (IsA(node, Const))
 	{
-		/* This should be a differentiator, as it results in the addition of a limit node */
 		unsigned char magic = 0xEA;
 		APP_JUMB(magic);
 	}
@@ -1642,7 +1653,7 @@ JoinExprNodeChild(const Node *node, Size size, Size *i, List *rtable)
  * currently being walked.
  */
 static void
-recordConstLocation(int location)
+RecordConstLocation(int location)
 {
 	/* -1 indicates unknown or undefined location */
 	if (location > -1)

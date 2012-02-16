@@ -195,6 +195,7 @@ def main():
 
 	verify_statement_equivalency("select '5'::integer;", "select  '17'::integer;", conn)
 	verify_statement_equivalency("select 1;", "select      5   ;", conn)
+	verify_statement_equivalency("select 1::integer;", "select NULL::integer;", conn)
 	verify_statement_equivalency("select 'foo'::text;", "select  'bar'::text;", conn)
 	# Date constant normalization
 	verify_statement_equivalency("select * from orders where orderdate = '2001-01-01';" ,"select * from orders where orderdate = '1960-01-01'", conn)
@@ -1225,6 +1226,8 @@ def main():
 								"select ?;", conn, "exercise alternative cast syntax, timestamptz")
 	verify_normalizes_correctly("select date '2009-05-05';",
 								"select ?;", conn, "exercise alternative cast syntax, date")
+	verify_normalizes_correctly("select boolean 'true';",
+								"select ?;", conn, "exercise alternative cast syntax, boolean")
 	verify_normalizes_correctly("select time '15:15:15';",
 								"select ?;", conn, "exercise alternative cast syntax, time")
 	verify_normalizes_correctly("select time with time zone '15:15:15';",
