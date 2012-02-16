@@ -496,7 +496,8 @@ hash_any_var_width(register const unsigned char *k, register int keylen, bool wi
 	if (width_32)
 		return UInt32GetDatum(c);
 	else
-		return (uint64) b | (((uint64) c) << (sizeof(uint64) / 2) * 8);
+		return (uint64) b |
+			(((uint64) c) << (sizeof(uint64) / 2) * BITS_PER_BYTE);
 }
 
 /*

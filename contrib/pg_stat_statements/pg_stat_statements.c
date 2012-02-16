@@ -62,10 +62,12 @@
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 
+
 PG_MODULE_MAGIC;
 
 /* Location of stats file */
 #define PGSS_DUMP_FILE	"global/pg_stat_statements.stat"
+
 /* This constant defines the magic number in the stats file header */
 static const uint32 PGSS_FILE_HEADER = 0x20120103;
 
@@ -140,7 +142,7 @@ typedef struct pgssSharedState
 } pgssSharedState;
 
 /*
- * Last seen constant positions per statement
+ * Last seen constant positions for a statement
  */
 typedef struct pgssQueryConEntry
 {
@@ -149,18 +151,19 @@ typedef struct pgssQueryConEntry
 	Size offsets[1];		/* VARIABLE LENGTH ARRAY - MUST BE LAST */
 	/* Note: the allocated length of offsets is actually n_elems */
 } pgssQueryConEntry;
-
 /*---- Local variables ----*/
-/* Jumble of last query tree seen pgss_Planner */
+/* Jumble of current query tree */
 static unsigned char *last_jumble = NULL;
-/* Ptr to buffer that represents position of normalized characters */
+/* Buffer that represents position of normalized characters */
 static Size *last_offsets = NULL;
 /* Current Length of last_offsets buffer */
 static Size last_offset_buf_size = 10;
 /* Current number of actual offsets stored in last_offsets */
 static Size last_offset_num = 0;
+
 /* Current nesting depth of ExecutorRun calls */
 static int	nested_level = 0;
+
 /* Saved hook values in case of unload */
 static shmem_startup_hook_type prev_shmem_startup_hook = NULL;
 static ExecutorStart_hook_type prev_ExecutorStart = NULL;
@@ -176,9 +179,9 @@ static pgssSharedState *pgss = NULL;
 static HTAB *pgss_hash = NULL;
 
 /*
- * Maintain a stack of cur query's rangetables, so subqueries can reference
- * parent rangetables. Not strictly a stack, but conceptually similar, as the
- * top of the stack/tail is the subquery's own range table.
+ * Maintain a stack of the rangetable of the query tree that we're currently
+ * walking, so subqueries can reference parent rangetables. The stack is pushed
+ * and popped as each Query struct is walked into or out of.
  */
 static List* pgss_rangetbl_stack = NIL;
 
@@ -228,6 +231,8 @@ static Query *pgss_parse_analyze(Node *parseTree, const char *sourceText,
 			  Oid *paramTypes, int numParams);
 static Query *pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 						Oid **paramTypes, int *numParams);
+static void pgss_process_post_analysis_tree(Query* post_analysis_tree,
+		const char* sourceText);
 static uint32 get_constant_length(const char* query_str_const);
 static uint64 JumbleQuery(Query *post_analysis_tree);
 static void AppendJumb(unsigned char* item, unsigned char jumble[], Size size, Size *i);
@@ -256,7 +261,7 @@ static Size pgss_memsize(void);
 static pgssEntry *entry_alloc(pgssHashKey *key, const char* query, int new_query_len);
 static void entry_dealloc(void);
 static void entry_reset(void);
-static int n_dups(Size last_offsets[], Size n);
+static int n_dups(Size offs[], Size n);
 static Size* dedup_toks(Size offs[], Size n,
 		Size new_size);
 
@@ -617,7 +622,6 @@ error:
 	if (file)
 		FreeFile(file);
 	unlink(PGSS_DUMP_FILE);
-
 }
 
 /*
@@ -650,13 +654,7 @@ pgss_parse_analyze(Node *parseTree, const char *sourceText,
 			  paramTypes, numParams);
 
 	if (!post_analysis_tree->utilityStmt)
-	{
-		BufferUsage bufusage;
-		post_analysis_tree->query_id = JumbleQuery(post_analysis_tree);
-		memset(&bufusage, 0, sizeof(bufusage));
-		pgss_store(sourceText, post_analysis_tree->query_id, 0, 0, &bufusage,
-				true, true);
-	}
+		pgss_process_post_analysis_tree(post_analysis_tree, sourceText);
 
 	return post_analysis_tree;
 }
@@ -666,6 +664,7 @@ pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 						Oid **paramTypes, int *numParams)
 {
 	Query *post_analysis_tree;
+
 	if (prev_parse_analyze_hook)
 		post_analysis_tree = (*prev_parse_analyze_varparams_hook) (parseTree,
 				sourceText, paramTypes, numParams);
@@ -674,15 +673,27 @@ pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 				sourceText, paramTypes, numParams);
 
 	if (!post_analysis_tree->utilityStmt)
-	{
-		BufferUsage bufusage;
-		post_analysis_tree->query_id = JumbleQuery(post_analysis_tree);
-		memset(&bufusage, 0, sizeof(bufusage));
-		pgss_store(sourceText, post_analysis_tree->query_id, 0, 0, &bufusage,
-				true, true);
-	}
+		pgss_process_post_analysis_tree(post_analysis_tree, sourceText);
 
 	return post_analysis_tree;
+}
+
+/*
+ * pgss_process_post_analysis_tree: Record query_id, which is based on the query
+ * tree, within the tree itself, for later retrieval in the exeuctor hook. The
+ * core system will copy the value to the tree's corresponding plannedstmt.
+ */
+static void
+pgss_process_post_analysis_tree(Query* post_analysis_tree,
+		const char* sourceText)
+{
+	BufferUsage bufusage;
+
+	post_analysis_tree->query_id = JumbleQuery(post_analysis_tree);
+
+	memset(&bufusage, 0, sizeof(bufusage));
+	pgss_store(sourceText, post_analysis_tree->query_id, 0, 0, &bufusage,
+			true, true);
 }
 
 /*
@@ -803,7 +814,7 @@ JumbleQuery(Query *post_analysis_tree)
 
 /*
  * AppendJumb: Append a value that is substantive to a given query to jumble,
- * while incrementing the iterator.
+ * while incrementing the iterator, i.
  */
 static void
 AppendJumb(unsigned char* item, unsigned char jumble[], Size size, Size *i)
@@ -1763,8 +1774,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		   false,
 		   false);
 
-
-
+		/* Trim last_offsets */
 		if (last_offset_buf_size > 10)
 		{
 			last_offset_buf_size = 10;
@@ -2043,7 +2053,6 @@ pgss_store(const char *query, uint64 query_id,
 					 */
 					continue;
 				}
-
 				memcpy(norm_query + n_quer_it, query + quer_it, len_to_wrt);
 
 				n_quer_it += len_to_wrt;
@@ -2064,7 +2073,6 @@ pgss_store(const char *query, uint64 query_id,
 			LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
 
 			entry = entry_alloc(&key, norm_query, strlen(norm_query));
-
 		}
 		else
 		{
@@ -2204,7 +2212,7 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 			tmp = e->counters;
 			SpinLockRelease(&e->mutex);
 		}
-		/* This record might have yet to have be executed at all */
+		/* Skip record of unexecuted query */
 		if (tmp.calls == 0)
 			continue;
 
@@ -2297,7 +2305,7 @@ entry_alloc(pgssHashKey *key, const char* query, int new_query_len)
  * qsort comparator for sorting into increasing usage order
  */
 static int
-entry_cmp_usage(const void *lhs, const void *rhs)
+entry_cmp(const void *lhs, const void *rhs)
 {
 	double		l_usage = (*(pgssEntry * const *) lhs)->counters.usage;
 	double		r_usage = (*(pgssEntry * const *) rhs)->counters.usage;
@@ -2335,7 +2343,7 @@ entry_dealloc(void)
 		entry->counters.usage *= USAGE_DECREASE_FACTOR;
 	}
 
-	qsort(entries, i, sizeof(pgssEntry *), entry_cmp_usage);
+	qsort(entries, i, sizeof(pgssEntry *), entry_cmp);
 	nvictims = Max(10, i * USAGE_DEALLOC_PERCENT / 100);
 	nvictims = Min(nvictims, i);
 
@@ -2368,17 +2376,17 @@ entry_reset(void)
 }
 
 /*
- * Array should not have any duplicates.
+ * Returns a value indicating the number of duplicates.
  *
  * Assumes that the array has already been sorted.
  */
 static int
-n_dups(Size last_offsets[], Size n)
+n_dups(Size offs[], Size n)
 {
 	int i, n_fdups = 0;
 
 	for(i = 1; i < n; i++)
-		if (last_offsets[i - 1] == last_offsets[i])
+		if (offs[i - 1] == offs[i])
 			n_fdups++;
 
 	return n_fdups;
@@ -2389,6 +2397,8 @@ n_dups(Size last_offsets[], Size n)
  *
  * new_size specifies the size of the new, duplicate-free array, which must be
  * known ahead of time.
+ *
+ * Assumes that the array has already been sorted.
  */
 static Size*
 dedup_toks(Size offs[], Size n, Size new_size)
