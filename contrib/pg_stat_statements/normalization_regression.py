@@ -176,11 +176,26 @@ def verify_normalizes_correctly(sql, norm_sql, conn, test_name = None):
 		do_post_mortem(conn)
 		raise SystemExit("""The SQL statement \n'{0}'\n does not normalize to \n  '{1}'\n , which is not expected!
 				Test {2} failed.""".format(sql, norm_sql, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no)))
+	test_no +=1
 
-	# Comment out this line, and observe how the connection apparently leaks,
-	# albeit only because of the fact that each query is unique, and the local
-	# hashtable allocates memory within CurTransactionContext.
-	# conn.commit()
+def fuzzy_verify_normalizes_correctly(sql, fuzzy_norm_sql, conn, test_name = None):
+	global test_no
+	cur = conn.cursor()
+	cur.execute("select pg_stat_statements_reset();")
+	cur.execute(sql)
+	ver_exists = "select exists(select 1 from pg_stat_statements where query ilike '%"+ fuzzy_norm_sql  +"%');"
+	cur.execute(ver_exists)
+	for i in cur:
+		exists = i[0]
+
+	if exists:
+		print """The SQL \n'{0}'\n fuzzily normalizes to \n'{1}'\n , as expected.
+			Test {2} passed.\n\n """.format(sql, fuzzy_norm_sql, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no))
+	else:
+		do_post_mortem(conn)
+		raise SystemExit("""The SQL statement \n'{0}'\n does not fuzzily normalize to \n  '{1}'\n , which is not expected!
+				Test {2} failed.""".format(sql, fuzzy_norm_sql, test_no if test_name is None else "'{0}' ({1})".format( test_name, test_no)))
+
 	test_no +=1
 
 def main():
@@ -192,6 +207,7 @@ def main():
 	# in some cases at some point in the code's development.
 	cur = conn.cursor()
 	cur.execute("set pg_stat_statements.track = 'all';")
+
 
 	verify_statement_equivalency("select '5'::integer;", "select  '17'::integer;", conn)
 	verify_statement_equivalency("select 1;", "select      5   ;", conn)
@@ -1382,6 +1398,15 @@ def main():
 	"select 4," + (" " * 3088) + "3456;",
 	conn, "late constant")
 
+	fuzzy_verify_normalizes_correctly(
+	"select 1;",
+	"elect ?",
+	conn, "test fuzzy tester")
+
+	fuzzy_verify_normalizes_correctly(
+	"select 1," + (" " * 2045) + "55;",
+	"select ?," + (" " * 600),
+	conn, "late constant normalizes correctly")
 
 	stress_constant_canonicalization(conn)
 	demonstrate_buffer_limitation(conn)

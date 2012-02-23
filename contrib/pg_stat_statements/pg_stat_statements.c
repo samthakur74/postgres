@@ -2025,6 +2025,8 @@ pgss_store(const char *query, uint32 query_id,
 			  last_off = 0,		/* Offset from start for last iter tok */
 			  last_tok_len = 0,	/* length (in bytes) of that tok */
 			  length_delta = 0; /* Finished str is n bytes shorter so far */
+			  /* Did we run out of space before reaching past last constant? */
+			  bool ran_out_space = false;
 
 			norm_query = palloc0(new_query_len + 1);
 			for(i = 0; i < off_n; i++)
@@ -2061,6 +2063,15 @@ pgss_store(const char *query, uint32 query_id,
 						if (n_quer_it < new_query_len)
 							norm_query[n_quer_it++] = '?';
 					}
+
+					if (off - length_delta >= new_query_len)
+					{
+						/* Out of space entirely - copy as much as possible */
+						ran_out_space = true;
+						memcpy(norm_query + n_quer_it, query + quer_it,
+								new_query_len - n_quer_it);
+						break;
+					}
 					/*
 					 * Even though we'd have exceeded buffer size with last
 					 * constant if constants weren't canonicalized, they are, so
@@ -2077,10 +2088,15 @@ pgss_store(const char *query, uint32 query_id,
 				last_off = off;
 				last_tok_len = tok_len;
 			}
-			/* Copy end of query string (piece past last constant) if there's room */
-			memcpy(norm_query + n_quer_it, query + (off + tok_len),
-				Min( strlen(query) - (off + tok_len),
-					new_query_len - n_quer_it ) );
+			/*
+			 * Either fill norm_query to capacity, or copy over all remaining
+			 * bytes from query
+			 */
+			if (!ran_out_space)
+				memcpy(norm_query + n_quer_it, query + (off + tok_len),
+					Min( strlen(query) - (off + tok_len),
+						new_query_len - n_quer_it ) );
+
 			/*
 			 * Must acquire exclusive lock to add a new entry.
 			 * Leave that until as late as possible.
