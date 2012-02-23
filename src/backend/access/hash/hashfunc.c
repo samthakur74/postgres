@@ -291,15 +291,18 @@ hashvarlena(PG_FUNCTION_ARGS)
  *		k		: the key (the unaligned variable-length array of bytes)
  *		len		: the length of the key, counting by bytes
  *
- * Returns a uint32 or a uint64 value, depending on the width_32 argument.
+ * Returns a uint32 value.	Every bit of the key affects every bit of
+ * the return value.  Every 1-bit and 2-bit delta achieves avalanche.
+ * About 6*len+35 instructions. The best hash table sizes are powers
+ * of 2.  There is no need to do mod a prime (mod is sooo slow!).
+ * If you need less than 32 bits, use a bitmask.
  *
- * Every bit of the key affects every bit of the return value.  Every 1-bit and
- * 2-bit delta achieves avalanche.  About 6*len+35 instructions. The best hash
- * table sizes are powers of 2.  There is no need to do mod a prime (mod is sooo
- * slow!).  If you need less than 32 bits, use a bitmask.
+ * Note: we could easily change this function to return a 64-bit hash value
+ * by using the final values of both b and c.  b is perhaps a little less
+ * well mixed than c, however.
  */
 Datum
-hash_any_var_width(register const unsigned char *k, register int keylen, bool width_32)
+hash_any(register const unsigned char *k, register int keylen)
 {
 	register uint32 a,
 				b,
@@ -493,11 +496,7 @@ hash_any_var_width(register const unsigned char *k, register int keylen, bool wi
 	final(a, b, c);
 
 	/* report the result */
-	if (width_32)
-		return UInt32GetDatum(c);
-	else
-		return (uint64) b |
-			(((uint64) c) << (sizeof(uint64) / 2) * BITS_PER_BYTE);
+	return UInt32GetDatum(c);
 }
 
 /*

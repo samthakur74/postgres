@@ -46,8 +46,8 @@ def demonstrate_buffer_limitation(conn):
 		long_long_query = ""
 		for j in range(0,100):
 			long_query += i + (' ' + set_operations[it] + ' \n' if j != 99 else " ")
-		for j in range(0,1000):
-			long_long_query += i + (' ' + set_operations[it] + ' \n' if j != 999 else " ")
+		for j in range(0,200):
+			long_long_query += i + (' ' + set_operations[it] + ' \n' if j != 199 else " ")
 
 		print long_query
 		verify_statement_differs(long_query, long_long_query, conn, "Differences out of range (iteration {0})".format(it + 1))
@@ -526,11 +526,11 @@ def main():
 
 	verify_normalizes_correctly(
 	"SELECT xml '<foo>bar</foo>' IS DOCUMENT;",
-	"SELECT ? IS DOCUMENT;", conn)
+	"SELECT xml ? IS DOCUMENT;", conn)
 
 	verify_normalizes_correctly(
 	"""SELECT xmlelement(name foo, xmlattributes('<>&"''' as funny, xml 'b<a/>r' as funnier));""",
-	"""SELECT xmlelement(name foo, xmlattributes(? as funny, ? as funnier));""",
+	"""SELECT xmlelement(name foo, xmlattributes(? as funny, xml ? as funnier));""",
 	conn)
 
 	verify_normalizes_correctly(
@@ -1215,9 +1215,9 @@ def main():
 
 	verify_normalizes_correctly("select 'x123'::dtop;","select ?::dtop;",conn, "domain literal canonicalization")
 	verify_normalizes_correctly("select 'x123' as dtop;","select ? as dtop;",conn, "domain literal canonicalization")
-	verify_normalizes_correctly("select dtop 'x123';","select ?;",conn, "domain literal canonicalization")
-	# XXX: This test currently fails!:
-	#verify_normalizes_correctly("SELECT cast('1' as dnotnull);","SELECT cast(? as dnotnull);",conn, "domain literal canonicalization/cast")
+	verify_normalizes_correctly("select dtop 'x123';","select dtop ?;",conn, "domain literal canonicalization")
+	verify_normalizes_correctly("SELECT cast('1' as dnotnull);","SELECT cast(? as dnotnull);",conn, "domain literal canonicalization/cast")
+	verify_normalizes_correctly("SELECT cast('1' as text);","SELECT cast(? as text);",conn, "string literal canonicalization/cast")
 
 	# row types
 	cur = conn.cursor()
@@ -1243,48 +1243,48 @@ def main():
 
 	# Test this cast syntax works:
 	verify_normalizes_correctly("select timestamp without time zone '2009-05-05 15:34:24';",
-								"select ?;", conn, "exercise alternative cast syntax, timestamp")
+								"select timestamp without time zone ?;", conn, "exercise alternative cast syntax, timestamp")
 	verify_normalizes_correctly("select timestamptz '2009-05-05 15:34:24.1234';",
-								"select ?;", conn, "exercise alternative cast syntax, timestamptz")
+								"select timestamptz ?;", conn, "exercise alternative cast syntax, timestamptz")
 	verify_normalizes_correctly("select date '2009-05-05';",
-								"select ?;", conn, "exercise alternative cast syntax, date")
+								"select date ?;", conn, "exercise alternative cast syntax, date")
 	verify_normalizes_correctly("select boolean 'true';",
-								"select ?;", conn, "exercise alternative cast syntax, boolean")
+								"select boolean ?;", conn, "exercise alternative cast syntax, boolean")
 	verify_normalizes_correctly("select time '15:15:15';",
-								"select ?;", conn, "exercise alternative cast syntax, time")
+								"select time ?;", conn, "exercise alternative cast syntax, time")
 	verify_normalizes_correctly("select time with time zone '15:15:15';",
-								"select ?;", conn, "exercise alternative cast syntax, time with time zone")
+								"select time with time zone ?;", conn, "exercise alternative cast syntax, time with time zone")
 	verify_normalizes_correctly("select int4 '5';",
-								"select ?;", conn, "exercise alternative cast syntax, int4")
+								"select int4 ?;", conn, "exercise alternative cast syntax, int4")
 	verify_normalizes_correctly("select integer '5';",
-								"select ?;", conn, "exercise alternative cast syntax, integer")
+								"select integer ?;", conn, "exercise alternative cast syntax, integer")
 	verify_normalizes_correctly("select numeric '5.5';",
-								"select ?;", conn, "exercise alternative cast syntax, numeric")
+								"select numeric ?;", conn, "exercise alternative cast syntax, numeric")
 	verify_normalizes_correctly("select '5.5'::numeric(10,2);",
 								"select ?::numeric(10,2);", conn, "numeric, fixed precision")
 	verify_normalizes_correctly("select decimal '5.5';",
-								"select ?;", conn, "exercise alternative cast syntax, decimal")
+								"select decimal ?;", conn, "exercise alternative cast syntax, decimal")
 	verify_normalizes_correctly("select name 'abc';",
-								"select ?;", conn, "exercise alternative cast syntax, name")
+								"select name ?;", conn, "exercise alternative cast syntax, name")
 	verify_normalizes_correctly("select text 'abc';",
-								"select ?;", conn, "exercise alternative cast syntax, text")
+								"select text ?;", conn, "exercise alternative cast syntax, text")
 	verify_normalizes_correctly("select extract(century from date '0101-12-31 BC');",
-								"select extract(? from ?);", conn, "extract syntax, date")
+								"select extract(? from date ?);", conn, "extract syntax, date")
 	verify_normalizes_correctly("select extract(epoch from date '0101-12-31 BC');",
-								"select extract(? from ?);", conn, "extract syntax, epoch")
+								"select extract(? from date ?);", conn, "extract syntax, epoch")
 	verify_normalizes_correctly("select extract(year from date '0101-12-31 BC');",
-								"select extract(? from ?);", conn, "extract syntax, year")
+								"select extract(? from date ?);", conn, "extract syntax, year")
 	verify_normalizes_correctly("select extract(month from date '0101-12-31 BC');",
-								"select extract(? from ?);", conn, "extract syntax, month")
+								"select extract(? from date ?);", conn, "extract syntax, month")
 	verify_normalizes_correctly("select extract(day from date '0101-12-31 BC');",
-								"select extract(? from ?);", conn, "extract syntax, day")
+								"select extract(? from date ?);", conn, "extract syntax, day")
 	verify_normalizes_correctly("select extract(hour from date '0101-12-31 BC');",
-								"select extract(? from ?);", conn, "extract syntax, hour")
+								"select extract(? from date ?);", conn, "extract syntax, hour")
 	verify_normalizes_correctly("select extract(minute from date '0101-12-31 BC');",
-								"select extract(? from ?);", conn, "extract syntax, minute")
+								"select extract(? from date ?);", conn, "extract syntax, minute")
 	verify_normalizes_correctly("select extract(second from date '0101-12-31 BC');",
-								"select extract(? from ?);", conn, "extract syntax, second")
-	verify_normalizes_correctly("select interval '1 hour';", "select ?;", conn, "exercise alternative cast syntax, interval")
+								"select extract(? from date ?);", conn, "extract syntax, second")
+	verify_normalizes_correctly("select interval '1 hour';", "select interval ?;", conn, "exercise alternative cast syntax, interval")
 	# Binary/bit strings have special handling within parser
 	verify_normalizes_correctly("select B'1001' | B'1111';", "select ? | ?;", conn, "bitstring parser handling")
 	# Ditto hex strings
@@ -1375,6 +1375,12 @@ def main():
 	# doesn't matter - we still get a correctly canonicalized string representation.
 	verify_normalizes_correctly("select " + ("1" * 2048)  + ";", "select ?;",
 	conn, "constant exceeds track_activity_query_size")
+
+	# Constant is past track_activity_query_size
+	verify_statement_equivalency(
+	"select 1," + (" " * 2045) + "55;",
+	"select 4," + (" " * 3088) + "3456;",
+	conn, "late constant")
 
 
 	stress_constant_canonicalization(conn)

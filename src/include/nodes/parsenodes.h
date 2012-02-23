@@ -103,7 +103,7 @@ typedef struct Query
 
 	QuerySource querySource;	/* where did I come from? */
 
-	uint64		query_id;		/* query identifier that can be set by plugins.
+	uint32		queryId;		/* query identifier that can be set by plugins.
 								 * Will be copied to resulting PlannedStmt. */
 
 	bool		canSetTag;		/* do I set the command result tag? */

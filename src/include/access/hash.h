@@ -239,8 +239,6 @@ typedef HashMetaPageData *HashMetaPage;
  */
 #define HASHPROC		1
 
-#define hash_any(k, keylen) (hash_any_var_width(k, keylen, true))
-#define hash_any64(k, keylen) (hash_any_var_width(k, keylen, false))
 
 /* public routines */
 
@@ -280,7 +278,7 @@ extern Datum hashint2vector(PG_FUNCTION_ARGS);
 extern Datum hashname(PG_FUNCTION_ARGS);
 extern Datum hashtext(PG_FUNCTION_ARGS);
 extern Datum hashvarlena(PG_FUNCTION_ARGS);
-extern Datum hash_any_var_width(register const unsigned char *k, register int keylen, bool width_32);
+extern Datum hash_any(register const unsigned char *k, register int keylen);
 extern Datum hash_uint32(uint32 k);
 
 /* private routines */

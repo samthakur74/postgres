@@ -905,7 +905,7 @@ transformSelectStmt(ParseState *pstate, SelectStmt *stmt)
 	ListCell   *l;
 
 	qry->commandType = CMD_SELECT;
-	qry->query_id = 0;
+	qry->queryId = 0;
 
 	/* process the WITH clause independently of all else */
 	if (stmt->withClause)

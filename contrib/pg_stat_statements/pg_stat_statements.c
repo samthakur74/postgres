@@ -97,7 +97,7 @@ typedef struct pgssHashKey
 	Oid			userid;			/* user OID */
 	Oid			dbid;			/* database OID */
 	int			encoding;		/* query encoding */
-	uint64		query_id;		/* query identifier */
+	uint32		query_id;		/* query identifier */
 } pgssHashKey;
 
 /*
@@ -236,7 +236,7 @@ static Query *pgss_parse_analyze_varparams(Node *parseTree, const char *sourceTe
 static void pgss_process_post_analysis_tree(Query* post_analysis_tree,
 		const char* sourceText);
 static uint32 get_constant_length(const char* query_str_const);
-static uint64 JumbleQuery(Query *post_analysis_tree);
+static uint32 JumbleQuery(Query *post_analysis_tree);
 static void AppendJumb(unsigned char* item, unsigned char jumble[], Size size, Size *i);
 static void PerformJumble(const Query *tree, Size size, Size *i);
 static void QualsNode(const OpExpr *node, Size size, Size *i, List *rtable);
@@ -256,8 +256,8 @@ static void pgss_ProcessUtility(Node *parsetree,
 					DestReceiver *dest, char *completionTag);
 static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
-static uint64 pgss_hash_string(const char* str);
-static void pgss_store(const char *query, uint64 query_id,
+static uint32 pgss_hash_string(const char* str);
+static void pgss_store(const char *query, uint32 query_id,
 				double total_time, uint64 rows,
 				const BufferUsage *bufusage, bool empty_entry, bool normalize);
 static Size pgss_memsize(void);
@@ -692,10 +692,10 @@ pgss_process_post_analysis_tree(Query* post_analysis_tree,
 {
 	BufferUsage bufusage;
 
-	post_analysis_tree->query_id = JumbleQuery(post_analysis_tree);
+	post_analysis_tree->queryId = JumbleQuery(post_analysis_tree);
 
 	memset(&bufusage, 0, sizeof(bufusage));
-	pgss_store(sourceText, post_analysis_tree->query_id, 0, 0, &bufusage,
+	pgss_store(sourceText, post_analysis_tree->queryId, 0, 0, &bufusage,
 			true, true);
 
 	/* Trim last_offsets */
@@ -814,7 +814,7 @@ get_constant_length(const char* query_str_const)
  * Note that this doesn't necessarily uniquely identify the query across
  * different databases and encodings.
  */
-static uint64
+static uint32
 JumbleQuery(Query *post_analysis_tree)
 {
 	/* State for this run of PerformJumble */
@@ -829,7 +829,7 @@ JumbleQuery(Query *post_analysis_tree)
 
 	/* Sort offsets for later query string canonicalization */
 	qsort(last_offsets, last_offset_num, sizeof(Size), comp_offset);
-	return hash_any64((const unsigned char* ) last_jumble, i);
+	return hash_any((const unsigned char* ) last_jumble, i);
 }
 
 /*
@@ -862,7 +862,7 @@ AppendJumb(unsigned char* item, unsigned char jumble[], Size size, Size *i)
 	 */
 	if (*i > JUMBLE_SIZE)
 	{
-		uint64 start_hash = hash_any64((const unsigned char* ) last_jumble, JUMBLE_SIZE);
+		uint32 start_hash = hash_any((const unsigned char* ) last_jumble, JUMBLE_SIZE);
 		int hash_l = sizeof(start_hash);
 		int part_left_l = Max(0, ((int) size - ((int) *i - JUMBLE_SIZE)));
 
@@ -1779,7 +1779,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 {
 	if (queryDesc->totaltime && pgss_enabled())
 	{
-		uint64 queryId;
+		uint32 queryId;
 		if (pgss_string_key)
 			queryId = pgss_hash_string(queryDesc->sourceText);
 		else
@@ -1819,7 +1819,7 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 		instr_time	start;
 		instr_time	duration;
 		uint64		rows = 0;
-		uint64		query_id;
+		uint32		query_id;
 		BufferUsage bufusage;
 
 		bufusage = pgBufferUsage;
@@ -1924,17 +1924,17 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
  * identifying the query, without canonicalizing constants. Used when hashing
  * utility statements, or for legacy compatibility mode.
  */
-static uint64
+static uint32
 pgss_hash_string(const char* str)
 {
 	/* For additional protection against collisions, including magic value */
-	uint64 Magic = MAG_STR_BUF;
-	uint64 result;
+	uint32 Magic = MAG_STR_BUF;
+	uint32 result;
 	Size size = sizeof(Magic) + strlen(str);
 	unsigned char* p = palloc(size);
 	memcpy(p, &Magic, sizeof(Magic));
 	memcpy(p + sizeof(Magic), str, strlen(str));
-	result = hash_any64((const unsigned char *) p, size);
+	result = hash_any((const unsigned char *) p, size);
 	pfree(p);
 	return result;
 }
@@ -1943,7 +1943,7 @@ pgss_hash_string(const char* str)
  * Store some statistics for a statement.
  */
 static void
-pgss_store(const char *query, uint64 query_id,
+pgss_store(const char *query, uint32 query_id,
 				double total_time, uint64 rows,
 				const BufferUsage *bufusage,
 				bool empty_entry,

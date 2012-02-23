@@ -62,10 +62,6 @@
 #define COPY_LOCATION_FIELD(fldname) \
 	(newnode->fldname = from->fldname)
 
-/* Copy a query_id field (for Copy, this is same as scalar case) */
-#define COPY_QUERYID_FIELD(fldname) \
-	(newnode->fldname = from->fldname)
-
 /* ****************************************************************
  *					 plannodes.h copy functions
  * ****************************************************************
@@ -95,7 +91,7 @@ _copyPlannedStmt(const PlannedStmt *from)
 	COPY_NODE_FIELD(relationOids);
 	COPY_NODE_FIELD(invalItems);
 	COPY_SCALAR_FIELD(nParamExec);
-	COPY_QUERYID_FIELD(queryId);
+	COPY_SCALAR_FIELD(queryId);
 
 	return newnode;
 }
@@ -2419,7 +2415,7 @@ _copyQuery(const Query *from)
 
 	COPY_SCALAR_FIELD(commandType);
 	COPY_SCALAR_FIELD(querySource);
-	COPY_SCALAR_FIELD(query_id);
+	COPY_SCALAR_FIELD(queryId);
 	COPY_SCALAR_FIELD(canSetTag);
 	COPY_NODE_FIELD(utilityStmt);
 	COPY_SCALAR_FIELD(resultRelation);

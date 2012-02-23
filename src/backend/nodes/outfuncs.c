@@ -46,10 +46,6 @@
 #define WRITE_UINT_FIELD(fldname) \
 	appendStringInfo(str, " :" CppAsString(fldname) " %u", node->fldname)
 
-/* Write a location/query id field (anything written as ":fldname %lu") */
-#define WRITE_ULINT_FIELD(fldname) \
-	appendStringInfo(str, " :" CppAsString(fldname) " %lu", node->fldname)
-
 /* Write an OID field (don't hard-wire assumption that OID is same as uint) */
 #define WRITE_OID_FIELD(fldname) \
 	appendStringInfo(str, " :" CppAsString(fldname) " %u", node->fldname)
