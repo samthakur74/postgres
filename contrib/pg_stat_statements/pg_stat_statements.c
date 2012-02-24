@@ -25,10 +25,10 @@
  * which is copied back into the query tree at the post-analysis stage.
  * Postgres then naively copies this value around, making it later available
  * from within the corresponding plan tree. The executor can then use this value
- * to blame query costs on a known query_id.
+ * to blame query costs on a known queryJumb.
  *
  * Within the executor hook, the module stores the cost of the queries
- * execution, based on a query_id provided by the core system.
+ * execution, based on a queryJumb provided by the core system.
  *
  * Copyright (c) 2008-2012, PostgreSQL Global Development Group
  *
@@ -83,6 +83,14 @@ static const uint32 PGSS_FILE_HEADER = 0x20120103;
 #define MAG_STR_BUF					0xEB	/* buffer is query string itself */
 #define MAG_RETURN_LIST				0xAE	/* returning list node follows */
 #define MAG_LIMIT_OFFSET			0xBA	/* limit/offset node follows */
+
+typedef struct NodeKeyToJumble
+{
+	bool		used;
+	NodeKey		nodeKey;
+	uint32		queryJumb;
+} NodeKeyToJumble;
+
 /*
  * Hashtable key that defines the identity of a hashtable entry.  The
  * hash comparators do not assume that the query string is null-terminated;
@@ -97,7 +105,7 @@ typedef struct pgssHashKey
 	Oid			userid;			/* user OID */
 	Oid			dbid;			/* database OID */
 	int			encoding;		/* query encoding */
-	uint32		query_id;		/* query identifier */
+	uint32		queryJumb;		/* query identifier */
 } pgssHashKey;
 
 /*
@@ -187,6 +195,11 @@ static HTAB *pgss_hash = NULL;
  */
 static List* pgss_rangetbl_stack = NIL;
 
+/* An association array to relate NodeKeys to jumbles */
+#define NK_ASSOC_AR_LEN 30
+static NodeKeyToJumble nk_assoc_ar[NK_ASSOC_AR_LEN];
+static Size nk_last_assoc_free;
+
 /*---- GUC variables ----*/
 
 typedef enum
@@ -257,7 +270,7 @@ static void pgss_ProcessUtility(Node *parsetree,
 static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
 static uint32 pgss_hash_string(const char* str);
-static void pgss_store(const char *query, uint32 query_id,
+static void pgss_store(const char *query, uint32 queryJumb,
 				double total_time, uint64 rows,
 				const BufferUsage *bufusage, bool empty_entry, bool normalize);
 static Size pgss_memsize(void);
@@ -267,6 +280,71 @@ static void entry_reset(void);
 static int n_dups(Size offs[], Size n);
 static Size* dedup_toks(Size offs[], Size n,
 		Size new_size);
+
+/*
+ * To look up the jumble of a query as it passes through analyze and execution
+ * phases.
+ */
+static NodeKeyToJumble *nkassoc(NodeKey needle);
+static void nkclear(void);
+static void nkremove(NodeKeyToJumble *nkj);
+static NodeKeyToJumble *nkadd(NodeKey nk, uint32 jumble);
+
+NodeKeyToJumble *
+nkassoc(NodeKey needle) {
+	int i;
+
+	for (i = 0; i < NK_ASSOC_AR_LEN; i += 1)
+	{
+		NodeKeyToJumble *cell = &nk_assoc_ar[i];
+
+		if (cell->nodeKey == needle && cell->used)
+			return &nk_assoc_ar[i];
+	}
+
+	return NULL;
+}
+
+
+void
+nkclear(void) {
+	MemSet(nk_assoc_ar, 0, sizeof nk_assoc_ar);
+}
+
+
+void
+nkremove(NodeKeyToJumble *nkj) {
+	Assert(nkj->used == true);
+	nkj->used = false;
+}
+
+NodeKeyToJumble *
+nkadd(NodeKey nk, uint32 jumble) {
+	Size i;
+
+	/*
+	 * Iterate through the association array, starting the cell immediately
+	 * after the last free space was found, and stopping if a full rotation is
+	 * made (and thus, all slots are full).
+	 */
+	for (i = (nk_last_assoc_free + 1) % NK_ASSOC_AR_LEN;
+		 i != nk_last_assoc_free;
+		 i = (i + 1) % NK_ASSOC_AR_LEN) {
+		NodeKeyToJumble *cell = &nk_assoc_ar[i];
+
+		if (cell->used == false)
+		{
+			cell->used		= true;
+			cell->nodeKey	= nk;
+			cell->queryJumb = jumble;
+			nk_last_assoc_free = (i + 1) % NK_ASSOC_AR_LEN;
+
+			return cell;
+		}
+	}
+
+	return NULL;
+}
 
 
 /*
@@ -682,7 +760,7 @@ pgss_parse_analyze_varparams(Node *parseTree, const char *sourceText,
 }
 
 /*
- * pgss_process_post_analysis_tree: Record query_id, which is based on the query
+ * pgss_process_post_analysis_tree: Record queryJumb, which is based on the query
  * tree, within the tree itself, for later retrieval in the exeuctor hook. The
  * core system will copy the value to the tree's corresponding plannedstmt.
  */
@@ -691,12 +769,16 @@ pgss_process_post_analysis_tree(Query* post_analysis_tree,
 		const char* sourceText)
 {
 	BufferUsage bufusage;
+	uint32 queryJumb;
 
-	post_analysis_tree->queryId = JumbleQuery(post_analysis_tree);
+	queryJumb = JumbleQuery(post_analysis_tree);
+
+	/* Store the NodeKey-Jumble relationship or abort */
+	if (!nkadd(post_analysis_tree->nodeKey, queryJumb))
+		return;
 
 	memset(&bufusage, 0, sizeof(bufusage));
-	pgss_store(sourceText, post_analysis_tree->queryId, 0, 0, &bufusage,
-			true, true);
+	pgss_store(sourceText, queryJumb, 0, 0, &bufusage, true, true);
 
 	/* Trim last_offsets */
 	if (last_offset_buf_size > 10)
@@ -809,7 +891,7 @@ get_constant_length(const char* query_str_const)
 
 /*
  * JumbleQuery: Selectively serialize query tree, and return a hash representing
- * that serialization - it's query_id.
+ * that serialization - it's queryJumb.
  *
  * Note that this doesn't necessarily uniquely identify the query across
  * different databases and encodings.
@@ -1779,11 +1861,26 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 {
 	if (queryDesc->totaltime && pgss_enabled())
 	{
-		uint32 queryId;
+		uint32 jumb;
+
 		if (pgss_string_key)
-			queryId = pgss_hash_string(queryDesc->sourceText);
+			jumb = pgss_hash_string(queryDesc->sourceText);
 		else
-			queryId = queryDesc->plannedstmt->queryId;
+		{
+			NodeKeyToJumble *nkj = nkassoc(queryDesc->plannedstmt->nodeKey);
+
+			/*
+			 * Could not find the association, so just fail to accumulate stats
+			 */
+			if (nkj == NULL)
+				goto finish;
+
+			jumb = nkj->queryJumb;
+
+			/* Executor is ending, so retire this association entry */
+			nkremove(nkj);
+		}
+
 		/*
 		 * Make sure stats accumulation is done.  (Note: it's okay if several
 		 * levels of hook all do this.)
@@ -1791,14 +1888,16 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 		InstrEndLoop(queryDesc->totaltime);
 
 		pgss_store(queryDesc->sourceText,
-		   queryId,
+		   jumb,
 		   queryDesc->totaltime->total,
 		   queryDesc->estate->es_processed,
 		   &queryDesc->totaltime->bufusage,
 		   false,
 		   false);
-
 	}
+
+finish:
+	nkclear();
 
 	if (prev_ExecutorEnd)
 		prev_ExecutorEnd(queryDesc);
@@ -1819,7 +1918,7 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 		instr_time	start;
 		instr_time	duration;
 		uint64		rows = 0;
-		uint32		query_id;
+		uint32		queryJumb;
 		BufferUsage bufusage;
 
 		bufusage = pgBufferUsage;
@@ -1869,10 +1968,10 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 		bufusage.temp_blks_written =
 			pgBufferUsage.temp_blks_written - bufusage.temp_blks_written;
 
-		query_id = pgss_hash_string(queryString);
+		queryJumb = pgss_hash_string(queryString);
 
 		/* In the case of utility statements, hash the query string directly */
-		pgss_store(queryString, query_id,
+		pgss_store(queryString, queryJumb,
 				INSTR_TIME_GET_DOUBLE(duration), rows, &bufusage, false, false);
 	}
 	else
@@ -1897,8 +1996,8 @@ pgss_hash_fn(const void *key, Size keysize)
 	/* we don't bother to include encoding in the hash */
 	return hash_uint32((uint32) k->userid) ^
 		hash_uint32((uint32) k->dbid) ^
-		DatumGetUInt32(hash_any((const unsigned char* ) &k->query_id,
-					sizeof(k->query_id)) );
+		DatumGetUInt32(hash_any((const unsigned char* ) &k->queryJumb,
+					sizeof(k->queryJumb)) );
 }
 
 /*
@@ -1913,7 +2012,7 @@ pgss_match_fn(const void *key1, const void *key2, Size keysize)
 	if (k1->userid == k2->userid &&
 		k1->dbid == k2->dbid &&
 		k1->encoding == k2->encoding &&
-		k1->query_id == k2->query_id)
+		k1->queryJumb == k2->queryJumb)
 		return 0;
 	else
 		return 1;
@@ -1943,7 +2042,7 @@ pgss_hash_string(const char* str)
  * Store some statistics for a statement.
  */
 static void
-pgss_store(const char *query, uint32 query_id,
+pgss_store(const char *query, uint32 queryJumb,
 				double total_time, uint64 rows,
 				const BufferUsage *bufusage,
 				bool empty_entry,
@@ -1965,7 +2064,7 @@ pgss_store(const char *query, uint32 query_id,
 	key.userid = GetUserId();
 	key.dbid = MyDatabaseId;
 	key.encoding = GetDatabaseEncoding();
-	key.query_id = query_id;
+	key.queryJumb = queryJumb;
 
 	if (new_query_len >= pgss->query_size)
 		/* We don't have to worry about this later, because canonicalization
