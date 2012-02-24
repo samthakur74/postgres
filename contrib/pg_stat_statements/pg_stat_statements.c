@@ -1897,8 +1897,6 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 	}
 
 finish:
-	nkclear();
-
 	if (prev_ExecutorEnd)
 		prev_ExecutorEnd(queryDesc);
 	else
