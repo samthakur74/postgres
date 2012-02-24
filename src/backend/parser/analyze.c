@@ -245,6 +245,7 @@ transformStmt(ParseState *pstate, Node *parseTree)
 	/* Mark as original query until we learn differently */
 	result->querySource = QSRC_ORIGINAL;
 	result->canSetTag = true;
+	result->nodeKey = (NodeKey) result;
 
 	return result;
 }
@@ -905,7 +906,6 @@ transformSelectStmt(ParseState *pstate, SelectStmt *stmt)
 	ListCell   *l;
 
 	qry->commandType = CMD_SELECT;
-	qry->queryId = 0;
 
 	/* process the WITH clause independently of all else */
 	if (stmt->withClause)

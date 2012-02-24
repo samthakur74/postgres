@@ -116,9 +116,6 @@
 	token = pg_strtok(&length);		/* get field value */ \
 	local_node->fldname = -1	/* set field to "unknown" */
 
-/* NOOP */
-#define READ_QUERYID_FIELD(fldname) \
-	((void) 0)
 /* Read a Node field */
 #define READ_NODE_FIELD(fldname) \
 	token = pg_strtok(&length);		/* skip :fldname */ \
@@ -206,7 +203,6 @@ _readQuery(void)
 
 	READ_ENUM_FIELD(commandType, CmdType);
 	READ_ENUM_FIELD(querySource, QuerySource);
-	READ_QUERYID_FIELD(query_id);
 	READ_BOOL_FIELD(canSetTag);
 	READ_NODE_FIELD(utilityStmt);
 	READ_INT_FIELD(resultRelation);
@@ -233,6 +229,9 @@ _readQuery(void)
 	READ_NODE_FIELD(rowMarks);
 	READ_NODE_FIELD(setOperations);
 	READ_NODE_FIELD(constraintDeps);
+
+	/* Set up the unique but arbitrary nodeKey */
+	local_node->nodeKey = (NodeKey) local_node;
 
 	READ_DONE();
 }

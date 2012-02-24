@@ -1266,4 +1266,18 @@ typedef struct FromExpr
 	Node	   *quals;			/* qualifiers on join, if any */
 } FromExpr;
 
+/*
+ * NodeKey - Associate nodes together throughout query parse and planning
+ *
+ * This is currently implemented as intptr_t to piggyback on memory allocation
+ * as a way to derive unique, unambiguous keys within a backend with low
+ * overhead.  This means that given this implementation of NodeKey that the
+ * target of the pointer deriving the NodeKey *must* remain allocated, or it
+ * risks being reused.
+ *
+ */
+typedef uintptr_t NodeKey;
+
+#define NodeKeyDefined(nk) ((nk) != (NodeKey) NULL)
+
 #endif   /* PRIMNODES_H */

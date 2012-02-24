@@ -81,10 +81,6 @@
 #define WRITE_LOCATION_FIELD(fldname) \
 	appendStringInfo(str, " :" CppAsString(fldname) " %d", node->fldname)
 
-/* Write a query id field */
-#define WRITE_QUERYID_FIELD(fldname) \
-	((void) 0)
-
 /* Write a Node field */
 #define WRITE_NODE_FIELD(fldname) \
 	(appendStringInfo(str, " :" CppAsString(fldname) " "), \
@@ -259,7 +255,6 @@ _outPlannedStmt(StringInfo str, const PlannedStmt *node)
 	WRITE_NODE_FIELD(relationOids);
 	WRITE_NODE_FIELD(invalItems);
 	WRITE_INT_FIELD(nParamExec);
-	WRITE_QUERYID_FIELD(queryId);
 }
 
 /*
@@ -2164,7 +2159,6 @@ _outQuery(StringInfo str, const Query *node)
 
 	WRITE_ENUM_FIELD(commandType, CmdType);
 	WRITE_ENUM_FIELD(querySource, QuerySource);
-	WRITE_QUERYID_FIELD(query_id);
 	WRITE_BOOL_FIELD(canSetTag);
 
 	/*

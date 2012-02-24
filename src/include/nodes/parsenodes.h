@@ -103,8 +103,8 @@ typedef struct Query
 
 	QuerySource querySource;	/* where did I come from? */
 
-	uint32		queryId;		/* query identifier that can be set by plugins.
-								 * Will be copied to resulting PlannedStmt. */
+	NodeKey		nodeKey;		/* query identifier so hooks can associate
+								 * queries to plans */
 
 	bool		canSetTag;		/* do I set the command result tag? */
 

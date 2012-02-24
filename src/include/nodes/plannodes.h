@@ -68,7 +68,9 @@ typedef struct PlannedStmt
 
 	int			nParamExec;		/* number of PARAM_EXEC Params used */
 
-	uint32		queryId;		/* query identifier carried from query tree */
+	NodeKey		nodeKey;		/* Possesses a value that can be used to
+								 * uniquely identify the source of this plan
+								 * within one backend. */
 } PlannedStmt;
 
 /* macro for fetching the Plan associated with a SubPlan node */
