@@ -21,7 +21,7 @@
  * This is referred to as a query jumble. This is distinct from a straight
  * serialization of the query tree in that constants are canonicalized, and
  * various extraneous information is ignored as irrelevant, such as the
- * collation of Vars. Once this jumble is acquired, a 64-bit hash is taken,
+ * collation of Vars. Once this jumble is acquired, a 32-bit hash is taken,
  * which is copied back into the query tree at the post-analysis stage.
  * Postgres then naively copies this value around, making it later available
  * from within the corresponding plan tree. The executor can then use this value
