@@ -1,9 +1,9 @@
-postgresql://${PGUSER}(at)localhost:${PGPORT}/${PGUSER}
-postgresql://${PGUSER}(at)localhost/${PGUSER}
+postgresql://${PGUSER}@localhost:${PGPORT}/${PGUSER}
+postgresql://${PGUSER}@localhost/${PGUSER}
 postgresql://localhost:${PGPORT}/${PGUSER}
 postgresql://localhost/${PGUSER}
-postgresql://${PGUSER}(at)localhost:${PGPORT}/
-postgresql://${PGUSER}(at)localhost/
+postgresql://${PGUSER}@localhost:${PGPORT}/
+postgresql://${PGUSER}@localhost/
 postgresql://localhost:${PGPORT}/
 postgresql://localhost:${PGPORT}
 postgresql://localhost/${PGUSER}
