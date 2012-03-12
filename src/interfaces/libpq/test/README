@@ -1,0 +1,19 @@
+This is a testsuite for testing libpq URI connection string syntax.
+
+To run the suite, use 'make installcheck' command.  It works by
+running regress.sh from this directory with appropriate environment
+set up.
+
+The test itself works by running the psql command installed by 'make
+install' with different -d option arguments and collecting the output,
+then comparing that to the expected 'correct' output.
+
+The test script assumes that the server is running on localhost and
+accepting local and IPv4,6 connections on port $PGPORT.  Attempts to
+connect are made from user $PGUSER (which defaults to $USER,) to the
+default database (that is, $PGUSER again.)  The default database is
+created by the script prior to running the actual tests.
+
+The connection URI lines to test are read from the file 'regress.in',
+and are eval-d before passing them to psql (like `eval echo $line`,)
+thus ${variable} substitutions are carried out.
