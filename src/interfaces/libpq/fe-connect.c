@@ -4539,7 +4539,7 @@ conninfo_uri_parse(const char *uri, PQExpBuffer errorMessage)
  *
  * The general form for connection URI is the following:
  *
- *   postgresql://user:pw(at)host:port/database
+ *   postgresql://user:pw@host:port/database
  *
  * To specify a IPv6 host address, enclose the address in square brackets:
  *
@@ -4556,22 +4556,37 @@ conninfo_uri_parse_options(PQconninfoOption *options, const char *uri,
 	char *p = buf;
 	char lastc = '\0';
 
-	/* Assume URI prefix is already verified by the caller */
+	/* Advance "p" to immediately after the URI scheme prelude */
 	if (strncmp(p, uri_designator, sizeof(uri_designator) - 1) == 0)
 		p += sizeof(uri_designator) - 1;
-	else
+	else if (strncmp(p, short_uri_designator,
+					 sizeof(short_uri_designator) - 1) == 0)
 		p += sizeof(short_uri_designator) - 1;
-
-	if (*p == '/')
-		p = conninfo_uri_parse_local_socket_dir(options, uri, p, &lastc, errorMessage);
 	else
-		p = conninfo_uri_parse_remote_host(options, uri, p, &lastc, errorMessage);
+	{
+		/* should never happen */
+		printfPQExpBuffer(errorMessage,
+						  libpq_gettext("invalid URI \"%s\" propagated to "
+										"internal function URI parsing"),
+						  uri);
+		return false;
+	}
+
+	/* Check */
+	if (*p == '/')
+		p = conninfo_uri_parse_local_socket_dir(options, uri, p, &lastc,
+												errorMessage);
+	else
+		p = conninfo_uri_parse_remote_host(options, uri, p, &lastc,
+										   errorMessage);
+
 	if (!p)
 		return false;
 
 	if (lastc && lastc != '?')
 	{
-		const char *dbname = ++p; /* advance past host terminator */
+		/* advance past host terminator */
+		const char *dbname = ++p;
 
 		/* Look for query parameters */
 		while (*p && *p != '?')
@@ -4587,7 +4602,8 @@ conninfo_uri_parse_options(PQconninfoOption *options, const char *uri,
 
 	if (lastc)
 	{
-		++p; /* advance past terminator */
+		/* advance past terminator */
+		++p;
 
 		if (!conninfo_uri_parse_params(p, options, errorMessage))
 			return false;
@@ -4598,13 +4614,15 @@ conninfo_uri_parse_options(PQconninfoOption *options, const char *uri,
 
 static char *
 conninfo_uri_parse_local_socket_dir(PQconninfoOption *options, const char *uri,
-									char *buf, char *lastc, PQExpBuffer errorMessage)
+									char *buf, char *lastc,
+									PQExpBuffer errorMessage)
 {
 	char *p = buf;
 
 	/* Look for possible query parameters */
 	while (*p && *p != '?')
 		++p;
+
 	*lastc = *p;
 	*p = '\0';
 
