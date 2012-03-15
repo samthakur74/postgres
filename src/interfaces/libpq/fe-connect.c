@@ -4643,16 +4643,26 @@ conninfo_uri_parse_remote_host(PQconninfoOption *options, const char *uri,
 	/* Look ahead for possible user credentials designator */
 	while (*p && *p != '@' && *p != '/')
 		++p;
-	if (*p != '@')
+
+	if (*p == '/')
 	{
-		/* Reset to start of URI and parse as hostname/addr instead */
+		/*
+		 * No username/password designator found.
+		 *
+		 * Reset to start of URI and parse as "scheme://netloc/..." instead
+		 */
 		p = buf;
 	}
-	else
+	else if (*p == '@')
 	{
+		/*
+		 * Username/password designator found, so URI should be of the form
+		 * "scheme://user@netloc" or "scheme://user:password@netloc"
+		 */
 		char *user = buf;
 
 		p = user;
+
 		while (*p != ':' && *p != '@')
 			++p;
 
@@ -4679,6 +4689,15 @@ conninfo_uri_parse_remote_host(PQconninfoOption *options, const char *uri,
 
 		/* Advance past end of parsed user name or password token */
 		++p;
+	}
+	else
+	{
+		/* should never happen */
+		printfPQExpBuffer(
+			errorMessage,
+			libpq_gettext("Could not parse username, password or net location "
+						  "in connection string.\n"));
+		return NULL;
 	}
 
 	/* Look for IPv6 address */
