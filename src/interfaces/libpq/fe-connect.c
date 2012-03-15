@@ -4680,9 +4680,11 @@ conninfo_uri_parse_remote_host(PQconninfoOption *options, const char *uri,
 
 			while (*p != '@')
 				++p;
+
 			*p = '\0';
 
-			if (!conninfo_store_uri_encoded_value(options, "password", password,
+			if (!conninfo_store_uri_encoded_value(options,
+												  "password", password,
 												  errorMessage, false))
 				return NULL;
 		}
@@ -4700,12 +4702,18 @@ conninfo_uri_parse_remote_host(PQconninfoOption *options, const char *uri,
 		return NULL;
 	}
 
-	/* Look for IPv6 address */
+	/*
+	 * "p" has been incremented past optimal URI credential information at this
+	 * point, and now points at the "netloc" part of a URI.
+	 *
+	 * Look for IPv6 address
+	 */
 	if (*p == '[')
 	{
 		host = ++p;
 		while (*p && *p != ']')
 			++p;
+
 		if (!*p)
 		{
 			printfPQExpBuffer(errorMessage,
@@ -4713,6 +4721,7 @@ conninfo_uri_parse_remote_host(PQconninfoOption *options, const char *uri,
 							  uri);
 			return NULL;
 		}
+
 		if (p == host)
 		{
 			printfPQExpBuffer(errorMessage,
@@ -4736,9 +4745,11 @@ conninfo_uri_parse_remote_host(PQconninfoOption *options, const char *uri,
 			return NULL;
 		}
 	}
-	else /* no IPv6 address */
+	else
 	{
+		/* not an IPv6 address, so DNS-named or IPv4 netloc */
 		host = p;
+
 		/*
 		 * Look for port specifier (colon) or end of host specifier (slash), or
 		 * query (question mark).
@@ -4854,9 +4865,9 @@ conninfo_uri_parse_params(char *params,
 static char *
 conninfo_uri_decode(const char *str, PQExpBuffer errorMessage)
 {
-	char *buf = malloc(strlen(str) + 1);
-	char *p = buf;
-	const char *q = str;
+	char		*buf = malloc(strlen(str) + 1);
+	char		*p	 = buf;
+	const char	*q	 = str;
 
 	if (buf == NULL)
 	{
