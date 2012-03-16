@@ -247,6 +247,7 @@ extern bool VacuumCostActive;
 
 /* in tcop/postgres.c */
 extern void check_stack_depth(void);
+extern void HandleAdminActionInterrupt(void);
 
 /* in tcop/utility.c */
 extern void PreventCommandIfReadOnly(const char *cmdname);

@@ -258,6 +258,9 @@ procsignal_sigusr1_handler(SIGNAL_ARGS)
 	if (CheckProcSignal(PROCSIG_NOTIFY_INTERRUPT))
 		HandleNotifyInterrupt();
 
+	if (CheckProcSignal(PROCSIG_ADMIN_ACTION_INTERRUPT))
+		HandleAdminActionInterrupt();
+
 	if (CheckProcSignal(PROCSIG_RECOVERY_CONFLICT_DATABASE))
 		RecoveryConflictInterrupt(PROCSIG_RECOVERY_CONFLICT_DATABASE);
 

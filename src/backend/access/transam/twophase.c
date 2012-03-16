@@ -62,6 +62,7 @@
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
 #include "storage/smgr.h"
+#include "storage/spin.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/timestamp.h"
@@ -326,6 +327,10 @@ MarkAsPreparing(TransactionId xid, const char *gid,
 	proc->backendId = InvalidBackendId;
 	proc->databaseId = databaseid;
 	proc->roleId = owner;
+	SpinLockInit(&MyProc->adminMutex);
+	/* dummy session, since this is a dummy PGPROC */
+	proc->adminSessionId = 0;
+	proc->adminAction = ADMIN_ACTION_NONE;
 	proc->lwWaiting = false;
 	proc->lwWaitMode = 0;
 	proc->lwWaitLink = NULL;

@@ -19,6 +19,7 @@
 #include "storage/latch.h"
 #include "storage/lock.h"
 #include "storage/pg_sema.h"
+#include "storage/s_lock.h"
 
 /*
  * Each backend advertises up to PGPROC_MAX_CACHED_SUBXIDS TransactionIds
@@ -54,6 +55,15 @@ struct XidCache
  * manager LWLocks.  See storage/lmgr/README for additional details.
  */
 #define		FP_LOCK_SLOTS_PER_BACKEND 16
+
+/* The available administrative actions that can be performed on a backend */
+typedef enum BEAdminAction {
+	ADMIN_ACTION_NONE = 0,
+	ADMIN_ACTION_CANCEL,
+	ADMIN_ACTION_TERMINATE
+} BEAdminAction;
+
+typedef uint64 SessionId;
 
 /*
  * Each backend has a PGPROC struct in shared memory.  There is also a list of
@@ -91,6 +101,18 @@ struct PGPROC
 	BackendId	backendId;		/* This backend's backend ID (if assigned) */
 	Oid			databaseId;		/* OID of database this backend is using */
 	Oid			roleId;			/* OID of role using this backend */
+
+	/* A guessable but non-repeating session identifier */
+	SessionId	sessionId;
+
+	/*
+	 * Backend administration fields
+	 *
+	 * adminActionMutex protects reading/writing out the admin fields
+	 */
+	slock_t			adminMutex;
+	BEAdminAction	adminAction;
+	SessionId		adminSubmittedSessionId;
 
 	/*
 	 * While in hot standby mode, shows that a conflict signal has been sent
@@ -197,6 +219,8 @@ typedef struct PROC_HDR
 	int			startupProcPid;
 	/* Buffer id of the buffer that Startup process waits for pin on, or -1 */
 	int			startupBufferPinWaitBufId;
+	/* Unique for each backend for the uptime of the cluster */
+	uint64		session_counter;
 } PROC_HDR;
 
 extern PROC_HDR *ProcGlobal;

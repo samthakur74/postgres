@@ -32,6 +32,7 @@
 #include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "storage/procarray.h"
+#include "storage/spin.h"
 #include "utils/lsyscache.h"
 #include "tcop/tcopprot.h"
 #include "utils/builtins.h"
@@ -39,6 +40,15 @@
 
 #define atooid(x)  ((Oid) strtoul((x), NULL, 10))
 
+typedef enum
+{
+	BACKEND_ADMIN_SUCCESS = 0,
+	BACKEND_ADMIN_RETRY,
+	BACKEND_ADMIN_ERROR,
+	BACKEND_ADMIN_NOPERMISSION,
+
+	BACKEND_ADMIN_INVALID /* sentinel, must be last! */
+} BackendAdminResult;
 
 /*
  * current_database()
@@ -73,107 +83,168 @@ current_query(PG_FUNCTION_ARGS)
 
 /*
  * Send a signal to another backend.
+ *
  * The signal is delivered if the user is either a superuser or the same
  * role as the backend being signaled. For "dangerous" signals, an explicit
  * check for superuser needs to be done prior to calling this function.
  *
- * Returns 0 on success, 1 on general failure, and 2 on permission error.
- * In the event of a general failure (returncode 1), a warning message will
- * be emitted. For permission errors, doing that is the responsibility of
- * the caller.
+ * Returns a BackendAdminResult.
+ *
+ * In the event of a general failure (BACKEND_ADMIN_ERROR), a warning message
+ * will be emitted. For permission and retry errors
+ * (BACKEND_ADMIN_NOPERMISSION, BACKEND_ADMIN_RETRY), doing that is the
+ * responsibility of the caller.
  */
-#define SIGNAL_BACKEND_SUCCESS 0
-#define SIGNAL_BACKEND_ERROR 1
-#define SIGNAL_BACKEND_NOPERMISSION 2
-static int
-pg_signal_backend(int pid, int sig)
+static BackendAdminResult
+pg_signal_backend(int pid, BEAdminAction act)
 {
-	PGPROC	   *proc;
-
-	if (!superuser())
-	{
-		/*
-		 * Since the user is not superuser, check for matching roles. Trust
-		 * that BackendPidGetProc will return NULL if the pid isn't valid,
-		 * even though the check for whether it's a backend process is below.
-		 * The IsBackendPid check can't be relied on as definitive even if it
-		 * was first. The process might end between successive checks
-		 * regardless of their order. There's no way to acquire a lock on an
-		 * arbitrary process to prevent that. But since so far all the callers
-		 * of this mechanism involve some request for ending the process
-		 * anyway, that it might end on its own first is not a problem.
-		 */
-		proc = BackendPidGetProc(pid);
-
-		if (proc == NULL || proc->roleId != GetUserId())
-			return SIGNAL_BACKEND_NOPERMISSION;
-	}
-
-	if (!IsBackendPid(pid))
-	{
-		/*
-		 * This is just a warning so a loop-through-resultset will not abort
-		 * if one backend terminated on it's own during the run
-		 */
-		ereport(WARNING,
-				(errmsg("PID %d is not a PostgreSQL server process", pid)));
-		return SIGNAL_BACKEND_ERROR;
-	}
+	volatile PGPROC		*proc;
 
 	/*
-	 * Can the process we just validated above end, followed by the pid being
-	 * recycled for a new process, before reaching here?  Then we'd be trying
-	 * to kill the wrong thing.  Seems near impossible when sequential pid
-	 * assignment and wraparound is used.  Perhaps it could happen on a system
-	 * where pid re-use is randomized.	That race condition possibility seems
-	 * too unlikely to worry about.
+	 * Set another backend's BEAdminAction if the current backend is controlled
+	 * by a superuser or a user of the same role of the other backend.
+	 *
+	 * Trust that BackendPidGetProc will return NULL if the pid isn't valid,
+	 * even though the check for whether it's a backend process is below.  The
+	 * IsBackendPid check can't be relied on as definitive even if it was
+	 * first. The process might end between successive checks regardless of
+	 * their order. There's no way to acquire a lock on an arbitrary process to
+	 * prevent that. But since so far all the callers of this mechanism involve
+	 * some request for ending the process anyway, that it might end on its own
+	 * first is not a problem.
 	 */
+	proc = BackendPidGetProc(pid);
 
-	/* If we have setsid(), signal the backend's whole process group */
-#ifdef HAVE_SETSID
-	if (kill(-pid, sig))
-#else
-	if (kill(pid, sig))
-#endif
+	if (proc == NULL)
+		return BACKEND_ADMIN_NOPERMISSION;
+	else
 	{
-		/* Again, just a warning to allow loops */
-		ereport(WARNING,
-				(errmsg("could not send signal to process %d: %m", pid)));
-		return SIGNAL_BACKEND_ERROR;
+		BackendAdminResult	ret		  = BACKEND_ADMIN_INVALID;
+		const int64			backendId = proc->backendId;
+		const SessionId		sessionId = proc->sessionId;
+		const Oid			roleId	  = proc->roleId;
+
+		if (!superuser() && roleId != GetUserId())
+			return BACKEND_ADMIN_NOPERMISSION;
+
+		Assert(roleId == GetUserId() || superuser());
+
+		/* Protect backend admin field access */
+		SpinLockAcquire(&proc->adminMutex);
+
+		/*
+		 * Only do something and report success if the other backend's action
+		 * is cleared.
+		 */
+		if (proc->adminAction == ADMIN_ACTION_NONE)
+		{
+			proc->adminSessionId = sessionId;
+			proc->adminAction	 = act;
+
+			ret = BACKEND_ADMIN_SUCCESS;
+		}
+		else
+			ret = BACKEND_ADMIN_RETRY;
+
+		SpinLockRelease(&proc->adminMutex);
+
+		/* Alert the other process to checking its pending admin action */
+		if (ret == BACKEND_ADMIN_SUCCESS)
+		{
+			if (SendProcSignal(proc->pid, PROCSIG_ADMIN_ACTION_INTERRUPT,
+							   backendId) < 0)
+			{
+				ereport(WARNING,
+						(errmsg(
+							"could not administer process %d: %m", pid)));
+				ret = BACKEND_ADMIN_ERROR;
+			}
+			else
+				Assert(ret == BACKEND_ADMIN_SUCCESS);
+		}
+		else if (ret == BACKEND_ADMIN_RETRY)
+		{
+			 ereport(WARNING,
+					 (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					  (errmsg("process is busy responding to administrative "
+							  "request")),
+					  (errhint("This is temporary, and may be retried."))));
+		}
+
+		return ret;
 	}
-	return SIGNAL_BACKEND_SUCCESS;
 }
 
 /*
- * Signal to cancel a backend process.	This is allowed if you are superuser or
- * have the same role as the process being canceled.
+ * Cancel a backend process
+ *
+ * This is allowed if you are superuser or have the same role as the process
+ * being canceled.
  */
 Datum
 pg_cancel_backend(PG_FUNCTION_ARGS)
 {
-	int			r = pg_signal_backend(PG_GETARG_INT32(0), SIGINT);
+	const BackendAdminResult r =
+		pg_signal_backend(PG_GETARG_INT32(0), ADMIN_ACTION_CANCEL);
 
-	if (r == SIGNAL_BACKEND_NOPERMISSION)
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser or have the same role to cancel queries running in other server processes"))));
+	 switch (r)
+	 {
+		 case BACKEND_ADMIN_NOPERMISSION:
+			 ereport(ERROR,
+					 (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					  (errmsg("must be superuser or have the same role to "
+							  "cancel queries running in other "
+							  "server processes"))));
+			 break;
 
-	PG_RETURN_BOOL(r == SIGNAL_BACKEND_SUCCESS);
+		 case BACKEND_ADMIN_SUCCESS:
+		 case BACKEND_ADMIN_RETRY:
+		 case BACKEND_ADMIN_ERROR:
+			 break;
+
+		 case BACKEND_ADMIN_INVALID:
+			 /* should never happen */
+			 Assert(false);
+			 break;
+	 }
+
+	PG_RETURN_BOOL(r == BACKEND_ADMIN_SUCCESS);
 }
 
 /*
- * Signal to terminate a backend process.  Only allowed by superuser.
+ * Terminate a backend process
+ *
+ * This is allowed if you are superuser or have the same role as the process
+ * being terminated.
  */
 Datum
 pg_terminate_backend(PG_FUNCTION_ARGS)
 {
-	if (!superuser())
-		ereport(ERROR,
-				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-			 errmsg("must be superuser to terminate other server processes"),
-				 errhint("You can cancel your own processes with pg_cancel_backend().")));
+	const BackendAdminResult r =
+		pg_signal_backend(PG_GETARG_INT32(0), ADMIN_ACTION_TERMINATE);
 
-	PG_RETURN_BOOL(pg_signal_backend(PG_GETARG_INT32(0), SIGTERM) == SIGNAL_BACKEND_SUCCESS);
+	 switch (r)
+	 {
+		 case BACKEND_ADMIN_NOPERMISSION:
+			 ereport(ERROR,
+					 (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					  (errmsg("must be superuser or have the same role to "
+							  "terminate queries running in other "
+							  "server processes"))));
+			 break;
+
+		 case BACKEND_ADMIN_SUCCESS:
+		 case BACKEND_ADMIN_RETRY:
+		 case BACKEND_ADMIN_ERROR:
+			 break;
+
+		 case BACKEND_ADMIN_INVALID:
+			 /* should never happen */
+			 Assert(false);
+			 break;
+	 }
+
+	PG_RETURN_BOOL(r == BACKEND_ADMIN_SUCCESS);
 }
 
 /*

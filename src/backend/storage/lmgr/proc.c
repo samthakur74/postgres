@@ -186,6 +186,10 @@ InitProcGlobal(void)
 	ProcGlobal->startupProc = NULL;
 	ProcGlobal->startupProcPid = 0;
 	ProcGlobal->startupBufferPinWaitBufId = -1;
+
+	/* Start at 1, because 0 reserved to mean "invalid" */
+	ProcGlobal->session_counter = 1;
+
 	ProcGlobal->bgwriterLatch = NULL;
 
 	/*
@@ -284,6 +288,8 @@ InitProcess(void)
 	/* use volatile pointer to prevent code rearrangement */
 	volatile PROC_HDR *procglobal = ProcGlobal;
 
+	uint64 my_session_count;
+
 	/*
 	 * ProcGlobal should be set up already (if we are a backend, we inherit
 	 * this by fork() or EXEC_BACKEND mechanism from the postmaster).
@@ -309,6 +315,8 @@ InitProcess(void)
 		MyProc = procglobal->autovacFreeProcs;
 	else
 		MyProc = procglobal->freeProcs;
+
+	my_session_count = procglobal->session_counter++;
 
 	if (MyProc != NULL)
 	{
@@ -356,6 +364,10 @@ InitProcess(void)
 	MyProc->backendId = InvalidBackendId;
 	MyProc->databaseId = InvalidOid;
 	MyProc->roleId = InvalidOid;
+	MyProc->sessionId = my_session_count;
+	SpinLockInit(&MyProc->adminMutex);
+	MyProc->adminAction = ADMIN_ACTION_NONE;
+	MyProc->adminSessionId = 0;
 	MyPgXact->inCommit = false;
 	MyPgXact->vacuumFlags = 0;
 	/* NB -- autovac launcher intentionally does not set IS_AUTOVACUUM */

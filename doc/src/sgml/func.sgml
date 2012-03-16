@@ -14403,7 +14403,10 @@ SELECT set_config('log_statement_stats', 'off', false);
         <literal><function>pg_terminate_backend(<parameter>pid</parameter> <type>int</>)</function></literal>
         </entry>
        <entry><type>boolean</type></entry>
-       <entry>Terminate a backend</entry>
+       <entry>Terminate a backend.  You can execute this against another
+        backend that has exactly the same role as the user calling the
+        function.  In all other cases, you must be a superuser.
+       </entry>
       </row>
      </tbody>
     </tgroup>

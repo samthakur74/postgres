@@ -64,6 +64,7 @@
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "storage/sinval.h"
+#include "storage/spin.h"
 #include "tcop/fastpath.h"
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
@@ -2779,6 +2780,67 @@ RecoveryConflictInterrupt(ProcSignalReason reason)
 		}
 	}
 
+	errno = save_errno;
+}
+
+/*
+ * HandleAdminActionInterrupt: handle backend administrative actions
+ *
+ * Backend admin actions are secure and unambiguous compared to sending a
+ * signal directly to a process id because in order for the intended function
+ * of the interrupt to be applied a correct BackendId must be applied.
+ */
+void
+HandleAdminActionInterrupt(void)
+{
+	int save_errno = errno;
+
+	if (!proc_exit_inprogress)
+	{
+		volatile PGPROC	*myVolatileProc = MyProc;
+		BEAdminAction	 actionToPerform;
+		uint64			 submittedSessionId;
+
+		/* Protect access to administrative signaling fields */
+		SpinLockAcquire(&myVolatileProc->adminMutex);
+
+		/* Copy out fields that must be coherent in MyProc with haste */
+		actionToPerform	   = myVolatileProc->adminAction;
+		submittedSessionId = myVolatileProc->adminSessionId;
+
+		/* Clear sent administrative request */
+		myVolatileProc->adminAction	   = ADMIN_ACTION_NONE;
+		myVolatileProc->adminSessionId = 0;
+
+		SpinLockRelease(&myVolatileProc->adminMutex);
+
+		/*
+		 * Abort if the sessionId doesn't match the submitted one, or is
+		 * invalid.
+		 */
+		if (submittedSessionId == 0 ||
+			submittedSessionId != myVolatileProc->sessionId)
+			goto finish;
+
+		/* Perform the administrative action */
+		Assert(submittedSessionId == myVolatileProc->sessionId);
+		switch (actionToPerform)
+		{
+			case ADMIN_ACTION_NONE:
+				break;
+
+			case ADMIN_ACTION_CANCEL:
+				InterruptPending = true;
+				QueryCancelPending = true;
+				break;
+
+			case ADMIN_ACTION_TERMINATE:
+				die(SIGTERM);
+				break;
+		}
+	}
+
+finish:
 	errno = save_errno;
 }
 
