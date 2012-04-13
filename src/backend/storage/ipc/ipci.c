@@ -102,30 +102,83 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		 * need to be so careful during the actual allocation phase.
 		 */
 		size = 100000;
+		ereport(LOG,
+				(errmsg("Beancounting initial size: 100000")));
+
 		size = add_size(size, hash_estimate_size(SHMEM_INDEX_SIZE,
 												 sizeof(ShmemIndexEnt)));
+		ereport(LOG,
+				(errmsg("Beancounting SHMEM_INDEX_SIZE: %zu",
+						hash_estimate_size(SHMEM_INDEX_SIZE,
+										   sizeof(ShmemIndexEnt)))));
+
 		size = add_size(size, BufferShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting BufferShmemSize() %zu",
+						BufferShmemSize())));
 		size = add_size(size, LockShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting LockShmemSize() %zu", LockShmemSize())));
 		size = add_size(size, PredicateLockShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting PredicateLockShmemSize() %zu", PredicateLockShmemSize())));
 		size = add_size(size, ProcGlobalShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting ProcGlobalShmemSize() %zu", ProcGlobalShmemSize())));
 		size = add_size(size, XLOGShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting XLOGShmemSize() %zu", XLOGShmemSize())));
 		size = add_size(size, CLOGShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting CLOGShmemSize() %zu", CLOGShmemSize())));
 		size = add_size(size, SUBTRANSShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting SUBTRANSShmemSize() %zu", SUBTRANSShmemSize())));
 		size = add_size(size, TwoPhaseShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting TwoPhaseShmemSize() %zu", TwoPhaseShmemSize())));
 		size = add_size(size, MultiXactShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting MultiXactShmemSize() %zu", MultiXactShmemSize())));
 		size = add_size(size, LWLockShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting LWLockShmemSize() %zu", LWLockShmemSize())));
 		size = add_size(size, ProcArrayShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting ProcArrayShmemSize() %zu", ProcArrayShmemSize())));
 		size = add_size(size, BackendStatusShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting BackendStatusShmemSize() %zu", BackendStatusShmemSize())));
 		size = add_size(size, SInvalShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting SInvalShmemSize() %zu", SInvalShmemSize())));
 		size = add_size(size, PMSignalShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting PMSignalShmemSize() %zu", PMSignalShmemSize())));
 		size = add_size(size, ProcSignalShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting ProcSignalShmemSize() %zu", ProcSignalShmemSize())));
 		size = add_size(size, BgWriterShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting BgWriterShmemSize() %zu", BgWriterShmemSize())));
 		size = add_size(size, AutoVacuumShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting AutoVacuumShmemSize() %zu", AutoVacuumShmemSize())));
 		size = add_size(size, WalSndShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting WalSndShmemSize() %zu", WalSndShmemSize())));
 		size = add_size(size, WalRcvShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting WalRcvShmemSize() %zu", WalRcvShmemSize())));
 		size = add_size(size, BTreeShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting BTreeShmemSize() %zu", BTreeShmemSize())));
 		size = add_size(size, SyncScanShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting SyncScanShmemSize() %zu", SyncScanShmemSize())));
 		size = add_size(size, AsyncShmemSize());
+		ereport(LOG,
+				(errmsg("Beancounting AsyncShmemSize() %zu", AsyncShmemSize())));
 #ifdef EXEC_BACKEND
 		size = add_size(size, ShmemBackendArraySize());
 #endif
@@ -133,9 +186,20 @@ CreateSharedMemoryAndSemaphores(bool makePrivate, int port)
 		/* freeze the addin request size and include it */
 		addin_request_allowed = false;
 		size = add_size(size, total_addin_request);
+		ereport(LOG,
+				(errmsg("Beancounting addin request size: %zu",
+						total_addin_request)));
+
 
 		/* might as well round it off to a multiple of a typical page size */
 		size = add_size(size, 8192 - (size % 8192));
+
+		ereport(LOG,
+				(errmsg("Beancounting rounding up: %zu",
+						8192 - (size % 8192))));
+
+		ereport(LOG,
+				(errmsg("Beancounting finally allocating: %zu", size)));
 
 		elog(DEBUG3, "invoking IpcMemoryCreate(size=%lu)",
 			 (unsigned long) size);
