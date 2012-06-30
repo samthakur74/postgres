@@ -68,7 +68,7 @@ typedef int IpcMemoryId;		/* shared memory ID returned by shmget(2) */
 unsigned long UsedShmemSegID = 0;
 void	   *UsedShmemSegAddr = NULL;
 static Size AnonymousShmemSize;
-static PGShmemHeader *AnonymousShmem;
+static void *AnonymousShmem;
 
 static void *InternalIpcMemoryCreate(IpcMemoryKey memKey, Size size);
 static void IpcMemoryDetach(int status, Datum shmaddr);
@@ -385,7 +385,7 @@ PGSharedMemoryCreate(Size size, bool makePrivate, int port)
 	PGShmemHeader *hdr;
 	IpcMemoryId shmid;
 	struct stat statbuf;
-	Size		allocsize = size;
+	Size		sysvsize = size;
 
 	/* Room for a header? */
 	Assert(size > MAXALIGN(sizeof(PGShmemHeader)));
@@ -443,7 +443,7 @@ PGSharedMemoryCreate(Size size, bool makePrivate, int port)
 		AnonymousShmemSize = size;
 
 		/* Now we need only allocate a minimal-sized SysV shmem block. */
-		allocsize = sizeof(PGShmemHeader);
+		sysvsize = sizeof(PGShmemHeader);
 	}
 #endif
 
@@ -456,7 +456,7 @@ PGSharedMemoryCreate(Size size, bool makePrivate, int port)
 	for (NextShmemSegID++;; NextShmemSegID++)
 	{
 		/* Try to create new segment */
-		memAddress = InternalIpcMemoryCreate(NextShmemSegID, allocsize);
+		memAddress = InternalIpcMemoryCreate(NextShmemSegID, sysvsize);
 		if (memAddress)
 			break;				/* successful create and attach */
 
@@ -495,7 +495,7 @@ PGSharedMemoryCreate(Size size, bool makePrivate, int port)
 		/*
 		 * Now try again to create the segment.
 		 */
-		memAddress = InternalIpcMemoryCreate(NextShmemSegID, allocsize);
+		memAddress = InternalIpcMemoryCreate(NextShmemSegID, sysvsize);
 		if (memAddress)
 			break;				/* successful create and attach */
 
@@ -543,8 +543,7 @@ PGSharedMemoryCreate(Size size, bool makePrivate, int port)
 	if (AnonymousShmem == NULL)
 		return hdr;
 	memcpy(AnonymousShmem, hdr, sizeof(PGShmemHeader));
-	return AnonymousShmem;
-
+	return (PGShmemHeader *) AnonymousShmem;
 }
 
 #ifdef EXEC_BACKEND
