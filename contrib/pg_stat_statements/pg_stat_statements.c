@@ -101,6 +101,7 @@ typedef struct pgssHashKey
 typedef struct Counters
 {
 	int64		calls;			/* # of times executed */
+	int64		calls_underest;	/* max underestimation of # of executions */
 	double		total_time;		/* total execution time, in msec */
 	int64		rows;			/* total # of retrieved or affected rows */
 	int64		shared_blks_hit;	/* # of shared buffer hits */
@@ -139,6 +140,15 @@ typedef struct pgssEntry
 typedef struct pgssSharedState
 {
 	LWLockId	lock;			/* protects hashtable search/modification */
+
+	/*
+	 * cache of maximum calls-counter underestimation in hashtab
+	 *
+	 * Only accessed and changed along with the hash table, so also protected
+	 * by 'lock'.
+	 */
+	int64		calls_max_underest;
+
 	int			query_size;		/* max query length in bytes */
 	double		cur_median_usage;		/* current median usage in hashtable */
 } pgssSharedState;
@@ -292,7 +302,7 @@ _PG_init(void)
 							NULL,
 							&pgss_max,
 							1000,
-							100,
+							1,
 							INT_MAX,
 							PGC_POSTMASTER,
 							0,
@@ -1066,7 +1076,7 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 }
 
 #define PG_STAT_STATEMENTS_COLS_V1_0	14
-#define PG_STAT_STATEMENTS_COLS			18
+#define PG_STAT_STATEMENTS_COLS			19
 
 /*
  * Retrieve statement statistics.
@@ -1163,6 +1173,7 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 			continue;
 
 		values[i++] = Int64GetDatumFast(tmp.calls);
+		values[i++] = Int64GetDatumFast(tmp.calls_underest);
 		values[i++] = Float8GetDatumFast(tmp.total_time);
 		values[i++] = Int64GetDatumFast(tmp.rows);
 		values[i++] = Int64GetDatumFast(tmp.shared_blks_hit);
@@ -1251,6 +1262,10 @@ entry_alloc(pgssHashKey *key, const char *query, int query_len, bool sticky)
 		memset(&entry->counters, 0, sizeof(Counters));
 		/* set the appropriate initial usage count */
 		entry->counters.usage = sticky ? pgss->cur_median_usage : USAGE_INIT;
+
+		/* propagate calls under-estimation bound */
+		entry->counters.calls_underest = pgss->calls_max_underest;
+
 		/* re-initialize the mutex each time ... we assume no one using it */
 		SpinLockInit(&entry->mutex);
 		/* ... and don't forget the query text */
@@ -1283,6 +1298,9 @@ entry_cmp(const void *lhs, const void *rhs)
 /*
  * Deallocate least used entries.
  * Caller must hold an exclusive lock on pgss->lock.
+ *
+ * Also increases the underestimation maximum in pgss as a side
+ * effect, if necessary.
  */
 static void
 entry_dealloc(void)
@@ -1305,12 +1323,27 @@ entry_dealloc(void)
 	hash_seq_init(&hash_seq, pgss_hash);
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
+		const Counters *cur_counts = &entry->counters;
+		int64 cur_underest;
+
 		entries[i++] = entry;
+
 		/* "Sticky" entries get a different usage decay rate. */
 		if (entry->counters.calls == 0)
 			entry->counters.usage *= STICKY_DECREASE_FACTOR;
 		else
 			entry->counters.usage *= USAGE_DECREASE_FACTOR;
+
+		/*
+		 * Update global calls estimation state, if necessary.
+		 *
+		 * NB: It is necessary to compute the uncertainty over *all*
+		 * entries rather than from just those that will undergo
+		 * eviction.  This is because the metric used to choose
+		 * eviction is different than the metric reported to the user.
+		 */
+		cur_underest = cur_counts->calls + cur_counts->calls_underest;
+		pgss->calls_max_underest = Max(pgss->calls_max_underest, cur_underest);
 	}
 
 	qsort(entries, i, sizeof(pgssEntry *), entry_cmp);
