@@ -1401,28 +1401,20 @@ exec_command(const char *cmd,
 	  PGresult   *res;
 	  printQueryOpt myopt = pset.popt;
 		char		quoted;
-		bool		no_newline = false;
 		bool		first = true;
-		FILE	   *fout;
 
-		fout = stdout;
     initPQExpBuffer(&buf);
 
 		while ((value = psql_scan_slash_option(scan_state,
 											   OT_NORMAL, &quoted, false)))
 		{
-			if (!quoted && strcmp(value, "-n") == 0)
-				no_newline = true;
-			else
-			{
-				if (first)
-					first = false;
-				else
-        {
-          appendPQExpBuffer(&buf, " ");
-        }
-        appendPQExpBuffer(&buf, value);
-			}
+      if (first)
+        first = false;
+      else
+      {
+        appendPQExpBuffer(&buf, " ");
+      }
+      appendPQExpBuffer(&buf, value);
 			free(value);
 		}
 		myopt.nullPrint = NULL;
