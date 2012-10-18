@@ -1396,25 +1396,25 @@ exec_command(const char *cmd,
 	/* \watch -- watch a thing */
 	else if (strcmp(cmd, "watch") == 0)
 	{
-		char	   *value;
-    PQExpBufferData buf;
-	  PGresult   *res;
-	  printQueryOpt myopt = pset.popt;
-		char		quoted;
-		bool		first = true;
+		char			*value;
+		PQExpBufferData	buf;
+		PGresult		*res;
+		printQueryOpt	myopt = pset.popt;
+		char			quoted;
+		bool			first = true;
 
-    initPQExpBuffer(&buf);
+		initPQExpBuffer(&buf);
 
 		while ((value = psql_scan_slash_option(scan_state,
 											   OT_NORMAL, &quoted, false)))
 		{
-      if (first)
-        first = false;
-      else
-      {
-        appendPQExpBuffer(&buf, " ");
-      }
-      appendPQExpBuffer(&buf, value);
+		if (first)
+			first = false;
+		else
+		{
+			appendPQExpBuffer(&buf, " ");
+		}
+		appendPQExpBuffer(&buf, value);
 			free(value);
 		}
 		myopt.nullPrint = NULL;
@@ -1422,15 +1422,15 @@ exec_command(const char *cmd,
 		myopt.title = _("Watch every 2s");
 		myopt.translate_header = true;
 
-    for(;;){
-      res = PSQLexec(buf.data, false);
-      if(res)
-        printQuery(res, &myopt, pset.queryFout, pset.logfile);
-        sigint_interrupt_enabled = true;
-        pg_usleep(2000000);
-        sigint_interrupt_enabled = false;
-   }
-   termPQExpBuffer(&buf);
+		for(;;){
+			res = PSQLexec(buf.data, false);
+			if(res)
+			  printQuery(res, &myopt, pset.queryFout, pset.logfile);
+			sigint_interrupt_enabled = true;
+			pg_usleep(2000000);
+			sigint_interrupt_enabled = false;
+		}
+		termPQExpBuffer(&buf);
 	}
 
 
