@@ -1422,13 +1422,16 @@ exec_command(const char *cmd,
 		myopt.translate_header = true;
 
 		res = PSQLexec(buf.data, false);
-		printQuery(res, &myopt, pset.queryFout, pset.logfile);
+    if(res)
+      printQuery(res, &myopt, pset.queryFout, pset.logfile);
     pg_usleep(2000000);
 		res = PSQLexec(buf.data, false);
-		printQuery(res, &myopt, pset.queryFout, pset.logfile);
+    if(res)
+      printQuery(res, &myopt, pset.queryFout, pset.logfile);
     pg_usleep(2000000);
 		res = PSQLexec(buf.data, false);
-		printQuery(res, &myopt, pset.queryFout, pset.logfile);
+    if(res)
+      printQuery(res, &myopt, pset.queryFout, pset.logfile);
 
    termPQExpBuffer(&buf);
 	}
