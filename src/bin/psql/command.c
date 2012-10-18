@@ -1398,7 +1398,7 @@ exec_command(const char *cmd,
 	{
 		char			*value;
 		PQExpBufferData	buf;
-		PGresult		*res;
+		volatile PGresult	*res = NULL;
 		printQueryOpt	myopt = pset.popt;
 		char			quoted;
 		bool			first = true;
@@ -1421,16 +1421,25 @@ exec_command(const char *cmd,
 		myopt.title = _("Watch every 2s");
 		myopt.translate_header = true;
 
+		if (sigsetjmp(sigint_interrupt_jmp, 1) != 0)
+			goto cleanup;
+
 		for (;;)
 		{
 			res = PSQLexec(buf.data, false);
+			if (cancel_pressed)
+				goto cleanup;
 			if (res)
 				printQuery(res, &myopt, pset.queryFout, pset.logfile);
 			sigint_interrupt_enabled = true;
 			pg_usleep(2000000);
 			sigint_interrupt_enabled = false;
 		}
-		termPQExpBuffer(&buf);
+
+		cleanup:
+			termPQExpBuffer(&buf);
+			if (res)
+				PQclear(res);
 	}
 
 
