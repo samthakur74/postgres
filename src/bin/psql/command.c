@@ -1398,7 +1398,7 @@ exec_command(const char *cmd,
 	{
 		char			*value;
 		PQExpBufferData	buf;
-		volatile PGresult	*res = NULL;
+		PGresult		*res = NULL;
 		printQueryOpt	myopt = pset.popt;
 		char			quoted;
 		bool			first = true;
@@ -1428,10 +1428,10 @@ exec_command(const char *cmd,
 			free(value);
 		}
 
-		snprintf(&title, sizeof(title), "Watch every %lds", sleep);
+		snprintf(title, sizeof(title), "Watch every %lds", sleep);
 		myopt.nullPrint = NULL;
 		myopt.topt.pager = 0;
-		myopt.title = &title;
+		myopt.title = title;
 
 		if (sigsetjmp(sigint_interrupt_jmp, 1) != 0)
 			goto cleanup;
