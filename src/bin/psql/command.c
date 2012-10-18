@@ -1393,6 +1393,48 @@ exec_command(const char *cmd,
 		free(fname);
 	}
 
+	/* \watch -- watch a thing */
+	else if (strcmp(cmd, "watch") == 0)
+	{
+		char	   *value;
+    PQExpBufferData buf;
+	  PGresult   *res;
+	  printQueryOpt myopt = pset.popt;
+		char		quoted;
+		bool		no_newline = false;
+		bool		first = true;
+		FILE	   *fout;
+
+		fout = stdout;
+    initPQExpBuffer(&buf);
+
+		while ((value = psql_scan_slash_option(scan_state,
+											   OT_NORMAL, &quoted, false)))
+		{
+			if (!quoted && strcmp(value, "-n") == 0)
+				no_newline = true;
+			else
+			{
+				if (first)
+					first = false;
+				else
+        {
+          appendPQExpBuffer(&buf, " ");
+        }
+        appendPQExpBuffer(&buf, value);
+			}
+			free(value);
+		}
+		res = PSQLexec(buf.data, false);
+     termPQExpBuffer(&buf);
+		myopt.nullPrint = NULL;
+		myopt.title = _("Watch every 2s");
+		myopt.translate_header = true;
+		printQuery(res, &myopt, pset.queryFout, pset.logfile);
+
+	}
+
+
 	/* \x -- set or toggle expanded table representation */
 	else if (strcmp(cmd, "x") == 0)
 	{
