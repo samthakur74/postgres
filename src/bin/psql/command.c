@@ -1393,7 +1393,7 @@ exec_command(const char *cmd,
 		free(fname);
 	}
 
-	/* \watch -- watch a thing */
+	/* \watch -- execute a query every 2 seconds */
 	else if (strcmp(cmd, "watch") == 0)
 	{
 		char			*value;
@@ -1408,24 +1408,24 @@ exec_command(const char *cmd,
 		while ((value = psql_scan_slash_option(scan_state,
 											   OT_NORMAL, &quoted, false)))
 		{
-		if (first)
-			first = false;
-		else
-		{
-			appendPQExpBuffer(&buf, " ");
-		}
-		appendPQExpBuffer(&buf, value);
+			if (first)
+				first = false;
+			else
+				appendPQExpBuffer(&buf, " ");
+			appendPQExpBuffer(&buf, value);
 			free(value);
 		}
+
 		myopt.nullPrint = NULL;
 		myopt.topt.pager = 0;
 		myopt.title = _("Watch every 2s");
 		myopt.translate_header = true;
 
-		for(;;){
+		for (;;)
+		{
 			res = PSQLexec(buf.data, false);
-			if(res)
-			  printQuery(res, &myopt, pset.queryFout, pset.logfile);
+			if (res)
+				printQuery(res, &myopt, pset.queryFout, pset.logfile);
 			sigint_interrupt_enabled = true;
 			pg_usleep(2000000);
 			sigint_interrupt_enabled = false;
