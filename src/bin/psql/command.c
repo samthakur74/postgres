@@ -1404,6 +1404,7 @@ exec_command(const char *cmd,
 		bool			first = true;
 		long			sleep = 2;
 		char			title[50];
+		time_t			timer;
 
 		initPQExpBuffer(&buf);
 
@@ -1428,16 +1429,17 @@ exec_command(const char *cmd,
 			free(value);
 		}
 
-		snprintf(title, sizeof(title), "Watch every %lds", sleep);
 		myopt.nullPrint = NULL;
 		myopt.topt.pager = 0;
-		myopt.title = title;
 
 		if (sigsetjmp(sigint_interrupt_jmp, 1) != 0)
 			goto cleanup;
 
 		for (;;)
 		{
+			timer = time(NULL);
+			snprintf(title, sizeof(title), "Watch every %lds\t%s", sleep, asctime(localtime(&timer)));
+			myopt.title = title;
 			res = PSQLexec(buf.data, false);
 			if (cancel_pressed)
 				goto cleanup;
