@@ -194,6 +194,7 @@ slashUsage(unsigned short int pager)
 	fprintf(output, _("  \\ir FILE               as \\i, but relative to location of current script\n"));
 	fprintf(output, _("  \\o [FILE]              send all query results to file or |pipe\n"));
 	fprintf(output, _("  \\qecho [STRING]        write string to query output stream (see \\o)\n"));
+	fprintf(output, _("  \\watch [STRING]        execute query every 2 seconds\n"));
 	fprintf(output, "\n");
 
 	fprintf(output, _("Informational\n"));
