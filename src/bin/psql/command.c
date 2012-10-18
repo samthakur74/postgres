@@ -1398,7 +1398,7 @@ exec_command(const char *cmd,
 	{
 		char			*value;
 		PQExpBufferData	buf;
-		PGresult		*res = NULL;
+		volatile PGresult		*res = NULL;
 		printQueryOpt	myopt = pset.popt;
 		char			quoted;
 		bool			first = true;
@@ -1442,7 +1442,7 @@ exec_command(const char *cmd,
 			if (cancel_pressed)
 				goto cleanup;
 			if (res)
-				printQuery(res, &myopt, pset.queryFout, pset.logfile);
+				printQuery((PGresult *) res, &myopt, pset.queryFout, pset.logfile);
 			sigint_interrupt_enabled = true;
 			pg_usleep(1000000 * sleep);
 			sigint_interrupt_enabled = false;
@@ -1451,7 +1451,7 @@ exec_command(const char *cmd,
 		cleanup:
 			termPQExpBuffer(&buf);
 			if (res)
-				PQclear(res);
+				PQclear((PGresult *) res);
 	}
 
 
