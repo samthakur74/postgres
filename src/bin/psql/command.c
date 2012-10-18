@@ -1402,24 +1402,36 @@ exec_command(const char *cmd,
 		printQueryOpt	myopt = pset.popt;
 		char			quoted;
 		bool			first = true;
+		long			sleep = 2;
+		char			title[50];
 
 		initPQExpBuffer(&buf);
 
 		while ((value = psql_scan_slash_option(scan_state,
 											   OT_NORMAL, &quoted, false)))
 		{
-			if (first)
-				first = false;
+			if (first && strtol(value, NULL, 10))
+				sleep = strtol(value, NULL, 10);
+				if (sleep < 0)
+					sleep = 0;
+				else if (sleep > 864000) // one day
+					sleep = 86400;
 			else
-				appendPQExpBuffer(&buf, " ");
-			appendPQExpBuffer(&buf, value);
+			{
+				if (first)
+					first = false;
+				else
+					appendPQExpBufferStr(&buf, " ");
+
+				appendPQExpBufferStr(&buf, value);
+			}
 			free(value);
 		}
 
+		snprintf(&title, sizeof(title), "Watch every %lds", sleep);
 		myopt.nullPrint = NULL;
 		myopt.topt.pager = 0;
-		myopt.title = _("Watch every 2s");
-		myopt.translate_header = true;
+		myopt.title = &title;
 
 		if (sigsetjmp(sigint_interrupt_jmp, 1) != 0)
 			goto cleanup;
@@ -1432,7 +1444,7 @@ exec_command(const char *cmd,
 			if (res)
 				printQuery(res, &myopt, pset.queryFout, pset.logfile);
 			sigint_interrupt_enabled = true;
-			pg_usleep(2000000);
+			pg_usleep(1000000 * sleep);
 			sigint_interrupt_enabled = false;
 		}
 
