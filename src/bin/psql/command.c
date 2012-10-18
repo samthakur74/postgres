@@ -1422,18 +1422,14 @@ exec_command(const char *cmd,
 		myopt.title = _("Watch every 2s");
 		myopt.translate_header = true;
 
-		res = PSQLexec(buf.data, false);
-    if(res)
-      printQuery(res, &myopt, pset.queryFout, pset.logfile);
-    pg_usleep(2000000);
-		res = PSQLexec(buf.data, false);
-    if(res)
-      printQuery(res, &myopt, pset.queryFout, pset.logfile);
-    pg_usleep(2000000);
-		res = PSQLexec(buf.data, false);
-    if(res)
-      printQuery(res, &myopt, pset.queryFout, pset.logfile);
-
+    for(;;){
+      res = PSQLexec(buf.data, false);
+      if(res)
+        printQuery(res, &myopt, pset.queryFout, pset.logfile);
+        sigint_interrupt_enabled = true;
+        pg_usleep(2000000);
+        sigint_interrupt_enabled = false;
+   }
    termPQExpBuffer(&buf);
 	}
 
