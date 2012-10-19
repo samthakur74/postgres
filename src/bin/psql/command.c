@@ -1393,69 +1393,98 @@ exec_command(const char *cmd,
 		free(fname);
 	}
 
-	/* \watch -- execute a query every 2 seconds */
+	/* \watch -- execute a query every N seconds */
 	else if (strcmp(cmd, "watch") == 0)
 	{
-		char			*value;
-		PQExpBufferData	buf;
-		volatile PGresult		*res = NULL;
-		printQueryOpt	myopt = pset.popt;
-		char			quoted;
-		bool			first = true;
-		long			sleep = 2;
-		char			title[50];
-		time_t			timer;
+		char					*value;
+		PQExpBufferData			 buf;
+
+		/* Volatile to prevent clobbering by by longjmp. */
+		volatile PGresult		*res   = NULL;
+		printQueryOpt			 myopt = pset.popt;
+		char					 quoted;
+		bool					 first = true;
+		long					 sleep = 2;
+		char					 title[50];
+		time_t					 timer;
+
+		const int		max_watch_delay = 86400;		/* seconds in a day */
+
 
 		initPQExpBuffer(&buf);
 
 		while ((value = psql_scan_slash_option(scan_state,
 											   OT_NORMAL, &quoted, false)))
 		{
+			/*
+			 * If the first value scans as an integer, adjust the watch delay
+			 * time.  Otherwise, use a default.
+			 */
 			if (first && strtol(value, NULL, 10))
 			{
+				first = false;
+
 				sleep = strtol(value, NULL, 10);
+
 				if (sleep < 0)
 					sleep = 0;
-				else if (sleep > 864000) // one day
-					sleep = 86400;
+				else if (sleep > max_watch_delay)
+					sleep = max_watch_delay;
 			}
 			else
 			{
-				if (first)
-					first = false;
-				else
-					appendPQExpBufferStr(&buf, " ");
-
+				appendPQExpBufferStr(&buf, " ");
 				appendPQExpBufferStr(&buf, value);
 			}
+
 			free(value);
 		}
 
+		/*
+		 * Set up rendering options, in particular, disable the pager, because
+		 * nobody wants to be prompted while watching the output of 'watch'.
+		 */
 		myopt.nullPrint = NULL;
 		myopt.topt.pager = 0;
 
+		/* Set up cancellation of 'watch' via SIGINT. */
 		if (sigsetjmp(sigint_interrupt_jmp, 1) != 0)
 			goto cleanup;
 
-		for (;;)
+		while (true)
 		{
 			timer = time(NULL);
-			snprintf(title, sizeof(title), "Watch every %lds\t%s", sleep, asctime(localtime(&timer)));
+			snprintf(title, sizeof(title), "Watch every %lds\t%s", sleep,
+					 asctime(localtime(&timer)));
 			myopt.title = title;
 			res = PSQLexec(buf.data, false);
+
+			/*
+			 * If SIGINT is sent while the query is processing, PSQLexec will
+			 * consume the interrupt.  The user's intention, though, is to
+			 * cancel the entire watch process, so detect a sent cancellation
+			 * request and exit in this case.
+			 */
 			if (cancel_pressed)
 				goto cleanup;
+
 			if (res)
-				printQuery((PGresult *) res, &myopt, pset.queryFout, pset.logfile);
+				printQuery((PGresult *) res, &myopt, pset.queryFout,
+						   pset.logfile);
+
+			/*
+			 * Enable 'watch' cancellations and wait a while before running the
+			 * query again.
+			 */
 			sigint_interrupt_enabled = true;
 			pg_usleep(1000000 * sleep);
 			sigint_interrupt_enabled = false;
 		}
 
-		cleanup:
-			termPQExpBuffer(&buf);
-			if (res)
-				PQclear((PGresult *) res);
+	cleanup:
+		termPQExpBuffer(&buf);
+		if (res)
+			PQclear((PGresult *) res);
 	}
 
 	/* \x -- set or toggle expanded table representation */
