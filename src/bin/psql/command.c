@@ -1412,11 +1412,13 @@ exec_command(const char *cmd,
 											   OT_NORMAL, &quoted, false)))
 		{
 			if (first && strtol(value, NULL, 10))
+			{
 				sleep = strtol(value, NULL, 10);
 				if (sleep < 0)
 					sleep = 0;
 				else if (sleep > 864000) // one day
 					sleep = 86400;
+			}
 			else
 			{
 				if (first)
