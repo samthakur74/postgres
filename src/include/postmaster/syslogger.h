@@ -14,6 +14,10 @@
 
 #include <limits.h>				/* for PIPE_BUF */
 
+/* Hook for plugins to process logs in process_pipe_input */
+typedef void (*ProcessLogCollect_hook_type) (char *buf, int len);
+extern PGDLLIMPORT ProcessLogCollect_hook_type ProcessLogCollect_hook;
+extern void standard_ProcessLogCollect(char *buf, int len);
 
 /*
  * Primitive protocol structure for writing to syslogger pipe(s).  The idea

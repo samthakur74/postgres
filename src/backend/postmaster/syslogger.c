@@ -64,6 +64,7 @@
  */
 #define READ_BUF_SIZE (2 * PIPE_CHUNK_SIZE)
 
+ProcessLogCollect_hook_type ProcessLogCollect_hook = NULL;
 
 /*
  * GUC parameters.	Logging_collector cannot be changed after postmaster
@@ -460,6 +461,11 @@ SysLoggerMain(int argc, char *argv[])
 			bytesRead = read(syslogPipe[0],
 							 logbuffer + bytes_in_logbuffer,
 							 sizeof(logbuffer) - bytes_in_logbuffer);
+
+			if (ProcessLogCollect_hook != NULL)
+				ProcessLogCollect_hook(logbuffer + bytes_in_logbuffer,
+									   bytesRead);
+
 			if (bytesRead < 0)
 			{
 				if (errno != EINTR)
@@ -767,6 +773,12 @@ syslogger_parseArgs(int argc, char *argv[])
  *		pipe protocol handling
  * --------------------------------
  */
+
+void
+standard_ProcessLogCollect(char *buf, int len)
+{
+	/* No-op for now */
+}
 
 /*
  * Process data received through the syslogger pipe.

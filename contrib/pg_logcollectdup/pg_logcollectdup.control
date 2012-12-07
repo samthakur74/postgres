@@ -1,0 +1,4 @@
+comment = 'forward log collector pipe traffic to a path'
+default_version = '1.0'
+module_pathname = '$libdir/pg_logcollectdup'
+relocatable = true
