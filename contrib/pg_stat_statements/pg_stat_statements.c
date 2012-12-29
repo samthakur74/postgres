@@ -1358,9 +1358,6 @@ entry_dealloc(void)
 	hash_seq_init(&hash_seq, pgss_hash);
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
-		const Counters *cur_counts = &entry->counters;
-		int64 cur_underest;
-
 		entries[i++] = entry;
 
 		/* "Sticky" entries get a different usage decay rate. */
@@ -1368,17 +1365,6 @@ entry_dealloc(void)
 			entry->counters.usage *= STICKY_DECREASE_FACTOR;
 		else
 			entry->counters.usage *= USAGE_DECREASE_FACTOR;
-
-		/*
-		 * Update global calls estimation state, if necessary.
-		 *
-		 * NB: It is necessary to compute the uncertainty over *all*
-		 * entries rather than from just those that will undergo
-		 * eviction.  This is because the metric used to choose
-		 * eviction is different than the metric reported to the user.
-		 */
-		cur_underest = cur_counts->calls + cur_counts->calls_underest;
-		pgss->calls_max_underest = Max(pgss->calls_max_underest, cur_underest);
 	}
 
 	qsort(entries, i, sizeof(pgssEntry *), entry_cmp);
@@ -1392,6 +1378,13 @@ entry_dealloc(void)
 
 	for (i = 0; i < nvictims; i++)
 	{
+		const Counters *cur_counts = &entry->counters;
+		int64 cur_underest;
+
+		/* Update global calls estimation state, if necessary. */
+		cur_underest = cur_counts->calls + cur_counts->calls_underest;
+		pgss->calls_max_underest = Max(pgss->calls_max_underest, cur_underest);
+
 		hash_search(pgss_hash, &entries[i]->key, HASH_REMOVE, NULL);
 	}
 
