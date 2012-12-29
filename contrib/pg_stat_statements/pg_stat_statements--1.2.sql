@@ -13,6 +13,7 @@ CREATE FUNCTION pg_stat_statements(
     OUT userid oid,
     OUT dbid oid,
     OUT query text,
+    OUT query_id int4,
     OUT calls int8,
     OUT calls_underest int8,
     OUT total_time float8,

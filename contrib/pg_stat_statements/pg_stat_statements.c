@@ -67,7 +67,7 @@ PG_MODULE_MAGIC;
 #define PGSS_DUMP_FILE	"global/pg_stat_statements.stat"
 
 /* This constant defines the magic number in the stats file header */
-static const uint32 PGSS_FILE_HEADER = 0x20120328;
+static const uint32 PGSS_FILE_HEADER = 0x20121229;
 
 /* XXX: Should USAGE_EXEC reflect execution time and/or buffer usage? */
 #define USAGE_EXEC(duration)	(1.0)
@@ -143,6 +143,7 @@ typedef struct pgssEntry
 	pgssHashKey key;			/* hash key of entry - MUST BE FIRST */
 	Counters	counters;		/* the statistics for this query */
 	int			query_len;		/* # of valid bytes in query string */
+	uint32		query_id;		/* jumble value for this entry */
 	slock_t		mutex;			/* protects the counters only */
 	char		query[1];		/* VARIABLE LENGTH ARRAY - MUST BE LAST */
 	/* Note: the allocated length of query[] is actually pgss->query_size */
@@ -276,7 +277,7 @@ static void pgss_store(const char *query, uint32 queryId,
 		   pgssJumbleState *jstate);
 static Size pgss_memsize(void);
 static pgssEntry *entry_alloc(pgssHashKey *key, const char *query,
-			int query_len, bool sticky);
+							  int query_len, uint32 query_id, bool sticky);
 static void entry_dealloc(void);
 static void entry_reset(void);
 static void AppendJumble(pgssJumbleState *jstate,
@@ -541,7 +542,8 @@ pgss_shmem_startup(void)
 		}
 
 		/* make the hashtable entry (discards old entries if too many) */
-		entry = entry_alloc(&temp.key, buffer, temp.query_len, false);
+		entry = entry_alloc(&temp.key, buffer, temp.query_len, temp.query_id,
+							false);
 
 		/* copy in the actual stats */
 		entry->counters = temp.counters;
@@ -1032,7 +1034,7 @@ pgss_store(const char *query, uint32 queryId,
 			/* Acquire exclusive lock as required by entry_alloc() */
 			LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
 
-			entry = entry_alloc(&key, norm_query, query_len, true);
+			entry = entry_alloc(&key, norm_query, query_len, queryId, true);
 		}
 		else
 		{
@@ -1049,7 +1051,7 @@ pgss_store(const char *query, uint32 queryId,
 			/* Acquire exclusive lock as required by entry_alloc() */
 			LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
 
-			entry = entry_alloc(&key, query, query_len, false);
+			entry = entry_alloc(&key, query, query_len, queryId, false);
 		}
 	}
 
@@ -1112,7 +1114,7 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 
 #define PG_STAT_STATEMENTS_COLS_V1_0	14
 #define PG_STAT_STATEMENTS_COLS_V1_1	18
-#define PG_STAT_STATEMENTS_COLS			19
+#define PG_STAT_STATEMENTS_COLS			20
 
 /*
  * Retrieve statement statistics.
@@ -1228,6 +1230,8 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 		if (tmp.calls == 0)
 			continue;
 
+		if (detected_version >= PGSS_TUP_LATEST)
+			values[i++] = DatumGetInt32(entry->query_id);
 		values[i++] = Int64GetDatumFast(tmp.calls);
 		if (detected_version >= PGSS_TUP_LATEST)
 			values[i++] = Int64GetDatumFast(tmp.calls_underest);
@@ -1299,7 +1303,8 @@ pgss_memsize(void)
  * have made the entry while we waited to get exclusive lock.
  */
 static pgssEntry *
-entry_alloc(pgssHashKey *key, const char *query, int query_len, bool sticky)
+entry_alloc(pgssHashKey *key, const char *query, int query_len,
+			uint32 query_id, bool sticky)
 {
 	pgssEntry  *entry;
 	bool		found;
@@ -1327,6 +1332,9 @@ entry_alloc(pgssHashKey *key, const char *query, int query_len, bool sticky)
 		entry->query_len = query_len;
 		memcpy(entry->query, query, query_len);
 		entry->query[query_len] = '\0';
+
+		/* Copy in the query id for reporting */
+		entry->query_id = query_id;
 	}
 
 	return entry;
