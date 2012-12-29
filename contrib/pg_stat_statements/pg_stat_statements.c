@@ -419,6 +419,7 @@ pgss_shmem_startup(void)
 	int			query_size;
 	int			buffer_size;
 	char	   *buffer = NULL;
+	int64		calls_max_underest = 0;
 
 	if (prev_shmem_startup_hook)
 		prev_shmem_startup_hook();
@@ -440,7 +441,7 @@ pgss_shmem_startup(void)
 	{
 		/* First time through ... */
 		pgss->lock = LWLockAssign();
-		pgss->calls_max_underest = 0;
+		pgss->calls_max_underest = calls_max_underest;
 		pgss->query_size = pgstat_track_activity_query_size;
 		pgss->cur_median_usage = ASSUMED_MEDIAN_INIT;
 	}
@@ -528,12 +529,30 @@ pgss_shmem_startup(void)
 												   temp.query_len,
 												   query_size - 1);
 
+		/*
+		 * Compute maxima of under-estimation over the read entries
+		 * for reinitializing pgss->calls_max_underest.
+		 */
+		{
+			int64 cur_underest;
+				
+			cur_underest = temp.calls + temp.calls_underest;
+			calls_max_underest = Max(calls_max_underest, cur_underest);
+		}
+
 		/* make the hashtable entry (discards old entries if too many) */
 		entry = entry_alloc(&temp.key, buffer, temp.query_len, false);
 
 		/* copy in the actual stats */
 		entry->counters = temp.counters;
 	}
+
+	/*
+	 * Reinitialize global under-estimation information from the
+	 * computed maxima, if any.  Otherwise, calls_max_underest should
+	 * be zero.
+	 */
+	pgss->calls_max_underest = calls_max_underest;
 
 	pfree(buffer);
 	FreeFile(file);
