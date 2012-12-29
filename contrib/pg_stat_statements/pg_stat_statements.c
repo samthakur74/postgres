@@ -1215,7 +1215,21 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 				pfree(qstr);
 		}
 		else
-			values[i++] = CStringGetTextDatum("<insufficient privilege>");
+		{
+			/*
+			 * The role calling this function is unable to see
+			 * sensitive aspects of this tuple.
+			 *
+			 * Nullify everything except the "insufficient privilege"
+			 * message for this entry 
+			 */
+			memset(nulls, 1, sizeof nulls);
+
+			nulls[i]  = 0;
+			values[i] = CStringGetTextDatum("<insufficient privilege>");
+
+			i += 1;
+		}
 
 		/* copy counters to a local variable to keep locking time short */
 		{
