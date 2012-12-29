@@ -480,6 +480,7 @@ pgss_shmem_startup(void)
 	int			buffer_size;
 	char	   *buffer = NULL;
 	int64		calls_max_underest = 0;
+	bool 		log_cannot_read = true;
 
 	if (prev_shmem_startup_hook)
 		prev_shmem_startup_hook();
@@ -541,7 +542,12 @@ pgss_shmem_startup(void)
 	 */
 	file = AllocateFile(PGSS_DUMP_FILE, PG_BINARY_R);
 	if (file == NULL)
+	{
+		if (errno == ENOENT)
+			log_cannot_read = false;
+
 		goto error;
+	}
 
 	buffer_size = query_size;
 	buffer = (char *) palloc(buffer_size);
@@ -632,12 +638,8 @@ pgss_shmem_startup(void)
 	return;
 
 error:
-	/* 
-	 * Ignore not-found error.
-	 *
-	 * NB: Advised to be first in error handling since it uses errno.
-	 */
-	if (errno != ENOENT)
+	/* Ignore not-found error. */
+	if (log_cannot_read)
 		ereport(LOG,
 				(errcode_for_file_access(),
 				 errmsg("could not read pg_stat_statement file \"%s\": %m",
