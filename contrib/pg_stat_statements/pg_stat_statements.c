@@ -96,6 +96,20 @@ typedef struct pgssHashKey
 } pgssHashKey;
 
 /*
+ * Identifies the tuple format detected by pg_stat_statements.
+ *
+ * Used to identify features of newer formats and enable smooth
+ * upgrades: one can install a new pg_stat_statements binary while
+ * running with the old SQL function definitions.
+ */
+typedef enum pgssTupVersion
+{
+	PGSS_TUP_V1_0 = 1,
+	PGSS_TUP_V1_1,
+	PGSS_TUP_LATEST
+} pgssTupVersion;
+
+/*
  * The actual stats counters kept within pgssEntry.
  */
 typedef struct Counters
@@ -1078,6 +1092,7 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 }
 
 #define PG_STAT_STATEMENTS_COLS_V1_0	14
+#define PG_STAT_STATEMENTS_COLS_V1_1	18
 #define PG_STAT_STATEMENTS_COLS			19
 
 /*
@@ -1095,7 +1110,7 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 	bool		is_superuser = superuser();
 	HASH_SEQ_STATUS hash_seq;
 	pgssEntry  *entry;
-	bool		sql_supports_v1_1_counters = true;
+	pgssTupVersion detected_version;
 
 	if (!pgss || !pgss_hash)
 		ereport(ERROR,
@@ -1116,8 +1131,28 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 	/* Build a tuple descriptor for our result type */
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
+
+	/* Perform version detection */
 	if (tupdesc->natts == PG_STAT_STATEMENTS_COLS_V1_0)
-		sql_supports_v1_1_counters = false;
+		detected_version = PGSS_TUP_V1_0;
+	else if (tupdesc->natts == PG_STAT_STATEMENTS_COLS_V1_1)
+		detected_version = PGSS_TUP_V1_1;
+	else if (tupdesc->natts == PG_STAT_STATEMENTS_COLS)
+		detected_version = PGSS_TUP_LATEST;
+	else
+	{
+		/*
+		 * Couldn't identify the tuple format.  Raise error.
+		 *
+		 * This is an exceptional case that may only happen in bizarre
+		 * situations, since it is thought that every released version
+		 * of pg_stat_statements has a matching schema.
+		 */
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("pg_stat_statements schema is not supported "
+						"by its installed binary")));
+	}
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);
@@ -1175,22 +1210,23 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 			continue;
 
 		values[i++] = Int64GetDatumFast(tmp.calls);
-		values[i++] = Int64GetDatumFast(tmp.calls_underest);
+		if (detected_version >= PGSS_TUP_LATEST)
+			values[i++] = Int64GetDatumFast(tmp.calls_underest);
 		values[i++] = Float8GetDatumFast(tmp.total_time);
 		values[i++] = Int64GetDatumFast(tmp.rows);
 		values[i++] = Int64GetDatumFast(tmp.shared_blks_hit);
 		values[i++] = Int64GetDatumFast(tmp.shared_blks_read);
-		if (sql_supports_v1_1_counters)
+		if (detected_version >= PGSS_TUP_V1_1)
 			values[i++] = Int64GetDatumFast(tmp.shared_blks_dirtied);
 		values[i++] = Int64GetDatumFast(tmp.shared_blks_written);
 		values[i++] = Int64GetDatumFast(tmp.local_blks_hit);
 		values[i++] = Int64GetDatumFast(tmp.local_blks_read);
-		if (sql_supports_v1_1_counters)
+		if (detected_version >= PGSS_TUP_V1_1)
 			values[i++] = Int64GetDatumFast(tmp.local_blks_dirtied);
 		values[i++] = Int64GetDatumFast(tmp.local_blks_written);
 		values[i++] = Int64GetDatumFast(tmp.temp_blks_read);
 		values[i++] = Int64GetDatumFast(tmp.temp_blks_written);
-		if (sql_supports_v1_1_counters)
+		if (detected_version >= PGSS_TUP_V1_1)
 		{
 			values[i++] = Float8GetDatumFast(tmp.blk_read_time);
 			values[i++] = Float8GetDatumFast(tmp.blk_write_time);
