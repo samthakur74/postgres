@@ -1036,6 +1036,7 @@ pgss_store(const char *query, uint32 queryId,
 			e->counters.usage = USAGE_INIT;
 
 		e->counters.calls += 1;
+		e->counters.calls_underest = pgss->calls_max_underest;
 		e->counters.total_time += total_time;
 		e->counters.rows += rows;
 		e->counters.shared_blks_hit += bufusage->shared_blks_hit;
@@ -1263,9 +1264,6 @@ entry_alloc(pgssHashKey *key, const char *query, int query_len, bool sticky)
 		memset(&entry->counters, 0, sizeof(Counters));
 		/* set the appropriate initial usage count */
 		entry->counters.usage = sticky ? pgss->cur_median_usage : USAGE_INIT;
-
-		/* propagate calls under-estimation bound */
-		entry->counters.calls_underest = pgss->calls_max_underest;
 
 		/* re-initialize the mutex each time ... we assume no one using it */
 		SpinLockInit(&entry->mutex);
