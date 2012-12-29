@@ -43,6 +43,7 @@
  */
 #include "postgres.h"
 
+#include <time.h>
 #include <unistd.h>
 
 #include "access/hash.h"
@@ -67,7 +68,7 @@ PG_MODULE_MAGIC;
 #define PGSS_DUMP_FILE	"global/pg_stat_statements.stat"
 
 /* This constant defines the magic number in the stats file header */
-static const uint32 PGSS_FILE_HEADER = 0x20121229;
+static const uint32 PGSS_FILE_HEADER = 0x20121230;
 
 /* XXX: Should USAGE_EXEC reflect execution time and/or buffer usage? */
 #define USAGE_EXEC(duration)	(1.0)
@@ -166,6 +167,14 @@ typedef struct pgssSharedState
 
 	int			query_size;		/* max query length in bytes */
 	double		cur_median_usage;		/* current median usage in hashtable */
+
+	/*
+	 * Is set to a new random value when the server restarts or stats
+	 * are reset, to de-confuse cases of non-monotonic counters (as
+	 * they had reasons to decrease) for tools that aggregate
+	 * snapshots of pg_stat_statements.
+	 */
+	int32		stat_session_key;
 } pgssSharedState;
 
 /*
@@ -217,6 +226,10 @@ static ProcessUtility_hook_type prev_ProcessUtility = NULL;
 static pgssSharedState *pgss = NULL;
 static HTAB *pgss_hash = NULL;
 
+/* Random number seeding */
+static unsigned int random_seed = 0;
+static struct timeval random_start_time;
+
 /*---- GUC variables ----*/
 
 typedef enum
@@ -255,6 +268,8 @@ Datum		pg_stat_statements(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(pg_stat_statements_reset);
 PG_FUNCTION_INFO_V1(pg_stat_statements);
 
+static long pgssRandom(void);
+static void pgss_new_stat_session(pgssSharedState *state);
 static void pgss_shmem_startup(void);
 static void pgss_shmem_shutdown(int code, Datum arg);
 static void pgss_post_parse_analyze(ParseState *pstate, Query *query);
@@ -405,6 +420,50 @@ _PG_fini(void)
 }
 
 /*
+ * Random numbers -- ported from PostmasterRandom.
+ */
+static long
+pgssRandom(void)
+{
+	/*
+	 * Select a random seed if one hasn't been selected before.
+	 */
+	if (random_seed == 0)
+	{
+		do
+		{
+			struct timeval random_stop_time;
+
+			gettimeofday(&random_stop_time, NULL);
+
+			/*
+			 * We are not sure how much precision is in tv_usec, so we swap
+			 * the high and low 16 bits of 'random_stop_time' and XOR them
+			 * with 'random_start_time'. On the off chance that the result is
+			 * 0, we loop until it isn't.
+			 */
+			random_seed = random_start_time.tv_usec ^
+				((random_stop_time.tv_usec << 16) |
+				 ((random_stop_time.tv_usec >> 16) & 0xffff));
+		}
+		while (random_seed == 0);
+
+		srandom(random_seed);
+	}
+
+	return random();
+}
+
+/*
+ * Create a new, random stat session key.
+ */
+static void
+pgss_new_stat_session(pgssSharedState *state)
+{
+	state->stat_session_key = (int32) pgssRandom();
+}
+
+/*
  * shmem_startup hook: allocate or attach to shared memory,
  * then load any pre-existing statistics from file.
  */
@@ -482,18 +541,23 @@ pgss_shmem_startup(void)
 	 */
 	file = AllocateFile(PGSS_DUMP_FILE, PG_BINARY_R);
 	if (file == NULL)
-	{
-		if (errno == ENOENT)
-			return;				/* ignore not-found error */
 		goto error;
-	}
 
 	buffer_size = query_size;
 	buffer = (char *) palloc(buffer_size);
 
+	/* Check header existence and magic number match. */
 	if (fread(&header, sizeof(uint32), 1, file) != 1 ||
-		header != PGSS_FILE_HEADER ||
-		fread(&num, sizeof(int32), 1, file) != 1)
+		header != PGSS_FILE_HEADER)
+		goto error;
+
+	/* Restore saved session key, if possible. */
+	if (fread(&pgss->stat_session_key,
+			  sizeof pgss->stat_session_key, 1, file) != 1)
+		goto error;
+
+	/* Read how many table entries there are. */
+	if (fread(&num, sizeof(int32), 1, file) != 1)
 		goto error;
 
 	for (i = 0; i < num; i++)
@@ -537,7 +601,7 @@ pgss_shmem_startup(void)
 		{
 			int64 cur_underest;
 				
-			cur_underest = temp.calls + temp.calls_underest;
+			cur_underest = temp.counters.calls + temp.counters.calls_underest;
 			calls_max_underest = Max(calls_max_underest, cur_underest);
 		}
 
@@ -568,10 +632,20 @@ pgss_shmem_startup(void)
 	return;
 
 error:
-	ereport(LOG,
-			(errcode_for_file_access(),
-			 errmsg("could not read pg_stat_statement file \"%s\": %m",
-					PGSS_DUMP_FILE)));
+	/* 
+	 * Ignore not-found error.
+	 *
+	 * NB: Advised to be first in error handling since it uses errno.
+	 */
+	if (errno != ENOENT)
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not read pg_stat_statement file \"%s\": %m",
+						PGSS_DUMP_FILE)));
+
+	/* Need a new session if none could be read from the file */
+	pgss_new_stat_session(pgss);
+
 	if (buffer)
 		pfree(buffer);
 	if (file)
@@ -610,8 +684,16 @@ pgss_shmem_shutdown(int code, Datum arg)
 	if (file == NULL)
 		goto error;
 
+	/* Save header/magic number.  */
 	if (fwrite(&PGSS_FILE_HEADER, sizeof(uint32), 1, file) != 1)
 		goto error;
+
+	/* Save stat session key. */
+	if (fwrite(&pgss->stat_session_key,
+			   sizeof pgss->stat_session_key, 1, file) != 1)
+			goto error;
+
+	/* Write how many table entries there are. */
 	num_entries = hash_get_num_entries(pgss_hash);
 	if (fwrite(&num_entries, sizeof(int32), 1, file) != 1)
 		goto error;
@@ -1114,7 +1196,7 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 
 #define PG_STAT_STATEMENTS_COLS_V1_0	14
 #define PG_STAT_STATEMENTS_COLS_V1_1	18
-#define PG_STAT_STATEMENTS_COLS			20
+#define PG_STAT_STATEMENTS_COLS			21
 
 /*
  * Retrieve statement statistics.
@@ -1200,6 +1282,7 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 
 		values[i++] = ObjectIdGetDatum(entry->key.userid);
 		values[i++] = ObjectIdGetDatum(entry->key.dbid);
+		values[i++] = DatumGetInt32(pgss->stat_session_key);
 
 		if (is_superuser || entry->key.userid == userid)
 		{
@@ -1448,6 +1531,12 @@ entry_reset(void)
 	{
 		hash_search(pgss_hash, &entry->key, HASH_REMOVE, NULL);
 	}
+
+	/*
+	 * Counters all reset, so need to generate a new identity for the
+	 * session.
+	 */
+	pgss_new_stat_session(pgss);
 
 	LWLockRelease(pgss->lock);
 }
