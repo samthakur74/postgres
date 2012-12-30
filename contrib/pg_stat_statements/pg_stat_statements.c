@@ -1354,8 +1354,23 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 			values[i++] = Float8GetDatumFast(tmp.blk_write_time);
 		}
 
-		Assert(i == (sql_supports_v1_1_counters ?
-					 PG_STAT_STATEMENTS_COLS : PG_STAT_STATEMENTS_COLS_V1_0));
+#ifdef USE_ASSERT_CHECKING
+		/* Check that every column appears to be filled */
+		switch (detected_version)
+		{
+				case PGSS_TUP_V1_0:
+						Assert(i == PG_STAT_STATEMENTS_COLS_V1_0);
+						break;
+				case PGSS_TUP_V1_1:
+						Assert(i == PG_STAT_STATEMENTS_COLS_V1_1);
+						break;
+				case PGSS_TUP_LATEST:
+						Assert(i == PG_STAT_STATEMENTS_COLS);
+						break;
+				default:
+						Assert(false);
+		}
+#endif
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
