@@ -68,7 +68,7 @@ PG_MODULE_MAGIC;
 #define PGSS_DUMP_FILE	"global/pg_stat_statements.stat"
 
 /* This constant defines the magic number in the stats file header */
-static const uint32 PGSS_FILE_HEADER = 0x20121230;
+static const uint32 PGSS_FILE_HEADER = 0x20121231;
 
 /* XXX: Should USAGE_EXEC reflect execution time and/or buffer usage? */
 #define USAGE_EXEC(duration)	(1.0)
@@ -175,6 +175,7 @@ typedef struct pgssSharedState
 	 * snapshots of pg_stat_statements.
 	 */
 	int32		stat_session_key;
+	uint64		private_stat_session_key;
 } pgssSharedState;
 
 /*
@@ -461,6 +462,10 @@ static void
 pgss_new_stat_session(pgssSharedState *state)
 {
 	state->stat_session_key = (int32) pgssRandom();
+
+	/* Generate 64-bit private session */
+	state->private_stat_session_key	 = (uint64) pgssRandom();
+	state->private_stat_session_key |= ((uint64) pgssRandom()) << 32;
 }
 
 /*
@@ -479,7 +484,6 @@ pgss_shmem_startup(void)
 	int			query_size;
 	int			buffer_size;
 	char	   *buffer = NULL;
-	int64		calls_max_underest = 0;
 	bool 		log_cannot_read = true;
 
 	if (prev_shmem_startup_hook)
@@ -502,7 +506,7 @@ pgss_shmem_startup(void)
 	{
 		/* First time through ... */
 		pgss->lock = LWLockAssign();
-		pgss->calls_max_underest = calls_max_underest;
+		pgss->calls_max_underest = 0;
 		pgss->query_size = pgstat_track_activity_query_size;
 		pgss->cur_median_usage = ASSUMED_MEDIAN_INIT;
 	}
@@ -557,9 +561,19 @@ pgss_shmem_startup(void)
 		header != PGSS_FILE_HEADER)
 		goto error;
 
+	/* Restore under-estimation state */
+	if (fread(&pgss->calls_max_underest,
+			  sizeof pgss->calls_max_underest, 1, file) != 1)
+		goto error;
+
 	/* Restore saved session key, if possible. */
 	if (fread(&pgss->stat_session_key,
 			  sizeof pgss->stat_session_key, 1, file) != 1)
+		goto error;
+
+	/* Restore private session key */
+	if (fread(&pgss->private_stat_session_key,
+			  sizeof pgss->private_stat_session_key, 1, file) != 1)
 		goto error;
 
 	/* Read how many table entries there are. */
@@ -600,17 +614,6 @@ pgss_shmem_startup(void)
 												   temp.query_len,
 												   query_size - 1);
 
-		/*
-		 * Compute maxima of under-estimation over the read entries
-		 * for reinitializing pgss->calls_max_underest.
-		 */
-		{
-			int64 cur_underest;
-				
-			cur_underest = temp.counters.calls + temp.counters.calls_underest;
-			calls_max_underest = Max(calls_max_underest, cur_underest);
-		}
-
 		/* make the hashtable entry (discards old entries if too many) */
 		entry = entry_alloc(&temp.key, buffer, temp.query_len, temp.query_id,
 							false);
@@ -618,13 +621,6 @@ pgss_shmem_startup(void)
 		/* copy in the actual stats */
 		entry->counters = temp.counters;
 	}
-
-	/*
-	 * Reinitialize global under-estimation information from the
-	 * computed maxima, if any.  Otherwise, calls_max_underest should
-	 * be zero.
-	 */
-	pgss->calls_max_underest = calls_max_underest;
 
 	pfree(buffer);
 	FreeFile(file);
@@ -690,9 +686,19 @@ pgss_shmem_shutdown(int code, Datum arg)
 	if (fwrite(&PGSS_FILE_HEADER, sizeof(uint32), 1, file) != 1)
 		goto error;
 
+	/* Save under-estimation state */
+	if (fwrite(&pgss->calls_max_underest,
+			   sizeof pgss->calls_max_underest, 1, file) != 1)
+		goto error;
+
 	/* Save stat session key. */
 	if (fwrite(&pgss->stat_session_key,
 			   sizeof pgss->stat_session_key, 1, file) != 1)
+			goto error;
+
+	/* Save private session key */
+	if (fwrite(&pgss->private_stat_session_key,
+			   sizeof pgss->private_stat_session_key, 1, file) != 1)
 			goto error;
 
 	/* Write how many table entries there are. */
@@ -1330,7 +1336,15 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 			continue;
 
 		if (detected_version >= PGSS_TUP_LATEST)
-			values[i++] = DatumGetInt32(entry->query_id);
+		{
+			uint64 qid = pgss->private_stat_session_key;
+
+			qid ^= (uint64) entry->query_id;
+			qid ^= ((uint64) entry->query_id) << 32;
+
+			values[i++] = Int64GetDatumFast(qid);
+		}
+
 		values[i++] = Int64GetDatumFast(tmp.calls);
 		if (detected_version >= PGSS_TUP_LATEST)
 			values[i++] = Int64GetDatumFast(tmp.calls_underest);
