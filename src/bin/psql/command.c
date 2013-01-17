@@ -1397,44 +1397,31 @@ exec_command(const char *cmd,
 	else if (strcmp(cmd, "watch") == 0)
 	{
 		char					*value;
-		PQExpBufferData			 buf;
 
 		/* Volatile to prevent clobbering by by longjmp. */
 		volatile PGresult		*res   = NULL;
 		printQueryOpt			 myopt = pset.popt;
 		char					 quoted;
-		bool					 first = true;
 		long					 sleep = 2;
 		char					 title[50];
 		time_t					 timer;
 
 		const int		max_watch_delay = 86400;		/* seconds in a day */
 
-		initPQExpBuffer(&buf);
-
-		while ((value = psql_scan_slash_option(scan_state,
-											   OT_NORMAL, &quoted, false)))
+		/*
+		 * Implement optional specification of time period for re-running the
+		 * query.
+		 */
+		if ((value = psql_scan_slash_option(scan_state,
+											OT_NORMAL, &quoted, false)))
 		{
-			/*
-			 * If the first value scans as an integer, adjust the watch delay
-			 * time.  Otherwise, use a default.
-			 */
-			if (first && strtol(value, NULL, 10))
-			{
-				sleep = strtol(value, NULL, 10);
+			sleep = strtol(value, NULL, 10);
 
-				if (sleep < 0)
-					sleep = 0;
-				else if (sleep > max_watch_delay)
-					sleep = max_watch_delay;
-			}
-			else
-			{
-				appendPQExpBufferStr(&buf, " ");
-				appendPQExpBufferStr(&buf, value);
-			}
+			if (sleep < 0)
+				sleep = 1;
+			else if (sleep > max_watch_delay)
+				sleep = max_watch_delay;
 
-			first = false;
 			free(value);
 		}
 
@@ -1455,7 +1442,14 @@ exec_command(const char *cmd,
 			snprintf(title, sizeof(title), "Watch every %lds\t%s", sleep,
 					 asctime(localtime(&timer)));
 			myopt.title = title;
-			res = PSQLexec(buf.data, false);
+
+			if (query_buf)
+				res = PSQLexec(query_buf->data, false);
+			else if (!pset.quiet)
+			{
+				puts(_("Query buffer is empty."));
+				goto cleanup;
+			}
 
 			/*
 			 * If SIGINT is sent while the query is processing, PSQLexec will
@@ -1500,7 +1494,6 @@ exec_command(const char *cmd,
 		}
 
 	cleanup:
-		termPQExpBuffer(&buf);
 		if (res)
 			PQclear((PGresult *) res);
 	}
