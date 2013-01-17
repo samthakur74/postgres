@@ -1469,10 +1469,28 @@ exec_command(const char *cmd,
 				goto cleanup;
 
 			if (res)
-				printQuery((PGresult *) res, &myopt, pset.queryFout,
-						   pset.logfile);
+			{
+				ExecStatusType status = PQresultStatus((PGresult *) res);
+
+				switch (status)
+				{
+					case PGRES_TUPLES_OK:
+						printQuery((PGresult *) res, &myopt, pset.queryFout,
+								   pset.logfile);
+						break;
+
+					case PGRES_EMPTY_QUERY:
+						psql_error(
+							"\\watch cannot be used with an empty query\n");
+						goto cleanup;
+
+					default:
+						break;
+				}
+
+				PQclear((PGresult *) res);
 				res = NULL;
-				free((PGresult *) res);
+			}
 
 			/*
 			 * Enable 'watch' cancellations and wait a while before running the
