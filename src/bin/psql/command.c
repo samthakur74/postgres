@@ -1443,11 +1443,40 @@ exec_command(const char *cmd,
 					 asctime(localtime(&timer)));
 			myopt.title = title;
 
-			if (query_buf)
-				res = PSQLexec(query_buf->data, false);
+			if (query_buf && query_buf->len > 0)
+			{
+				/*
+				 * Check that the query in query_buf has been terminated.  This
+				 * is mostly consistent with behavior from commands like \g.
+				 * The reason this is here is to prevent terrible things from
+				 * occuring from submitting incomplete input of statements
+				 * like:
+				 *
+				 *     DELETE FROM foo
+				 *     \watch
+				 *     WHERE....
+				 *
+				 * Wherein \watch will go ahead and send whatever has been
+				 * submitted so far.  So instead, insist that the user
+				 * terminate the query with a semicolon to be safe.
+				 */
+				if (query_buf->data[query_buf->len - 1] == ';')
+				{
+					/* Everything checks out: run the query */
+					res = PSQLexec(query_buf->data, false);
+				}
+				else
+				{
+					psql_error(_("Query buffer is not terminated with a ';', "
+								 "ignoring \\watch.\n"));
+
+					goto cleanup;
+				}
+			}
 			else if (!pset.quiet)
 			{
-				puts(_("Query buffer is empty."));
+				psql_error(_("Query buffer is empty."));
+
 				goto cleanup;
 			}
 
