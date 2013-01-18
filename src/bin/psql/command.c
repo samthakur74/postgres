@@ -1408,6 +1408,37 @@ exec_command(const char *cmd,
 
 		const int		max_watch_delay = 86400;		/* seconds in a day */
 
+		if (query_buf && query_buf->len > 0)
+		{
+			/*
+			 * Check that the query in query_buf has been terminated.  This is
+			 * mostly consistent with behavior from commands like \g.  The
+			 * reason this is here is to prevent terrible things from occuring
+			 * from submitting incomplete input of statements like:
+			 *
+			 *     DELETE FROM foo
+			 *     \watch
+			 *     WHERE....
+			 *
+			 * Wherein \watch will go ahead and send whatever has been
+			 * submitted so far.  So instead, insist that the user terminate
+			 * the query with a semicolon to be safe.
+			 */
+			if (query_buf->data[query_buf->len - 1] != ';')
+			{
+				psql_error(_("Query buffer is not terminated with a ';', "
+							 "ignoring \\watch.\n"));
+
+				goto cleanup;
+			}
+		}
+		else
+		{
+			psql_error(_("Query buffer is empty, \\watch ignored."));
+
+			goto cleanup;
+		}
+
 		/*
 		 * Implement optional specification of time period for re-running the
 		 * query.
@@ -1443,43 +1474,6 @@ exec_command(const char *cmd,
 					 asctime(localtime(&timer)));
 			myopt.title = title;
 
-			if (query_buf && query_buf->len > 0)
-			{
-				/*
-				 * Check that the query in query_buf has been terminated.  This
-				 * is mostly consistent with behavior from commands like \g.
-				 * The reason this is here is to prevent terrible things from
-				 * occuring from submitting incomplete input of statements
-				 * like:
-				 *
-				 *     DELETE FROM foo
-				 *     \watch
-				 *     WHERE....
-				 *
-				 * Wherein \watch will go ahead and send whatever has been
-				 * submitted so far.  So instead, insist that the user
-				 * terminate the query with a semicolon to be safe.
-				 */
-				if (query_buf->data[query_buf->len - 1] == ';')
-				{
-					/* Everything checks out: run the query */
-					res = PSQLexec(query_buf->data, false);
-				}
-				else
-				{
-					psql_error(_("Query buffer is not terminated with a ';', "
-								 "ignoring \\watch.\n"));
-
-					goto cleanup;
-				}
-			}
-			else if (!pset.quiet)
-			{
-				psql_error(_("Query buffer is empty."));
-
-				goto cleanup;
-			}
-
 			/*
 			 * If SIGINT is sent while the query is processing, PSQLexec will
 			 * consume the interrupt.  The user's intention, though, is to
@@ -1488,6 +1482,8 @@ exec_command(const char *cmd,
 			 */
 			if (cancel_pressed)
 				goto cleanup;
+
+			res = PSQLexec(query_buf->data, false);
 
 			if (res)
 			{
