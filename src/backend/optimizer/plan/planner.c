@@ -572,8 +572,8 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 				rowMarks = root->rowMarks;
 
 			Assert(parse->commandType == root->parse->commandType);
+			Assert(parse->canSetTag == root->parse->canSetTag);
 			plan = (Plan *) make_modifytable(root,
-											 parse->canSetTag,
 									   list_make1_int(parse->resultRelation),
 											 list_make1(plan),
 											 returningLists,
@@ -967,8 +967,8 @@ inheritance_planner(PlannerInfo *root)
 
 	/* And last, tack on a ModifyTable node to do the UPDATE/DELETE work */
 	Assert(parse->commandType == root->parse->commandType);
+	Assert(parse->canSetTag == root->parse->canSetTag);
 	return (Plan *) make_modifytable(root,
-									 parse->canSetTag,
 									 resultRelations,
 									 subplans,
 									 returningLists,
