@@ -4715,7 +4715,7 @@ make_result(PlannerInfo *root,
  */
 ModifyTable *
 make_modifytable(PlannerInfo *root,
-				 CmdType operation, bool canSetTag,
+				 bool canSetTag,
 				 List *resultRelations,
 				 List *subplans, List *returningLists,
 				 List *rowMarks, int epqParam)
@@ -4726,6 +4726,7 @@ make_modifytable(PlannerInfo *root,
 	ListCell   *subnode;
 	ListCell   *resultRel;
 	List	   *fdw_priv_list = NIL;
+	CmdType		operation = root->parse->commandType;
 
 	Assert(list_length(resultRelations) == list_length(subplans));
 	Assert(returningLists == NIL ||
