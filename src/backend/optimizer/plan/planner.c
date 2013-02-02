@@ -577,8 +577,7 @@ subquery_planner(PlannerGlobal *glob, Query *parse,
 									   list_make1_int(parse->resultRelation),
 											 list_make1(plan),
 											 returningLists,
-											 rowMarks,
-											 SS_assign_special_param(root));
+											 rowMarks);
 		}
 	}
 
@@ -972,8 +971,7 @@ inheritance_planner(PlannerInfo *root)
 									 resultRelations,
 									 subplans,
 									 returningLists,
-									 rowMarks,
-									 SS_assign_special_param(root));
+									 rowMarks);
 }
 
 /*--------------------

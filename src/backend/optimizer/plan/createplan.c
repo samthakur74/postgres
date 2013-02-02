@@ -4717,7 +4717,7 @@ ModifyTable *
 make_modifytable(PlannerInfo *root,
 				 List *resultRelations,
 				 List *subplans, List *returningLists,
-				 List *rowMarks, int epqParam)
+				 List *rowMarks)
 {
 	ModifyTable *node = makeNode(ModifyTable);
 	Plan	   *plan = &node->plan;
@@ -4727,6 +4727,7 @@ make_modifytable(PlannerInfo *root,
 	List	   *fdw_priv_list = NIL;
 	CmdType		operation = root->parse->commandType;
 	bool		canSetTag = root->parse->canSetTag;
+	int			epqParam = SS_assign_special_param(root);
 
 	Assert(list_length(resultRelations) == list_length(subplans));
 	Assert(returningLists == NIL ||
