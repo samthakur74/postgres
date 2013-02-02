@@ -4716,8 +4716,7 @@ make_result(PlannerInfo *root,
 ModifyTable *
 make_modifytable(PlannerInfo *root,
 				 List *resultRelations,
-				 List *subplans, List *returningLists,
-				 List *rowMarks)
+				 List *subplans, List *returningLists)
 {
 	ModifyTable *node = makeNode(ModifyTable);
 	Plan	   *plan = &node->plan;
@@ -4727,7 +4726,18 @@ make_modifytable(PlannerInfo *root,
 	List	   *fdw_priv_list = NIL;
 	CmdType		operation = root->parse->commandType;
 	bool		canSetTag = root->parse->canSetTag;
+	List	   *rowMarks;
 	int			epqParam = SS_assign_special_param(root);
+
+	/*
+	 * If there was a FOR [KEY] UPDATE/SHARE clause, the LockRows node will
+	 * have dealt with fetching non-locked marked rows, else we need
+	 * to have ModifyTable do that.
+	 */
+	if (root->parse->rowMarks)
+		rowMarks = NIL;
+	else
+		rowMarks = root->rowMarks;
 
 	Assert(list_length(resultRelations) == list_length(subplans));
 	Assert(returningLists == NIL ||
