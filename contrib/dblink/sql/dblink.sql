@@ -426,3 +426,94 @@ SELECT dblink_build_sql_update('test_dropped', '1', 1,
 
 SELECT dblink_build_sql_delete('test_dropped', '1', 1,
                                ARRAY['2'::TEXT]);
+
+-- test the local mimicry of remote GUC values in parsing for affected
+-- types
+SET datestyle = ISO, MDY;
+SET intervalstyle = postgres;
+SET timezone = UTC;
+SELECT dblink_connect('myconn','dbname=contrib_regression');
+SELECT dblink_exec('myconn', 'SET datestyle = GERMAN, DMY;');
+
+-- The following attempt test various paths at which TupleDescs are
+-- formed and inspected for containment of types requiring local GUC
+-- setting.
+
+-- single row synchronous case
+SELECT *
+FROM dblink('myconn',
+	   'SELECT * FROM
+	   (VALUES (''12.03.2013 00:00:00+00'')) t')
+	 AS t(a timestamptz);
+
+-- multi-row synchronous case
+SELECT *
+FROM dblink('myconn',
+	   'SELECT * FROM
+	   (VALUES (''12.03.2013 00:00:00+00''),
+		   (''12.03.2013 00:00:00+00'')) t')
+	 AS t(a timestamptz);
+
+-- single-row asynchronous case
+SELECT *
+FROM dblink_send_query('myconn',
+	   'SELECT * FROM
+	   (VALUES (''12.03.2013 00:00:00+00'')) t');
+CREATE TEMPORARY TABLE result AS
+(SELECT * from dblink_get_result('myconn') as t(t timestamptz))
+UNION ALL
+(SELECT * from dblink_get_result('myconn') as t(t timestamptz));
+SELECT * FROM result;
+DROP TABLE result;
+
+-- multi-row asynchronous case
+SELECT *
+FROM dblink_send_query('myconn',
+	   'SELECT * FROM
+	   (VALUES (''12.03.2013 00:00:00+00''),
+		   (''12.03.2013 00:00:00+00'')) t');
+CREATE TEMPORARY TABLE result AS
+(SELECT * from dblink_get_result('myconn') as t(t timestamptz))
+UNION ALL
+(SELECT * from dblink_get_result('myconn') as t(t timestamptz))
+UNION ALL
+(SELECT * from dblink_get_result('myconn') as t(t timestamptz));
+SELECT * FROM result;
+DROP TABLE result;
+
+-- Try an ambiguous interval
+SELECT dblink_exec('myconn', 'SET intervalstyle = sql_standard;');
+SELECT *
+FROM dblink('myconn',
+	   'SELECT * FROM
+	   (VALUES (''-1 2:03:04'')) i')
+	 AS i(i interval);
+
+-- Try swapping to another format to ensure the GUCs are tracked
+-- properly through a change.
+SELECT dblink_exec('myconn', 'SET datestyle = GERMAN, DMY;');
+CREATE TEMPORARY TABLE result (t timestamptz);
+INSERT INTO result (SELECT *
+	   FROM dblink('myconn',
+			'SELECT * FROM
+		(VALUES (''12.03.2013 00:00:00+00'')) t')
+		AS t(a timestamptz));
+SELECT dblink_exec('myconn', 'SET datestyle = ISO, MDY;');
+INSERT INTO result (SELECT *
+	   FROM dblink('myconn',
+			'SELECT * FROM
+		(VALUES (''03.12.2013 00:00:00+00'')) t')
+		AS t(a timestamptz));
+SELECT DISTINCT * FROM result;
+DROP TABLE result;
+
+SELECT dblink_disconnect('myconn');
+
+-- Make sure that the local values have retained their value in spite
+-- of shenanigans on the connection.
+SHOW datestyle;
+SHOW intervalstyle;
+
+RESET datestyle;
+RESET intervalstyle;
+RESET timezone;

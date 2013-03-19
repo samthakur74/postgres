@@ -53,6 +53,7 @@
 #include "utils/acl.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -68,6 +69,25 @@ typedef struct remoteConn
 	int			openCursorCount;	/* The number of open cursors */
 	bool		newXactForCursor;		/* Opened a transaction for a cursor */
 } remoteConn;
+
+
+const char *parseAffectingGucs[] = {"DateStyle", "IntervalStyle"};
+
+/*
+ * Contains information to save and restore GUCs for types with
+ * GUC-sensitive parsing.
+ */
+typedef struct remoteGucs
+{
+	/*
+	 * GUC nesting level.  Set to -1 if no GUC nesting level has been
+	 * introduced.
+	 */
+	int localGUCNestLevel;
+
+	/* Kept around for PQparameterStatus to interrogate remote GUCs */
+	PGconn *conn;
+} remoteGucs;
 
 typedef struct storeInfo
 {
@@ -118,6 +138,9 @@ static void validate_pkattnums(Relation rel,
 				   int **pkattnums, int *pknumatts);
 static bool is_valid_dblink_option(const PQconninfoOption *options,
 					   const char *option, Oid context);
+static void initRemoteGucs(remoteGucs *rgs, PGconn *conn);
+static void applyRemoteGucs(remoteGucs *rgs);
+static void restoreLocalGucs(remoteGucs *rgs);
 
 /* Global */
 static remoteConn *pconn = NULL;
@@ -531,6 +554,7 @@ dblink_fetch(PG_FUNCTION_ARGS)
 	char	   *curname = NULL;
 	int			howmany = 0;
 	bool		fail = true;	/* default to backward compatible */
+	remoteGucs	rgs;
 
 	prepTuplestoreResult(fcinfo);
 
@@ -605,7 +629,25 @@ dblink_fetch(PG_FUNCTION_ARGS)
 				 errmsg("cursor \"%s\" does not exist", curname)));
 	}
 
-	materializeResult(fcinfo, res);
+	/*
+	 * Materialize the result, before doing so set GUCs that may
+	 * affect parsing and then un-set them afterwards.
+	 */
+	initRemoteGucs(&rgs, conn);
+
+	PG_TRY();
+	{
+		applyRemoteGucs(&rgs);
+		materializeResult(fcinfo, res);
+	}
+	PG_CATCH();
+	{
+		restoreLocalGucs(&rgs);
+	}
+	PG_END_TRY();
+
+	restoreLocalGucs(&rgs);
+
 	return (Datum) 0;
 }
 
@@ -656,10 +698,12 @@ dblink_get_result(PG_FUNCTION_ARGS)
 static Datum
 dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 {
-	PGconn	   *volatile conn = NULL;
-	volatile bool freeconn = false;
+	PGconn	   *volatile		conn	 = NULL;
+	volatile bool				freeconn = false;
+	remoteGucs					rgs;
 
 	prepTuplestoreResult(fcinfo);
+	initRemoteGucs(&rgs, NULL);
 
 	DBLINK_INIT;
 
@@ -728,8 +772,16 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 		if (!conn)
 			DBLINK_CONN_NOT_AVAIL;
 
+		initRemoteGucs(&rgs, conn);
+
 		if (!is_async)
 		{
+			/*
+			 * Before parsing input, synchronize local
+			 * type-parsing-affecting GUCs with the remote GUC value.
+			 */
+			applyRemoteGucs(&rgs);
+
 			/* synchronous query, use efficient tuple collection method */
 			materializeQueryResult(fcinfo, conn, conname, sql, fail);
 		}
@@ -750,6 +802,13 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 				}
 				else
 				{
+					/*
+					 * Before parsing input, synchronize local
+					 * type-parsing-affecting GUCs with the remote GUC
+					 * value.
+					 */
+					applyRemoteGucs(&rgs);
+
 					materializeResult(fcinfo, res);
 				}
 			}
@@ -760,6 +819,10 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 		/* if needed, close the connection to the database */
 		if (freeconn)
 			PQfinish(conn);
+
+		/* Pop any set GUCs, if necessary */
+		restoreLocalGucs(&rgs);
+
 		PG_RE_THROW();
 	}
 	PG_END_TRY();
@@ -767,6 +830,9 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 	/* if needed, close the connection to the database */
 	if (freeconn)
 		PQfinish(conn);
+
+	/* Pop any set GUCs, if necessary */
+	restoreLocalGucs(&rgs);
 
 	return (Datum) 0;
 }
@@ -2897,4 +2963,71 @@ is_valid_dblink_option(const PQconninfoOption *options, const char *option,
 	}
 
 	return true;
+}
+
+/* Initializer for a "remoteGucs" struct value. */
+static void
+initRemoteGucs(remoteGucs *rgs, PGconn *conn)
+{
+	rgs->localGUCNestLevel = -1;
+	rgs->conn			   = conn;
+}
+
+/*
+ * Scan a TupleDesc and, should it contain types that are sensitive to
+ * GUCs, acquire remote GUCs and set them in a new GUC nesting level.
+ * This is undone with restoreLocalGucs.
+ */
+static void
+applyRemoteGucs(remoteGucs *rgs)
+{
+	int i;
+	const int numGucs = sizeof parseAffectingGucs / sizeof *parseAffectingGucs;
+
+	/*
+	 * Affected types require local GUC manipulations.  Create a new
+	 * GUC NestLevel to overlay the remote settings.
+	 *
+	 * Also, this nesting is done exactly once per remoteGucInfo
+	 * structure, so expect it to come with an invalid NestLevel.
+	 */
+	Assert(rgs->localGUCNestLevel == -1);
+	rgs->localGUCNestLevel = NewGUCNestLevel();
+
+	for (i = 0; i < numGucs; i += 1)
+	{
+		const char		*gucName   = parseAffectingGucs[i];
+		const char		*remoteVal = PQparameterStatus(rgs->conn, gucName);
+
+		int gucApplyStatus;
+
+		gucApplyStatus = set_config_option(gucName, remoteVal,
+										   PGC_USERSET, PGC_S_SESSION,
+										   GUC_ACTION_SAVE, true, 0);
+		if (gucApplyStatus != 1)
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("cannot load remote configuration %s "
+							"for type parsing",
+							gucName)));
+	}
+}
+
+/*
+ * Restore local GUCs after they have been overlaid with remote
+ * settings for type parsing, destroying the GUC nesting level.
+ */
+static void
+restoreLocalGucs(remoteGucs *rgs)
+{
+	/*
+	 * A new GUCNestLevel was not introduced, so don't bother
+	 * restoring, either.
+	 */
+	if (rgs->localGUCNestLevel == -1)
+	{
+		return;
+	}
+
+	AtEOXact_GUC(false, rgs->localGUCNestLevel);
 }
