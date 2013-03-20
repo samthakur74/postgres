@@ -491,20 +491,24 @@ FROM dblink('myconn',
 
 -- Try swapping to another format to ensure the GUCs are tracked
 -- properly through a change.
-SELECT dblink_exec('myconn', 'SET datestyle = GERMAN, DMY;');
 CREATE TEMPORARY TABLE result (t timestamptz);
-INSERT INTO result (SELECT *
-	   FROM dblink('myconn',
-			'SELECT * FROM
-		(VALUES (''12.03.2013 00:00:00+00'')) t')
-		AS t(a timestamptz));
+
 SELECT dblink_exec('myconn', 'SET datestyle = ISO, MDY;');
 INSERT INTO result (SELECT *
 	   FROM dblink('myconn',
 			'SELECT * FROM
 		(VALUES (''03.12.2013 00:00:00+00'')) t')
 		AS t(a timestamptz));
+
+SELECT dblink_exec('myconn', 'SET datestyle = GERMAN, DMY;');
+INSERT INTO result (SELECT *
+	   FROM dblink('myconn',
+			'SELECT * FROM
+		(VALUES (''12.03.2013 00:00:00+00'')) t')
+		AS t(a timestamptz));
+
 SELECT DISTINCT * FROM result;
+
 DROP TABLE result;
 
 -- Check error throwing in dblink_fetch
