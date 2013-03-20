@@ -642,7 +642,10 @@ dblink_fetch(PG_FUNCTION_ARGS)
 	}
 	PG_CATCH();
 	{
+		/* Pop any set GUCs, if necessary */
 		restoreLocalGucs(&rgs);
+
+		PG_RE_THROW();
 	}
 	PG_END_TRY();
 

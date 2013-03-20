@@ -1052,12 +1052,24 @@ SELECT DISTINCT * FROM result;
 (1 row)
 
 DROP TABLE result;
-SELECT dblink_disconnect('myconn');
- dblink_disconnect 
--------------------
+-- Check error throwing in dblink_fetch
+SELECT dblink_open('myconn','error_cursor',
+       'SELECT * FROM (VALUES (''1''), (''not an int'')) AS t(text);');
+ dblink_open 
+-------------
  OK
 (1 row)
 
+SELECT *
+FROM dblink_fetch('myconn','error_cursor', 1) AS t(i int);
+ i 
+---
+ 1
+(1 row)
+
+SELECT *
+FROM dblink_fetch('myconn','error_cursor', 1) AS t(i int);
+ERROR:  invalid input syntax for integer: "not an int"
 -- Make sure that the local values have retained their value in spite
 -- of shenanigans on the connection.
 SHOW datestyle;
@@ -1070,6 +1082,13 @@ SHOW intervalstyle;
  IntervalStyle 
 ---------------
  postgres
+(1 row)
+
+-- Clean up GUC-setting tests
+SELECT dblink_disconnect('myconn');
+ dblink_disconnect 
+-------------------
+ OK
 (1 row)
 
 RESET datestyle;
