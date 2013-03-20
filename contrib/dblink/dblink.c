@@ -2981,8 +2981,10 @@ initRemoteGucs(remoteGucs *rgs, PGconn *conn)
 static void
 applyRemoteGucs(remoteGucs *rgs)
 {
-	int i;
 	const int numGucs = sizeof parseAffectingGucs / sizeof *parseAffectingGucs;
+
+	int i;
+	int addedGucNesting = false;
 
 	/*
 	 * Affected types require local GUC manipulations.  Create a new
@@ -2992,14 +2994,28 @@ applyRemoteGucs(remoteGucs *rgs)
 	 * structure, so expect it to come with an invalid NestLevel.
 	 */
 	Assert(rgs->localGUCNestLevel == -1);
-	rgs->localGUCNestLevel = NewGUCNestLevel();
 
 	for (i = 0; i < numGucs; i += 1)
 	{
 		const char		*gucName   = parseAffectingGucs[i];
 		const char		*remoteVal = PQparameterStatus(rgs->conn, gucName);
+		const char		*localVal;
+		int				 gucApplyStatus;
 
-		int gucApplyStatus;
+		/*
+		 * Attempt to avoid GUC setting if the remote and local GUCs
+		 * already have the same value.
+		 */
+		localVal = GetConfigOption(gucName, true, true);
+
+		if (strcmp(remoteVal, localVal) == 0)
+			continue;
+
+		if (!addedGucNesting)
+		{
+			rgs->localGUCNestLevel = NewGUCNestLevel();
+			addedGucNesting = true;
+		}
 
 		gucApplyStatus = set_config_option(gucName, remoteVal,
 										   PGC_USERSET, PGC_S_SESSION,
