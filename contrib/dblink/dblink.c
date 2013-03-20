@@ -634,21 +634,8 @@ dblink_fetch(PG_FUNCTION_ARGS)
 	 * affect parsing and then un-set them afterwards.
 	 */
 	initRemoteGucs(&rgs, conn);
-
-	PG_TRY();
-	{
-		applyRemoteGucs(&rgs);
-		materializeResult(fcinfo, res);
-	}
-	PG_CATCH();
-	{
-		/* Pop any set GUCs, if necessary */
-		restoreLocalGucs(&rgs);
-
-		PG_RE_THROW();
-	}
-	PG_END_TRY();
-
+	applyRemoteGucs(&rgs);
+	materializeResult(fcinfo, res);
 	restoreLocalGucs(&rgs);
 
 	return (Datum) 0;
@@ -822,9 +809,6 @@ dblink_record_internal(FunctionCallInfo fcinfo, bool is_async)
 		/* if needed, close the connection to the database */
 		if (freeconn)
 			PQfinish(conn);
-
-		/* Pop any set GUCs, if necessary */
-		restoreLocalGucs(&rgs);
 
 		PG_RE_THROW();
 	}
