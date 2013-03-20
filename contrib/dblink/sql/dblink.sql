@@ -507,13 +507,21 @@ INSERT INTO result (SELECT *
 SELECT DISTINCT * FROM result;
 DROP TABLE result;
 
-SELECT dblink_disconnect('myconn');
+-- Check error throwing in dblink_fetch
+SELECT dblink_open('myconn','error_cursor',
+       'SELECT * FROM (VALUES (''1''), (''not an int'')) AS t(text);');
+SELECT *
+FROM dblink_fetch('myconn','error_cursor', 1) AS t(i int);
+SELECT *
+FROM dblink_fetch('myconn','error_cursor', 1) AS t(i int);
 
 -- Make sure that the local values have retained their value in spite
 -- of shenanigans on the connection.
 SHOW datestyle;
 SHOW intervalstyle;
 
+-- Clean up GUC-setting tests
+SELECT dblink_disconnect('myconn');
 RESET datestyle;
 RESET intervalstyle;
 RESET timezone;
