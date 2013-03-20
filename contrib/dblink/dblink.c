@@ -3005,8 +3005,22 @@ applyRemoteGucs(remoteGucs *rgs)
 		/*
 		 * Attempt to avoid GUC setting if the remote and local GUCs
 		 * already have the same value.
+		 *
+		 * NB: Must error if the GUC is not found.
 		 */
-		localVal = GetConfigOption(gucName, true, true);
+		localVal = GetConfigOption(gucName, false, true);
+
+		if (remoteVal == NULL)
+			ereport(ERROR,
+					(errmsg("could not load parameter status of %s",
+							gucName)));
+
+		/*
+		 * An error must have been raised by now if GUC values could
+		 * not be loaded for any reason.
+		 */
+		Assert(localVal != NULL);
+		Assert(remoteVal != NULL);
 
 		if (strcmp(remoteVal, localVal) == 0)
 			continue;
