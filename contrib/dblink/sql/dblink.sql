@@ -435,9 +435,8 @@ SET timezone = UTC;
 SELECT dblink_connect('myconn','dbname=contrib_regression');
 SELECT dblink_exec('myconn', 'SET datestyle = GERMAN, DMY;');
 
--- The following attempt test various paths at which TupleDescs are
--- formed and inspected for containment of types requiring local GUC
--- setting.
+-- The following attempt test various paths at which tuples are formed
+-- and inspected for containment of types requiring local GUC setting.
 
 -- single row synchronous case
 SELECT *

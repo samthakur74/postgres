@@ -930,9 +930,8 @@ SELECT dblink_exec('myconn', 'SET datestyle = GERMAN, DMY;');
  SET
 (1 row)
 
--- The following attempt test various paths at which TupleDescs are
--- formed and inspected for containment of types requiring local GUC
--- setting.
+-- The following attempt test various paths at which tuples are formed
+-- and inspected for containment of types requiring local GUC setting.
 -- single row synchronous case
 SELECT *
 FROM dblink('myconn',

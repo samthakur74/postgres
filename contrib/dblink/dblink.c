@@ -2961,9 +2961,8 @@ initRemoteGucs(remoteGucs *rgs, PGconn *conn)
 }
 
 /*
- * Scan a TupleDesc and, should it contain types that are sensitive to
- * GUCs, acquire remote GUCs and set them in a new GUC nesting level.
- * This is undone with restoreLocalGucs.
+ * Acquire remote GUCs that may affect type parsing and set them in a
+ * new GUC nesting level.
  */
 static void
 applyRemoteGucs(remoteGucs *rgs)
@@ -2974,11 +2973,8 @@ applyRemoteGucs(remoteGucs *rgs)
 	int addedGucNesting = false;
 
 	/*
-	 * Affected types require local GUC manipulations.  Create a new
-	 * GUC NestLevel to overlay the remote settings.
-	 *
-	 * Also, this nesting is done exactly once per remoteGucInfo
-	 * structure, so expect it to come with an invalid NestLevel.
+	 * This nesting is done exactly once per remoteGucInfo structure,
+	 * so expect it to come with an invalid NestLevel.
 	 */
 	Assert(rgs->localGUCNestLevel == -1);
 
