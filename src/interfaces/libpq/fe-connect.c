@@ -623,7 +623,7 @@ executeResolveCmd(const char *conninfo, char *resolveCmd)
 		goto err;
 		
 	/* Buffer the output of the command for return. */
-	buf = pg_malloc(PIPE_BUF);
+	buf = malloc(PIPE_BUF);
 	bufCap = PIPE_BUF;
 	bufLen = 0;
 
@@ -634,7 +634,7 @@ executeResolveCmd(const char *conninfo, char *resolveCmd)
 		/* Allocate slack if short on remaining space. */
 		if (remain < PIPE_BUF)
 		{
-			buf = pg_realloc(buf, bufCap + PIPE_BUF);
+			buf = realloc(buf, bufCap + PIPE_BUF);
 			remain += PIPE_BUF;
 		}
 
@@ -664,7 +664,7 @@ err:
 		waitpid(forkStatus, NULL, 0);
 
 	if (buf != NULL)
-		pg_free(buf);
+		free(buf);
 
 	errno = saved_errno;
 
