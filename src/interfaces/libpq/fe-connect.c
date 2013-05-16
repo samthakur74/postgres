@@ -15,8 +15,10 @@
 
 #include "postgres_fe.h"
 
+#include <limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <fcntl.h>
 #include <ctype.h>
 #include <time.h>
@@ -379,6 +381,7 @@ static char *PasswordFromFile(char *hostname, char *port, char *dbname,
 static bool getPgPassFilename(char *pgpassfile);
 static void dot_pg_pass_warning(PGconn *conn);
 static void default_threadlock(int acquire);
+static char *executeResolveCmd(const char *conninfo, char *resolveCmd);
 
 
 /* global variable because fe-auth.c needs to access it */
@@ -516,6 +519,154 @@ PQconnectdb(const char *conninfo)
 		(void) connectDBComplete(conn);
 
 	return conn;
+}
+
+static char *
+executeResolveCmd(const char *conninfo, char *resolveCmd)
+{
+	int saved_errno;
+	pid_t forkStatus = -1;
+
+	size_t conninfoLen = strlen(conninfo);
+
+	int resolveInputPipe[2];
+	int resolveOutputPipe[2];
+
+	char *buf = NULL;
+	size_t bufCap;
+	size_t bufLen;
+
+	size_t readStatus;
+	size_t remain;
+
+	/* Save errno for restoration */
+	saved_errno = errno;
+	errno = 0;
+
+	/*
+	 * Create input/output pipes to get full duplex communication with
+	 * the resolve commmand.
+	 */
+    if (pipe(resolveInputPipe))
+		goto err;
+
+    if (pipe(resolveOutputPipe))
+		goto err;
+
+	forkStatus = fork();
+
+	switch (forkStatus)
+	{
+		case 0:
+			/*
+			 * Child process: shuffle file descriptors around and close
+			 * irrelevant parts of the pipe.
+			 */
+			close(resolveInputPipe[1]);
+			dup2(resolveInputPipe[0], 0);
+
+			close(resolveOutputPipe[0]);
+			dup2(resolveOutputPipe[1], 1);
+
+			execl("/bin/sh", "sh", "-c", resolveCmd, NULL);
+
+			/* If exec didn't work, just get out of the child */
+			exit(1);
+			break;
+
+		case -1:
+			/* Fork is no good: complain */
+			goto err;
+
+		default:
+			/*
+			 * Parent process
+			 *
+			 * Close off the child-owned parts of the pipe.
+			 */
+			close(resolveInputPipe[0]);
+			close(resolveOutputPipe[1]);
+	}
+
+	/*
+	 * Write the entire conninfo passed by the user, or complain and
+	 * die.
+	 *
+	 //Note that this can deadlock for very large conninfo, but thanks
+	 //torelatively generous PIPE_BUF constants as seen on most
+	 //platforms, this is okay for a prototype.
+	 *
+	 */
+	do
+	{
+		errno = 0;
+		write(resolveInputPipe[1], conninfo, conninfoLen);
+	} while (errno == EINTR);
+
+	if (errno)
+		goto err;
+
+	/*
+	 * Close the input part of the pipe: recovery commands rely on
+	 * this to know when the input is finished.
+	 */
+	do
+	{
+		errno = 0;
+
+		close(resolveInputPipe[1]);
+	} while (errno == EINTR);
+
+	if (errno)
+		goto err;
+
+	/* Buffer the output of the command for return. */
+	buf = malloc(PIPE_BUF);
+	bufCap = PIPE_BUF;
+	bufLen = 0;
+
+	do
+	{
+		remain = bufCap - bufLen;
+
+		/* Allocate slack if short on remaining space. */
+		if (remain < PIPE_BUF)
+		{
+			buf = realloc(buf, bufCap + PIPE_BUF);
+			remain += PIPE_BUF;
+		}
+
+		/* Read from the pipe, tracking progress in 'buf', or die */
+		do
+		{
+			errno = 0;
+
+			readStatus = read(resolveOutputPipe[0], buf + bufLen, remain);
+
+			bufLen += readStatus;
+		} while (errno == EINTR);
+
+		if (errno)
+			goto err;
+
+	} while (readStatus == remain); /* EOF condition */
+
+	buf[bufLen] = '\0';
+
+	return buf;
+
+err:
+	fprintf(stderr, "dies: %d\n", errno);
+
+	if (forkStatus > 0)
+		waitpid(forkStatus, NULL, 0);
+
+	if (buf != NULL)
+		free(buf);
+
+	errno = saved_errno;
+
+	return NULL;
 }
 
 /*
@@ -4277,6 +4428,9 @@ conninfo_array_parse(const char *const * keywords, const char *const * values,
 	PQconninfoOption *option;
 	int			i = 0;
 
+	fprintf(stderr, "expand_dbname %d\n", expand_dbname);
+	fflush(stderr);
+
 	/*
 	 * If expand_dbname is non-zero, check keyword "dbname" to see if val is
 	 * actually a recognized connection string.
@@ -4289,6 +4443,11 @@ conninfo_array_parse(const char *const * keywords, const char *const * values,
 		/* first find "dbname" if any */
 		if (strcmp(pname, "dbname") == 0 && pvalue)
 		{
+			char *resolved = NULL;
+			char *resolveCmd;
+
+			resolveCmd = getenv("PGRESOLVECMD");
+
 			/*
 			 * If value is a connection string, parse it, but do not use
 			 * defaults here -- those get picked up later. We only want to
@@ -4296,9 +4455,41 @@ conninfo_array_parse(const char *const * keywords, const char *const * values,
 			 */
 			if (recognized_connection_string(pvalue))
 			{
-				dbname_options = parse_connection_string(pvalue, errorMessage, false);
+				fprintf(stderr, "recognized_connection_string %s\n", pvalue);
+
+				/* Run nested resolver*/
+				if (resolveCmd != NULL)
+				{
+					resolved = executeResolveCmd(pvalue, resolveCmd);
+					fprintf(stderr, "resolved %s to %s\n", pvalue, resolved);
+				}
+
+				if (resolved == NULL)
+					resolved = (char *) pvalue;
+
+				dbname_options = parse_connection_string(resolved, errorMessage,
+														 false);
 				if (dbname_options == NULL)
 					return NULL;
+			}
+			else
+			{
+				if (resolveCmd != NULL)
+				{
+					resolved = executeResolveCmd(pvalue, resolveCmd);
+
+					if (resolved == NULL)
+						return NULL;
+
+					dbname_options = parse_connection_string(
+						resolved, errorMessage, false);
+
+					if (dbname_options == NULL)
+						return NULL;
+
+					fprintf(stderr, "doesn't look like conninfo, "
+							"resolved %s to %s\n", pvalue, resolved);
+				}
 			}
 			break;
 		}
