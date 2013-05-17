@@ -381,7 +381,7 @@ static char *PasswordFromFile(char *hostname, char *port, char *dbname,
 static bool getPgPassFilename(char *pgpassfile);
 static void dot_pg_pass_warning(PGconn *conn);
 static void default_threadlock(int acquire);
-static char *executeResolveCmd(const char *conninfo, char *resolveCmd);
+static char *executeResolve(const char *conninfo, char *resolveCmd);
 
 
 /* global variable because fe-auth.c needs to access it */
@@ -522,7 +522,7 @@ PQconnectdb(const char *conninfo)
 }
 
 static char *
-executeResolveCmd(const char *conninfo, char *resolveCmd)
+executeResolve(const char *conninfo, char *resolveCmd)
 {
 	int saved_errno;
 	pid_t forkStatus = -1;
@@ -4428,9 +4428,6 @@ conninfo_array_parse(const char *const * keywords, const char *const * values,
 	PQconninfoOption *option;
 	int			i = 0;
 
-	fprintf(stderr, "expand_dbname %d\n", expand_dbname);
-	fflush(stderr);
-
 	/*
 	 * If expand_dbname is non-zero, check keyword "dbname" to see if val is
 	 * actually a recognized connection string.
@@ -4446,7 +4443,7 @@ conninfo_array_parse(const char *const * keywords, const char *const * values,
 			char *resolved = NULL;
 			char *resolveCmd;
 
-			resolveCmd = getenv("PGRESOLVECMD");
+			resolveCmd = getenv("PGRESOLVE");
 
 			/*
 			 * If value is a connection string, parse it, but do not use
@@ -4455,14 +4452,9 @@ conninfo_array_parse(const char *const * keywords, const char *const * values,
 			 */
 			if (recognized_connection_string(pvalue))
 			{
-				fprintf(stderr, "recognized_connection_string %s\n", pvalue);
-
 				/* Run nested resolver*/
 				if (resolveCmd != NULL)
-				{
-					resolved = executeResolveCmd(pvalue, resolveCmd);
-					fprintf(stderr, "resolved %s to %s\n", pvalue, resolved);
-				}
+					resolved = executeResolve(pvalue, resolveCmd);
 
 				if (resolved == NULL)
 					resolved = (char *) pvalue;
@@ -4476,7 +4468,7 @@ conninfo_array_parse(const char *const * keywords, const char *const * values,
 			{
 				if (resolveCmd != NULL)
 				{
-					resolved = executeResolveCmd(pvalue, resolveCmd);
+					resolved = executeResolve(pvalue, resolveCmd);
 
 					if (resolved == NULL)
 						return NULL;
@@ -4486,9 +4478,6 @@ conninfo_array_parse(const char *const * keywords, const char *const * values,
 
 					if (dbname_options == NULL)
 						return NULL;
-
-					fprintf(stderr, "doesn't look like conninfo, "
-							"resolved %s to %s\n", pvalue, resolved);
 				}
 			}
 			break;
