@@ -40,6 +40,7 @@
 #include "rewrite/rewriteManip.h"
 #include "utils/rel.h"
 
+#include "nodes/print.h"
 
 /* GUC parameter */
 double		cursor_tuple_fraction = DEFAULT_CURSOR_TUPLE_FRACTION;
@@ -253,6 +254,8 @@ standard_planner(Query *parse, int cursorOptions, ParamListInfo boundParams)
 	result->relationOids = glob->relationOids;
 	result->invalItems = glob->invalItems;
 	result->nParamExec = glob->nParamExec;
+
+	elog_node_display(DEBUG1, "fdr: PlannedStmt", result, true);
 
 	return result;
 }
