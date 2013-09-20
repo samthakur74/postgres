@@ -68,7 +68,7 @@ PG_MODULE_MAGIC;
 #define PGSS_DUMP_FILE	"global/pg_stat_statements.stat"
 
 /* This constant defines the magic number in the stats file header */
-static const uint32 PGSS_FILE_HEADER = 0x20121231;
+static const uint32 PGSS_FILE_HEADER = 0x20130820;
 
 /* XXX: Should USAGE_EXEC reflect execution time and/or buffer usage? */
 #define USAGE_EXEC(duration)	(1.0)
@@ -116,7 +116,6 @@ typedef enum pgssTupVersion
 typedef struct Counters
 {
 	int64		calls;			/* # of times executed */
-	int64		calls_underest;	/* max underestimation of # of executions */
 	double		total_time;		/* total execution time, in msec */
 	int64		rows;			/* total # of retrieved or affected rows */
 	int64		shared_blks_hit;	/* # of shared buffer hits */
@@ -156,15 +155,6 @@ typedef struct pgssEntry
 typedef struct pgssSharedState
 {
 	LWLockId	lock;			/* protects hashtable search/modification */
-
-	/*
-	 * cache of maximum calls-counter underestimation in hashtab
-	 *
-	 * Only accessed and changed along with the hash table, so also protected
-	 * by 'lock'.
-	 */
-	int64		calls_max_underest;
-
 	int			query_size;		/* max query length in bytes */
 	double		cur_median_usage;		/* current median usage in hashtable */
 
@@ -505,7 +495,6 @@ pgss_shmem_startup(void)
 	{
 		/* First time through ... */
 		pgss->lock = LWLockAssign();
-		pgss->calls_max_underest = 0;
 		pgss->query_size = pgstat_track_activity_query_size;
 		pgss->cur_median_usage = ASSUMED_MEDIAN_INIT;
 	}
@@ -558,11 +547,6 @@ pgss_shmem_startup(void)
 	/* Check header existence and magic number match. */
 	if (fread(&header, sizeof(uint32), 1, file) != 1 ||
 		header != PGSS_FILE_HEADER)
-		goto error;
-
-	/* Restore under-estimation state */
-	if (fread(&pgss->calls_max_underest,
-			  sizeof pgss->calls_max_underest, 1, file) != 1)
 		goto error;
 
 	/* Restore saved session key, if possible. */
@@ -683,11 +667,6 @@ pgss_shmem_shutdown(int code, Datum arg)
 
 	/* Save header/magic number.  */
 	if (fwrite(&PGSS_FILE_HEADER, sizeof(uint32), 1, file) != 1)
-		goto error;
-
-	/* Save under-estimation state */
-	if (fwrite(&pgss->calls_max_underest,
-			   sizeof pgss->calls_max_underest, 1, file) != 1)
 		goto error;
 
 	/* Save stat session key. */
@@ -1164,7 +1143,6 @@ pgss_store(const char *query, uint32 queryId,
 			e->counters.usage = USAGE_INIT;
 
 		e->counters.calls += 1;
-		e->counters.calls_underest = pgss->calls_max_underest;
 		e->counters.total_time += total_time;
 		e->counters.rows += rows;
 		e->counters.shared_blks_hit += bufusage->shared_blks_hit;
@@ -1207,7 +1185,7 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 
 #define PG_STAT_STATEMENTS_COLS_V1_0	14
 #define PG_STAT_STATEMENTS_COLS_V1_1	18
-#define PG_STAT_STATEMENTS_COLS			21
+#define PG_STAT_STATEMENTS_COLS			20
 
 /*
  * Retrieve statement statistics.
@@ -1349,8 +1327,6 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 		}
 
 		values[i++] = Int64GetDatumFast(tmp.calls);
-		if (detected_version >= PGSS_TUP_LATEST)
-			values[i++] = Int64GetDatumFast(tmp.calls_underest);
 		values[i++] = Float8GetDatumFast(tmp.total_time);
 		values[i++] = Int64GetDatumFast(tmp.rows);
 		values[i++] = Int64GetDatumFast(tmp.shared_blks_hit);
@@ -1491,9 +1467,6 @@ entry_cmp(const void *lhs, const void *rhs)
 /*
  * Deallocate least used entries.
  * Caller must hold an exclusive lock on pgss->lock.
- *
- * Also increases the underestimation maximum in pgss as a side
- * effect, if necessary.
  */
 static void
 entry_dealloc(void)
@@ -1536,13 +1509,6 @@ entry_dealloc(void)
 
 	for (i = 0; i < nvictims; i++)
 	{
-		const Counters *cur_counts = &entry->counters;
-		int64 cur_underest;
-
-		/* Update global calls estimation state, if necessary. */
-		cur_underest = cur_counts->calls + cur_counts->calls_underest;
-		pgss->calls_max_underest = Max(pgss->calls_max_underest, cur_underest);
-
 		hash_search(pgss_hash, &entries[i]->key, HASH_REMOVE, NULL);
 	}
 

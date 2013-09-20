@@ -16,7 +16,6 @@ CREATE FUNCTION pg_stat_statements(
     OUT query text,
     OUT query_id int8,
     OUT calls int8,
-    OUT calls_underest int8,
     OUT total_time float8,
     OUT rows int8,
     OUT shared_blks_hit int8,
