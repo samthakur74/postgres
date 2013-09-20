@@ -43,6 +43,7 @@
  */
 #include "postgres.h"
 
+#include <time.h>
 #include <unistd.h>
 
 #include "access/hash.h"
@@ -67,7 +68,7 @@ PG_MODULE_MAGIC;
 #define PGSS_DUMP_FILE	"global/pg_stat_statements.stat"
 
 /* This constant defines the magic number in the stats file header */
-static const uint32 PGSS_FILE_HEADER = 0x20120328;
+static const uint32 PGSS_FILE_HEADER = 0x20121231;
 
 /* XXX: Should USAGE_EXEC reflect execution time and/or buffer usage? */
 #define USAGE_EXEC(duration)	(1.0)
@@ -96,11 +97,26 @@ typedef struct pgssHashKey
 } pgssHashKey;
 
 /*
+ * Identifies the tuple format detected by pg_stat_statements.
+ *
+ * Used to identify features of newer formats and enable smooth
+ * upgrades: one can install a new pg_stat_statements binary while
+ * running with the old SQL function definitions.
+ */
+typedef enum pgssTupVersion
+{
+	PGSS_TUP_V1_0 = 1,
+	PGSS_TUP_V1_1,
+	PGSS_TUP_LATEST
+} pgssTupVersion;
+
+/*
  * The actual stats counters kept within pgssEntry.
  */
 typedef struct Counters
 {
 	int64		calls;			/* # of times executed */
+	int64		calls_underest;	/* max underestimation of # of executions */
 	double		total_time;		/* total execution time, in msec */
 	int64		rows;			/* total # of retrieved or affected rows */
 	int64		shared_blks_hit;	/* # of shared buffer hits */
@@ -128,6 +144,7 @@ typedef struct pgssEntry
 	pgssHashKey key;			/* hash key of entry - MUST BE FIRST */
 	Counters	counters;		/* the statistics for this query */
 	int			query_len;		/* # of valid bytes in query string */
+	uint32		query_id;		/* jumble value for this entry */
 	slock_t		mutex;			/* protects the counters only */
 	char		query[1];		/* VARIABLE LENGTH ARRAY - MUST BE LAST */
 	/* Note: the allocated length of query[] is actually pgss->query_size */
@@ -139,8 +156,26 @@ typedef struct pgssEntry
 typedef struct pgssSharedState
 {
 	LWLockId	lock;			/* protects hashtable search/modification */
+
+	/*
+	 * cache of maximum calls-counter underestimation in hashtab
+	 *
+	 * Only accessed and changed along with the hash table, so also protected
+	 * by 'lock'.
+	 */
+	int64		calls_max_underest;
+
 	int			query_size;		/* max query length in bytes */
 	double		cur_median_usage;		/* current median usage in hashtable */
+
+	/*
+	 * Is set to a new random value when the server restarts or stats
+	 * are reset, to de-confuse cases of non-monotonic counters (as
+	 * they had reasons to decrease) for tools that aggregate
+	 * snapshots of pg_stat_statements.
+	 */
+	int32		stat_session_key;
+	uint64		private_stat_session_key;
 } pgssSharedState;
 
 /*
@@ -192,6 +227,10 @@ static ProcessUtility_hook_type prev_ProcessUtility = NULL;
 static pgssSharedState *pgss = NULL;
 static HTAB *pgss_hash = NULL;
 
+/* Random number seeding */
+static unsigned int random_seed = 0;
+static struct timeval random_start_time;
+
 /*---- GUC variables ----*/
 
 typedef enum
@@ -230,6 +269,8 @@ Datum		pg_stat_statements(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(pg_stat_statements_reset);
 PG_FUNCTION_INFO_V1(pg_stat_statements);
 
+static long pgssRandom(void);
+static void pgss_new_stat_session(pgssSharedState *state);
 static void pgss_shmem_startup(void);
 static void pgss_shmem_shutdown(int code, Datum arg);
 static void pgss_post_parse_analyze(ParseState *pstate, Query *query);
@@ -251,7 +292,7 @@ static void pgss_store(const char *query, uint32 queryId,
 		   pgssJumbleState *jstate);
 static Size pgss_memsize(void);
 static pgssEntry *entry_alloc(pgssHashKey *key, const char *query,
-			int query_len, bool sticky);
+							  int query_len, uint32 query_id, bool sticky);
 static void entry_dealloc(void);
 static void entry_reset(void);
 static void AppendJumble(pgssJumbleState *jstate,
@@ -291,7 +332,7 @@ _PG_init(void)
 							NULL,
 							&pgss_max,
 							1000,
-							100,
+							1,
 							INT_MAX,
 							PGC_POSTMASTER,
 							0,
@@ -379,6 +420,54 @@ _PG_fini(void)
 }
 
 /*
+ * Random numbers -- ported from PostmasterRandom.
+ */
+static long
+pgssRandom(void)
+{
+	/*
+	 * Select a random seed if one hasn't been selected before.
+	 */
+	if (random_seed == 0)
+	{
+		do
+		{
+			struct timeval random_stop_time;
+
+			gettimeofday(&random_stop_time, NULL);
+
+			/*
+			 * We are not sure how much precision is in tv_usec, so we swap
+			 * the high and low 16 bits of 'random_stop_time' and XOR them
+			 * with 'random_start_time'. On the off chance that the result is
+			 * 0, we loop until it isn't.
+			 */
+			random_seed = random_start_time.tv_usec ^
+				((random_stop_time.tv_usec << 16) |
+				 ((random_stop_time.tv_usec >> 16) & 0xffff));
+		}
+		while (random_seed == 0);
+
+		srandom(random_seed);
+	}
+
+	return random();
+}
+
+/*
+ * Create a new, random stat session key.
+ */
+static void
+pgss_new_stat_session(pgssSharedState *state)
+{
+	state->stat_session_key = (int32) pgssRandom();
+
+	/* Generate 64-bit private session */
+	state->private_stat_session_key	 = (uint64) pgssRandom();
+	state->private_stat_session_key |= ((uint64) pgssRandom()) << 32;
+}
+
+/*
  * shmem_startup hook: allocate or attach to shared memory,
  * then load any pre-existing statistics from file.
  */
@@ -394,6 +483,7 @@ pgss_shmem_startup(void)
 	int			query_size;
 	int			buffer_size;
 	char	   *buffer = NULL;
+	bool 		log_cannot_read = true;
 
 	if (prev_shmem_startup_hook)
 		prev_shmem_startup_hook();
@@ -415,6 +505,7 @@ pgss_shmem_startup(void)
 	{
 		/* First time through ... */
 		pgss->lock = LWLockAssign();
+		pgss->calls_max_underest = 0;
 		pgss->query_size = pgstat_track_activity_query_size;
 		pgss->cur_median_usage = ASSUMED_MEDIAN_INIT;
 	}
@@ -456,16 +547,36 @@ pgss_shmem_startup(void)
 	if (file == NULL)
 	{
 		if (errno == ENOENT)
-			return;				/* ignore not-found error */
+			log_cannot_read = false;
+
 		goto error;
 	}
 
 	buffer_size = query_size;
 	buffer = (char *) palloc(buffer_size);
 
+	/* Check header existence and magic number match. */
 	if (fread(&header, sizeof(uint32), 1, file) != 1 ||
-		header != PGSS_FILE_HEADER ||
-		fread(&num, sizeof(int32), 1, file) != 1)
+		header != PGSS_FILE_HEADER)
+		goto error;
+
+	/* Restore under-estimation state */
+	if (fread(&pgss->calls_max_underest,
+			  sizeof pgss->calls_max_underest, 1, file) != 1)
+		goto error;
+
+	/* Restore saved session key, if possible. */
+	if (fread(&pgss->stat_session_key,
+			  sizeof pgss->stat_session_key, 1, file) != 1)
+		goto error;
+
+	/* Restore private session key */
+	if (fread(&pgss->private_stat_session_key,
+			  sizeof pgss->private_stat_session_key, 1, file) != 1)
+		goto error;
+
+	/* Read how many table entries there are. */
+	if (fread(&num, sizeof(int32), 1, file) != 1)
 		goto error;
 
 	for (i = 0; i < num; i++)
@@ -503,7 +614,8 @@ pgss_shmem_startup(void)
 												   query_size - 1);
 
 		/* make the hashtable entry (discards old entries if too many) */
-		entry = entry_alloc(&temp.key, buffer, temp.query_len, false);
+		entry = entry_alloc(&temp.key, buffer, temp.query_len, temp.query_id,
+							false);
 
 		/* copy in the actual stats */
 		entry->counters = temp.counters;
@@ -521,10 +633,16 @@ pgss_shmem_startup(void)
 	return;
 
 error:
-	ereport(LOG,
-			(errcode_for_file_access(),
-			 errmsg("could not read pg_stat_statement file \"%s\": %m",
-					PGSS_DUMP_FILE)));
+	/* Ignore not-found error. */
+	if (log_cannot_read)
+		ereport(LOG,
+				(errcode_for_file_access(),
+				 errmsg("could not read pg_stat_statement file \"%s\": %m",
+						PGSS_DUMP_FILE)));
+
+	/* Need a new session if none could be read from the file */
+	pgss_new_stat_session(pgss);
+
 	if (buffer)
 		pfree(buffer);
 	if (file)
@@ -563,8 +681,26 @@ pgss_shmem_shutdown(int code, Datum arg)
 	if (file == NULL)
 		goto error;
 
+	/* Save header/magic number.  */
 	if (fwrite(&PGSS_FILE_HEADER, sizeof(uint32), 1, file) != 1)
 		goto error;
+
+	/* Save under-estimation state */
+	if (fwrite(&pgss->calls_max_underest,
+			   sizeof pgss->calls_max_underest, 1, file) != 1)
+		goto error;
+
+	/* Save stat session key. */
+	if (fwrite(&pgss->stat_session_key,
+			   sizeof pgss->stat_session_key, 1, file) != 1)
+			goto error;
+
+	/* Save private session key */
+	if (fwrite(&pgss->private_stat_session_key,
+			   sizeof pgss->private_stat_session_key, 1, file) != 1)
+			goto error;
+
+	/* Write how many table entries there are. */
 	num_entries = hash_get_num_entries(pgss_hash);
 	if (fwrite(&num_entries, sizeof(int32), 1, file) != 1)
 		goto error;
@@ -991,7 +1127,7 @@ pgss_store(const char *query, uint32 queryId,
 			/* Acquire exclusive lock as required by entry_alloc() */
 			LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
 
-			entry = entry_alloc(&key, norm_query, query_len, true);
+			entry = entry_alloc(&key, norm_query, query_len, queryId, true);
 		}
 		else
 		{
@@ -1008,7 +1144,7 @@ pgss_store(const char *query, uint32 queryId,
 			/* Acquire exclusive lock as required by entry_alloc() */
 			LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
 
-			entry = entry_alloc(&key, query, query_len, false);
+			entry = entry_alloc(&key, query, query_len, queryId, false);
 		}
 	}
 
@@ -1028,6 +1164,7 @@ pgss_store(const char *query, uint32 queryId,
 			e->counters.usage = USAGE_INIT;
 
 		e->counters.calls += 1;
+		e->counters.calls_underest = pgss->calls_max_underest;
 		e->counters.total_time += total_time;
 		e->counters.rows += rows;
 		e->counters.shared_blks_hit += bufusage->shared_blks_hit;
@@ -1069,7 +1206,8 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 }
 
 #define PG_STAT_STATEMENTS_COLS_V1_0	14
-#define PG_STAT_STATEMENTS_COLS			18
+#define PG_STAT_STATEMENTS_COLS_V1_1	18
+#define PG_STAT_STATEMENTS_COLS			21
 
 /*
  * Retrieve statement statistics.
@@ -1086,7 +1224,7 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 	bool		is_superuser = superuser();
 	HASH_SEQ_STATUS hash_seq;
 	pgssEntry  *entry;
-	bool		sql_supports_v1_1_counters = true;
+	pgssTupVersion detected_version;
 
 	if (!pgss || !pgss_hash)
 		ereport(ERROR,
@@ -1107,8 +1245,28 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 	/* Build a tuple descriptor for our result type */
 	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
 		elog(ERROR, "return type must be a row type");
+
+	/* Perform version detection */
 	if (tupdesc->natts == PG_STAT_STATEMENTS_COLS_V1_0)
-		sql_supports_v1_1_counters = false;
+		detected_version = PGSS_TUP_V1_0;
+	else if (tupdesc->natts == PG_STAT_STATEMENTS_COLS_V1_1)
+		detected_version = PGSS_TUP_V1_1;
+	else if (tupdesc->natts == PG_STAT_STATEMENTS_COLS)
+		detected_version = PGSS_TUP_LATEST;
+	else
+	{
+		/*
+		 * Couldn't identify the tuple format.  Raise error.
+		 *
+		 * This is an exceptional case that may only happen in bizarre
+		 * situations, since it is thought that every released version
+		 * of pg_stat_statements has a matching schema.
+		 */
+		ereport(ERROR,
+				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+				 errmsg("pg_stat_statements schema is not supported "
+						"by its installed binary")));
+	}
 
 	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
 	oldcontext = MemoryContextSwitchTo(per_query_ctx);
@@ -1135,6 +1293,7 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 
 		values[i++] = ObjectIdGetDatum(entry->key.userid);
 		values[i++] = ObjectIdGetDatum(entry->key.dbid);
+		values[i++] = DatumGetInt32(pgss->stat_session_key);
 
 		if (is_superuser || entry->key.userid == userid)
 		{
@@ -1150,7 +1309,21 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 				pfree(qstr);
 		}
 		else
-			values[i++] = CStringGetTextDatum("<insufficient privilege>");
+		{
+			/*
+			 * The role calling this function is unable to see
+			 * sensitive aspects of this tuple.
+			 *
+			 * Nullify everything except the "insufficient privilege"
+			 * message for this entry
+			 */
+			memset(nulls, 1, sizeof nulls);
+
+			nulls[i]  = 0;
+			values[i] = CStringGetTextDatum("<insufficient privilege>");
+
+			i += 1;
+		}
 
 		/* copy counters to a local variable to keep locking time short */
 		{
@@ -1165,29 +1338,56 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 		if (tmp.calls == 0)
 			continue;
 
+		if (detected_version >= PGSS_TUP_LATEST)
+		{
+			uint64 qid = pgss->private_stat_session_key;
+
+			qid ^= (uint64) entry->query_id;
+			qid ^= ((uint64) entry->query_id) << 32;
+
+			values[i++] = Int64GetDatumFast(qid);
+		}
+
 		values[i++] = Int64GetDatumFast(tmp.calls);
+		if (detected_version >= PGSS_TUP_LATEST)
+			values[i++] = Int64GetDatumFast(tmp.calls_underest);
 		values[i++] = Float8GetDatumFast(tmp.total_time);
 		values[i++] = Int64GetDatumFast(tmp.rows);
 		values[i++] = Int64GetDatumFast(tmp.shared_blks_hit);
 		values[i++] = Int64GetDatumFast(tmp.shared_blks_read);
-		if (sql_supports_v1_1_counters)
+		if (detected_version >= PGSS_TUP_V1_1)
 			values[i++] = Int64GetDatumFast(tmp.shared_blks_dirtied);
 		values[i++] = Int64GetDatumFast(tmp.shared_blks_written);
 		values[i++] = Int64GetDatumFast(tmp.local_blks_hit);
 		values[i++] = Int64GetDatumFast(tmp.local_blks_read);
-		if (sql_supports_v1_1_counters)
+		if (detected_version >= PGSS_TUP_V1_1)
 			values[i++] = Int64GetDatumFast(tmp.local_blks_dirtied);
 		values[i++] = Int64GetDatumFast(tmp.local_blks_written);
 		values[i++] = Int64GetDatumFast(tmp.temp_blks_read);
 		values[i++] = Int64GetDatumFast(tmp.temp_blks_written);
-		if (sql_supports_v1_1_counters)
+		if (detected_version >= PGSS_TUP_V1_1)
 		{
 			values[i++] = Float8GetDatumFast(tmp.blk_read_time);
 			values[i++] = Float8GetDatumFast(tmp.blk_write_time);
 		}
 
-		Assert(i == (sql_supports_v1_1_counters ?
-					 PG_STAT_STATEMENTS_COLS : PG_STAT_STATEMENTS_COLS_V1_0));
+#ifdef USE_ASSERT_CHECKING
+		/* Check that every column appears to be filled */
+		switch (detected_version)
+		{
+				case PGSS_TUP_V1_0:
+						Assert(i == PG_STAT_STATEMENTS_COLS_V1_0);
+						break;
+				case PGSS_TUP_V1_1:
+						Assert(i == PG_STAT_STATEMENTS_COLS_V1_1);
+						break;
+				case PGSS_TUP_LATEST:
+						Assert(i == PG_STAT_STATEMENTS_COLS);
+						break;
+				default:
+						Assert(false);
+		}
+#endif
 
 		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
@@ -1234,7 +1434,8 @@ pgss_memsize(void)
  * have made the entry while we waited to get exclusive lock.
  */
 static pgssEntry *
-entry_alloc(pgssHashKey *key, const char *query, int query_len, bool sticky)
+entry_alloc(pgssHashKey *key, const char *query, int query_len,
+			uint32 query_id, bool sticky)
 {
 	pgssEntry  *entry;
 	bool		found;
@@ -1254,6 +1455,7 @@ entry_alloc(pgssHashKey *key, const char *query, int query_len, bool sticky)
 		memset(&entry->counters, 0, sizeof(Counters));
 		/* set the appropriate initial usage count */
 		entry->counters.usage = sticky ? pgss->cur_median_usage : USAGE_INIT;
+
 		/* re-initialize the mutex each time ... we assume no one using it */
 		SpinLockInit(&entry->mutex);
 		/* ... and don't forget the query text */
@@ -1261,6 +1463,9 @@ entry_alloc(pgssHashKey *key, const char *query, int query_len, bool sticky)
 		entry->query_len = query_len;
 		memcpy(entry->query, query, query_len);
 		entry->query[query_len] = '\0';
+
+		/* Copy in the query id for reporting */
+		entry->query_id = query_id;
 	}
 
 	return entry;
@@ -1286,6 +1491,9 @@ entry_cmp(const void *lhs, const void *rhs)
 /*
  * Deallocate least used entries.
  * Caller must hold an exclusive lock on pgss->lock.
+ *
+ * Also increases the underestimation maximum in pgss as a side
+ * effect, if necessary.
  */
 static void
 entry_dealloc(void)
@@ -1309,6 +1517,7 @@ entry_dealloc(void)
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
 		entries[i++] = entry;
+
 		/* "Sticky" entries get a different usage decay rate. */
 		if (entry->counters.calls == 0)
 			entry->counters.usage *= STICKY_DECREASE_FACTOR;
@@ -1327,6 +1536,13 @@ entry_dealloc(void)
 
 	for (i = 0; i < nvictims; i++)
 	{
+		const Counters *cur_counts = &entry->counters;
+		int64 cur_underest;
+
+		/* Update global calls estimation state, if necessary. */
+		cur_underest = cur_counts->calls + cur_counts->calls_underest;
+		pgss->calls_max_underest = Max(pgss->calls_max_underest, cur_underest);
+
 		hash_search(pgss_hash, &entries[i]->key, HASH_REMOVE, NULL);
 	}
 
@@ -1349,6 +1565,12 @@ entry_reset(void)
 	{
 		hash_search(pgss_hash, &entry->key, HASH_REMOVE, NULL);
 	}
+
+	/*
+	 * Counters all reset, so need to generate a new identity for the
+	 * session.
+	 */
+	pgss_new_stat_session(pgss);
 
 	LWLockRelease(pgss->lock);
 }
