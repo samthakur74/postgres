@@ -77,12 +77,6 @@
       <entry>Number of times executed</entry>
      </row>
      <row>
-      <entry><structfield>calls_underest</structfield></entry>
-      <entry><type>bigint</type></entry>
-      <entry></entry>
-      <entry>Number indicating if the statement statistics has a probability of being erroneous.</entry>
-     </row>
-     <row>
       <entry><structfield>total_time</structfield></entry>
       <entry><type>double precision</type></entry>
       <entry></entry>
@@ -238,16 +232,6 @@
    of the queries, the opposite is also possible: queries with identical texts
    might appear as separate entries, if they have different meanings as a
    result of factors such as different <varname>search_path</> settings.
-  </para>
-
-  <para>
-  There is a possibility that,for queries which are tracked intermittently,could have their
-  statistics silently reset while query is not being tracked.The <varname>calls_underest</>
-  field gives an indication that a query has been tracked intermittently and consequently
-  has a probability of erroneous statistics. Queries tracked constantly will have a zero value for
-  <varname>calls_underest</> indicating zero probability of erroneous statistics.
-  A greater value of <varname>calls_underest</> indicates greater degree of intermittent tracking which in
-  turn means greater probability of erroneous statistics.
   </para>
  </sect2>
 
