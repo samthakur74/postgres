@@ -60,6 +60,7 @@
 #include "storage/spin.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
+#include "utils/timestamp.h"
 
 
 PG_MODULE_MAGIC;
@@ -144,6 +145,7 @@ typedef struct pgssEntry
 	Counters	counters;		/* the statistics for this query */
 	int			query_len;		/* # of valid bytes in query string */
 	uint32		query_id;		/* jumble value for this entry */
+	instr_time  introduced;     /* time when entry was added */
 	slock_t		mutex;			/* protects the counters only */
 	char		query[1];		/* VARIABLE LENGTH ARRAY - MUST BE LAST */
 	/* Note: the allocated length of query[] is actually pgss->query_size */
@@ -158,13 +160,7 @@ typedef struct pgssSharedState
 	int			query_size;		/* max query length in bytes */
 	double		cur_median_usage;		/* current median usage in hashtable */
 
-	/*
-	 * Is set to a new random value when the server restarts or stats
-	 * are reset, to de-confuse cases of non-monotonic counters (as
-	 * they had reasons to decrease) for tools that aggregate
-	 * snapshots of pg_stat_statements.
-	 */
-	int32		stat_session_key;
+	instr_time  session_start;
 	uint64		private_stat_session_key;
 } pgssSharedState;
 
@@ -217,10 +213,6 @@ static ProcessUtility_hook_type prev_ProcessUtility = NULL;
 static pgssSharedState *pgss = NULL;
 static HTAB *pgss_hash = NULL;
 
-/* Random number seeding */
-static unsigned int random_seed = 0;
-static struct timeval random_start_time;
-
 /*---- GUC variables ----*/
 
 typedef enum
@@ -259,7 +251,6 @@ Datum		pg_stat_statements(PG_FUNCTION_ARGS);
 PG_FUNCTION_INFO_V1(pg_stat_statements_reset);
 PG_FUNCTION_INFO_V1(pg_stat_statements);
 
-static long pgssRandom(void);
 static void pgss_new_stat_session(pgssSharedState *state);
 static void pgss_shmem_startup(void);
 static void pgss_shmem_shutdown(int code, Datum arg);
@@ -277,12 +268,13 @@ static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
 static uint32 pgss_hash_string(const char *str);
 static void pgss_store(const char *query, uint32 queryId,
-		   double total_time, uint64 rows,
+		   const Instrumentation *instr, uint64 rows,
 		   const BufferUsage *bufusage,
 		   pgssJumbleState *jstate);
 static Size pgss_memsize(void);
-static pgssEntry *entry_alloc(pgssHashKey *key, const char *query,
-							  int query_len, uint32 query_id, bool sticky);
+static pgssEntry *entry_alloc(pgssHashKey *key, const Instrumentation *instr,
+							  const char *query, int query_len,
+							  uint32 query_id, bool sticky);
 static void entry_dealloc(void);
 static void entry_reset(void);
 static void AppendJumble(pgssJumbleState *jstate,
@@ -410,51 +402,40 @@ _PG_fini(void)
 }
 
 /*
- * Random numbers -- ported from PostmasterRandom.
- */
-static long
-pgssRandom(void)
-{
-	/*
-	 * Select a random seed if one hasn't been selected before.
-	 */
-	if (random_seed == 0)
-	{
-		do
-		{
-			struct timeval random_stop_time;
-
-			gettimeofday(&random_stop_time, NULL);
-
-			/*
-			 * We are not sure how much precision is in tv_usec, so we swap
-			 * the high and low 16 bits of 'random_stop_time' and XOR them
-			 * with 'random_start_time'. On the off chance that the result is
-			 * 0, we loop until it isn't.
-			 */
-			random_seed = random_start_time.tv_usec ^
-				((random_stop_time.tv_usec << 16) |
-				 ((random_stop_time.tv_usec >> 16) & 0xffff));
-		}
-		while (random_seed == 0);
-
-		srandom(random_seed);
-	}
-
-	return random();
-}
-
-/*
- * Create a new, random stat session key.
+ * Set up a new statistics gathering session.
+ *
+ * A session is intended presented to the user as to determine whether a
+ * statistics reset has transpired, as otherwise programs interpreting a
+ * query_id would otherwise be exposed to non-monotonic behavior of the
+ * performance counters.
  */
 static void
 pgss_new_stat_session(pgssSharedState *state)
 {
-	state->stat_session_key = (int32) pgssRandom();
+	uint64 key_half;
 
-	/* Generate 64-bit private session */
-	state->private_stat_session_key	 = (uint64) pgssRandom();
-	state->private_stat_session_key |= ((uint64) pgssRandom()) << 32;
+	INSTR_TIME_SET_CURRENT(state->session_start);
+
+	/*
+	 * Stretch the timestamp to a 64-bit session key to destabilize queryids.
+	 */
+	key_half = (uint64) INSTR_TIME_GET_MILLISEC(state->session_start);
+	state->private_stat_session_key	 = key_half;
+	state->private_stat_session_key |= key_half << 32;
+}
+
+/*
+ * Construct a TimestampTz value from an instr_time value.
+ */
+static TimestampTz
+instr_get_timestamptz(instr_time t)
+{
+	uint64 microsec;
+
+	microsec = INSTR_TIME_GET_MICROSEC(t) -
+		((POSTGRES_EPOCH_JDATE - UNIX_EPOCH_JDATE) * USECS_PER_DAY);
+
+	return (TimestampTz) microsec;
 }
 
 /*
@@ -504,7 +485,7 @@ pgss_shmem_startup(void)
 
 	memset(&info, 0, sizeof(info));
 	info.keysize = sizeof(pgssHashKey);
-	info.entrysize = offsetof(pgssEntry, query) +query_size;
+	info.entrysize = offsetof(pgssEntry, query) + query_size;
 	info.hash = pgss_hash_fn;
 	info.match = pgss_match_fn;
 	pgss_hash = ShmemInitHash("pg_stat_statements hash",
@@ -549,9 +530,9 @@ pgss_shmem_startup(void)
 		header != PGSS_FILE_HEADER)
 		goto error;
 
-	/* Restore saved session key, if possible. */
-	if (fread(&pgss->stat_session_key,
-			  sizeof pgss->stat_session_key, 1, file) != 1)
+	/* Restore session start time. */
+	if (fread(&pgss->session_start,
+			  sizeof pgss->session_start, 1, file) != 1)
 		goto error;
 
 	/* Restore private session key */
@@ -598,8 +579,8 @@ pgss_shmem_startup(void)
 												   query_size - 1);
 
 		/* make the hashtable entry (discards old entries if too many) */
-		entry = entry_alloc(&temp.key, buffer, temp.query_len, temp.query_id,
-							false);
+		entry = entry_alloc(&temp.key, NULL, buffer, temp.query_len, temp.query_id,
+		false);
 
 		/* copy in the actual stats */
 		entry->counters = temp.counters;
@@ -669,9 +650,9 @@ pgss_shmem_shutdown(int code, Datum arg)
 	if (fwrite(&PGSS_FILE_HEADER, sizeof(uint32), 1, file) != 1)
 		goto error;
 
-	/* Save stat session key. */
-	if (fwrite(&pgss->stat_session_key,
-			   sizeof pgss->stat_session_key, 1, file) != 1)
+	/* Save session start time. */
+	if (fwrite(&pgss->session_start,
+			   sizeof pgss->session_start, 1, file) != 1)
 			goto error;
 
 	/* Save private session key */
@@ -779,7 +760,7 @@ pgss_post_parse_analyze(ParseState *pstate, Query *query)
 	if (jstate.clocations_count > 0)
 		pgss_store(pstate->p_sourcetext,
 				   query->queryId,
-				   0,
+				   NULL,
 				   0,
 				   NULL,
 				   &jstate);
@@ -883,7 +864,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 
 		pgss_store(queryDesc->sourceText,
 				   queryId,
-				   queryDesc->totaltime->total * 1000.0,		/* convert to msec */
+				   queryDesc->totaltime,
 				   queryDesc->estate->es_processed,
 				   &queryDesc->totaltime->bufusage,
 				   NULL);
@@ -925,6 +906,8 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 		BufferUsage bufusage_start,
 					bufusage;
 		uint32		queryId;
+		Instrumentation *instr;
+
 
 		bufusage_start = pgBufferUsage;
 		INSTR_TIME_SET_CURRENT(start);
@@ -986,9 +969,14 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 		/* For utility statements, we just hash the query string directly */
 		queryId = pgss_hash_string(queryString);
 
+		/* Gin up Instrument to push down some specific values. */
+		instr = InstrAlloc(1, INSTRUMENT_ALL);
+		instr->starttime = start;
+		instr->counter = duration;
+
 		pgss_store(queryString,
 				   queryId,
-				   INSTR_TIME_GET_MILLISEC(duration),
+				   instr,
 				   rows,
 				   &bufusage,
 				   NULL);
@@ -1058,7 +1046,7 @@ pgss_hash_string(const char *str)
  */
 static void
 pgss_store(const char *query, uint32 queryId,
-		   double total_time, uint64 rows,
+		   const Instrumentation *instr, uint64 rows,
 		   const BufferUsage *bufusage,
 		   pgssJumbleState *jstate)
 {
@@ -1106,7 +1094,8 @@ pgss_store(const char *query, uint32 queryId,
 			/* Acquire exclusive lock as required by entry_alloc() */
 			LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
 
-			entry = entry_alloc(&key, norm_query, query_len, queryId, true);
+			entry = entry_alloc(&key, instr, norm_query, query_len, queryId,
+								true);
 		}
 		else
 		{
@@ -1123,7 +1112,7 @@ pgss_store(const char *query, uint32 queryId,
 			/* Acquire exclusive lock as required by entry_alloc() */
 			LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
 
-			entry = entry_alloc(&key, query, query_len, queryId, false);
+			entry = entry_alloc(&key, instr, query, query_len, queryId, false);
 		}
 	}
 
@@ -1143,7 +1132,7 @@ pgss_store(const char *query, uint32 queryId,
 			e->counters.usage = USAGE_INIT;
 
 		e->counters.calls += 1;
-		e->counters.total_time += total_time;
+		e->counters.total_time += INSTR_TIME_GET_MILLISEC(instr->counter);
 		e->counters.rows += rows;
 		e->counters.shared_blks_hit += bufusage->shared_blks_hit;
 		e->counters.shared_blks_read += bufusage->shared_blks_read;
@@ -1185,7 +1174,7 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 
 #define PG_STAT_STATEMENTS_COLS_V1_0	14
 #define PG_STAT_STATEMENTS_COLS_V1_1	18
-#define PG_STAT_STATEMENTS_COLS			20
+#define PG_STAT_STATEMENTS_COLS			21
 
 /*
  * Retrieve statement statistics.
@@ -1271,7 +1260,10 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 
 		values[i++] = ObjectIdGetDatum(entry->key.userid);
 		values[i++] = ObjectIdGetDatum(entry->key.dbid);
-		values[i++] = DatumGetInt32(pgss->stat_session_key);
+		values[i++] = DatumGetTimestamp(
+			instr_get_timestamptz(pgss->session_start));
+		values[i++] = DatumGetTimestamp(
+			instr_get_timestamptz(entry->introduced));
 
 		if (is_superuser || entry->key.userid == userid)
 		{
@@ -1410,7 +1402,8 @@ pgss_memsize(void)
  * have made the entry while we waited to get exclusive lock.
  */
 static pgssEntry *
-entry_alloc(pgssHashKey *key, const char *query, int query_len,
+entry_alloc(pgssHashKey *key, const Instrumentation *instr,
+			const char *query, int query_len,
 			uint32 query_id, bool sticky)
 {
 	pgssEntry  *entry;
@@ -1442,6 +1435,12 @@ entry_alloc(pgssHashKey *key, const char *query, int query_len,
 
 		/* Copy in the query id for reporting */
 		entry->query_id = query_id;
+
+		/* Copy in time, if available */
+		if (instr == NULL)
+			INSTR_TIME_SET_CURRENT(entry->introduced);
+		else
+			entry->introduced = instr->starttime;
 	}
 
 	return entry;

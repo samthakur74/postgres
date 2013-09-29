@@ -15,7 +15,8 @@ DROP FUNCTION pg_stat_statements();
 CREATE FUNCTION pg_stat_statements(
     OUT userid oid,
     OUT dbid oid,
-    OUT stat_session_id int8,
+    OUT session_start timestamptz,
+    OUT introduced timestamptz,
     OUT query text,
     OUT query_id int4,
     OUT calls int8,

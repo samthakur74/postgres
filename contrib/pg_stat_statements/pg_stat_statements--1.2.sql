@@ -12,7 +12,8 @@ LANGUAGE C;
 CREATE FUNCTION pg_stat_statements(
     OUT userid oid,
     OUT dbid oid,
-    OUT stat_session_id int4,
+    OUT session_start timestamptz,
+    OUT introduced timestamptz,
     OUT query text,
     OUT query_id int8,
     OUT calls int8,
