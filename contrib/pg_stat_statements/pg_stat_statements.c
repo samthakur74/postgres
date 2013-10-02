@@ -1437,7 +1437,7 @@ entry_alloc(pgssHashKey *key, const Instrumentation *instr,
 		entry->query_id = query_id;
 
 		/* Copy in time, if available */
-		if (instr == NULL)
+		if (instr == NULL || INSTR_TIME_IS_ZERO(instr->starttime))
 			INSTR_TIME_SET_CURRENT(entry->introduced);
 		else
 			entry->introduced = instr->starttime;

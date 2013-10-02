@@ -233,6 +233,14 @@
    might appear as separate entries, if they have different meanings as a
    result of factors such as different <varname>search_path</> settings.
   </para>
+  <para>
+  A statistics session is the time period when statistics are gathered by statistics collector 
+  without being reset. So a statistics session continues across normal shutdowns, 
+  but whenever statistics are reset, like during a crash or upgrade, a new time period 
+  of statistics collection commences i.e. a new statistics session. 
+  The queryid value generation is linked to statistics session to emphasize the fact 
+  that whenever statistics are reset,the queryid for the same queries will also change.
+  </para>
  </sect2>
 
  <sect2>
