@@ -56,6 +56,20 @@
       <entry><literal><link linkend="catalog-pg-database"><structname>pg_database</structname></link>.oid</literal></entry>
       <entry>OID of database in which the statement was executed</entry>
      </row>
+     
+	 <row>
+      <entry><structfield>session_start</structfield></entry>
+      <entry><type>text</type></entry>
+      <entry></entry>
+      <entry>Start time of a statistics session.</entry>
+     </row>  
+       
+     <row>
+      <entry><structfield>introduced</structfield></entry>
+      <entry><type>text</type></entry>
+      <entry></entry>
+      <entry>Time when statement statistics are gathered for the first time, in a statistics session.   </entry>
+     </row>
 
      <row>
       <entry><structfield>query</structfield></entry>
@@ -64,7 +78,7 @@
       <entry>Text of a representative statement (up to <xref linkend="guc-track-activity-query-size"> bytes)</entry>
      </row>
      <row>
-      <entry><structfield>queryid</structfield></entry>
+      <entry><structfield>query_id</structfield></entry>
       <entry><type>bigint</type></entry>
       <entry></entry>
       <entry>Unique value of each representative statement for the current statistics session.
@@ -238,8 +252,8 @@
   without being reset. So a statistics session continues across normal shutdowns, 
   but whenever statistics are reset, like during a crash or upgrade, a new time period 
   of statistics collection commences i.e. a new statistics session. 
-  The queryid value generation is linked to statistics session to emphasize the fact 
-  that whenever statistics are reset,the queryid for the same queries will also change.
+  The query_id value generation is linked to statistics session to emphasize the fact 
+  that whenever statistics are reset,the query_id for the same queries will also change.
   </para>
  </sect2>
 
