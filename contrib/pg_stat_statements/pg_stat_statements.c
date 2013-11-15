@@ -43,7 +43,6 @@
  */
 #include "postgres.h"
 
-#include <time.h>
 #include <unistd.h>
 
 #include "access/hash.h"
@@ -60,18 +59,14 @@
 #include "storage/spin.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
-#include "utils/timestamp.h"
-
 
 PG_MODULE_MAGIC;
-
-#define PGSS_TUP_LATEST PGSS_TUP_V1_2
 
 /* Location of stats file */
 #define PGSS_DUMP_FILE	"global/pg_stat_statements.stat"
 
 /* This constant defines the magic number in the stats file header */
-static const uint32 PGSS_FILE_HEADER = 0x20130820;
+static const uint32 PGSS_FILE_HEADER = 0x20131115;
 
 /* XXX: Should USAGE_EXEC reflect execution time and/or buffer usage? */
 #define USAGE_EXEC(duration)	(1.0)
@@ -113,6 +108,7 @@ typedef enum pgssTupVersion
 	PGSS_TUP_V1_2
 } pgssTupVersion;
 
+#define PGSS_TUP_LATEST PGSS_TUP_V1_2
 /*
  * The actual stats counters kept within pgssEntry.
  */
@@ -265,13 +261,12 @@ static uint32 pgss_hash_fn(const void *key, Size keysize);
 static int	pgss_match_fn(const void *key1, const void *key2, Size keysize);
 static uint32 pgss_hash_string(const char *str);
 static void pgss_store(const char *query, uint32 queryId,
-		   double total_time,uint64 rows,
+		   double total_time, uint64 rows,
 		   const BufferUsage *bufusage,
 		   pgssJumbleState *jstate);
 static Size pgss_memsize(void);
-static pgssEntry *entry_alloc(pgssHashKey *key,
-							  const char *query, int query_len,
-							  uint32 query_id, bool sticky);
+static pgssEntry *entry_alloc(pgssHashKey *key,const char *query,
+			int query_len,uint32 query_id, bool sticky);
 static void entry_dealloc(void);
 static void entry_reset(void);
 static void AppendJumble(pgssJumbleState *jstate,
@@ -444,7 +439,7 @@ pgss_shmem_startup(void)
 
 	memset(&info, 0, sizeof(info));
 	info.keysize = sizeof(pgssHashKey);
-	info.entrysize = offsetof(pgssEntry, query) + query_size;
+	info.entrysize = offsetof(pgssEntry, query) +query_size;
 	info.hash = pgss_hash_fn;
 	info.match = pgss_match_fn;
 	pgss_hash = ShmemInitHash("pg_stat_statements hash",
@@ -476,7 +471,7 @@ pgss_shmem_startup(void)
 	if (file == NULL)
 	{
 		if (errno == ENOENT)
-			return; 	/* ignore not-found error */
+			return;				/* ignore not-found error */
 		goto error;
 	}
 
@@ -584,11 +579,8 @@ pgss_shmem_shutdown(int code, Datum arg)
 	if (file == NULL)
 		goto error;
 
-	/* Save header/magic number.  */
 	if (fwrite(&PGSS_FILE_HEADER, sizeof(uint32), 1, file) != 1)
 		goto error;
-
-	/* Write how many table entries there are. */
 	num_entries = hash_get_num_entries(pgss_hash);
 	if (fwrite(&num_entries, sizeof(int32), 1, file) != 1)
 		goto error;
@@ -794,7 +786,7 @@ pgss_ExecutorEnd(QueryDesc *queryDesc)
 
 		pgss_store(queryDesc->sourceText,
 				   queryId,
-				   queryDesc->totaltime->total * 1000.0,       /* convert to msec */
+				   queryDesc->totaltime->total * 1000.0,		/* convert to msec */
 				   queryDesc->estate->es_processed,
 				   &queryDesc->totaltime->bufusage,
 				   NULL);
@@ -862,7 +854,6 @@ pgss_ProcessUtility(Node *parsetree, const char *queryString,
 
 		INSTR_TIME_SET_CURRENT(duration);
 		INSTR_TIME_SUBTRACT(duration, start);
-
 
 		/* parse command tag to retrieve the number of affected rows. */
 		if (completionTag &&
@@ -1017,8 +1008,7 @@ pgss_store(const char *query, uint32 queryId,
 			/* Acquire exclusive lock as required by entry_alloc() */
 			LWLockAcquire(pgss->lock, LW_EXCLUSIVE);
 
-			entry = entry_alloc(&key,norm_query, query_len, queryId,
-								true);
+			entry = entry_alloc(&key,norm_query, query_len, queryId,true);
 		}
 		else
 		{
@@ -1097,7 +1087,7 @@ pg_stat_statements_reset(PG_FUNCTION_ARGS)
 
 #define PG_STAT_STATEMENTS_COLS_V1_0	14
 #define PG_STAT_STATEMENTS_COLS_V1_1	18
-#define PG_STAT_STATEMENTS_COLS			19
+#define PG_STAT_STATEMENTS_COLS	19
 
 /*
  * Retrieve statement statistics.
@@ -1181,6 +1171,18 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 
 		values[i++] = ObjectIdGetDatum(entry->key.userid);
 		values[i++] = ObjectIdGetDatum(entry->key.dbid);
+		if (detected_version >= PGSS_TUP_LATEST)
+		{
+			if (is_superuser || entry->key.userid == userid)
+			{
+				values[i++] = Int32GetDatum((entry->query_id));
+			}
+			else
+			{
+		/* Assign -1 value to indicate query_id cannot be seen */
+				values[i++] = -1;
+			}
+		}
 		if (is_superuser || entry->key.userid == userid)
 		{
 			char	   *qstr;
@@ -1211,20 +1213,6 @@ pg_stat_statements(PG_FUNCTION_ARGS)
 		/* Skip entry if unexecuted (ie, it's a pending "sticky" entry) */
 		if (tmp.calls == 0)
 			continue;
-
-		if (detected_version >= PGSS_TUP_LATEST)
-		{
-			if (is_superuser || entry->key.userid == userid)
-			{
-			  values[i++] = Int32GetDatum((entry->query_id));
-
-			}
-			else
-			{
-		/* Assign -1 value to indicate query_id cannot be seen */
-			  values[i++] = -1;
-			}
-		}
 
 		values[i++] = Int64GetDatumFast(tmp.calls);
 		values[i++] = Float8GetDatumFast(tmp.total_time);
@@ -1310,8 +1298,7 @@ pgss_memsize(void)
  * have made the entry while we waited to get exclusive lock.
  */
 static pgssEntry *
-entry_alloc(pgssHashKey *key,const char *query, int query_len,
-			uint32 query_id, bool sticky)
+entry_alloc(pgssHashKey *key,const char *query, int query_len,uint32 query_id, bool sticky)
 {
 	pgssEntry  *entry;
 	bool		found;
@@ -1331,7 +1318,6 @@ entry_alloc(pgssHashKey *key,const char *query, int query_len,
 		memset(&entry->counters, 0, sizeof(Counters));
 		/* set the appropriate initial usage count */
 		entry->counters.usage = sticky ? pgss->cur_median_usage : USAGE_INIT;
-
 		/* re-initialize the mutex each time ... we assume no one using it */
 		SpinLockInit(&entry->mutex);
 		/* ... and don't forget the query text */
@@ -1339,7 +1325,6 @@ entry_alloc(pgssHashKey *key,const char *query, int query_len,
 		entry->query_len = query_len;
 		memcpy(entry->query, query, query_len);
 		entry->query[query_len] = '\0';
-
 		/* Copy in the query id for reporting */
 		entry->query_id = query_id;
 	}
@@ -1390,7 +1375,6 @@ entry_dealloc(void)
 	while ((entry = hash_seq_search(&hash_seq)) != NULL)
 	{
 		entries[i++] = entry;
-
 		/* "Sticky" entries get a different usage decay rate. */
 		if (entry->counters.calls == 0)
 			entry->counters.usage *= STICKY_DECREASE_FACTOR;

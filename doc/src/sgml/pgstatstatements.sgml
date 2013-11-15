@@ -235,7 +235,6 @@
    might appear as separate entries, if they have different meanings as a
    result of factors such as different <varname>search_path</> settings.
   </para>
-
  </sect2>
 
  <sect2>
